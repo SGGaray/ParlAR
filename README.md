@@ -10,7 +10,7 @@ Speak into any application. ParlAR captures your voice, transcribes it locally w
 
 Cloud dictation tools send every word you speak to someone else's servers. ParlAR is built on a single constraint: **all processing happens on your hardware**. The optional rewrite feature can use a local Ollama model, and even that call never leaves 127.0.0.1.
 
-## Features (v0.1.0)
+## Features
 
 - **System-wide injection**: types into any focused application via xdotool (X11) or wtype/ydotool (Wayland), with clipboard fallback
 - **Two transcription modes**:
@@ -22,6 +22,7 @@ Cloud dictation tools send every word you speak to someone else's servers. ParlA
 - **VAD-gated capture**: webrtcvad segmentation with pre-roll, plus an adaptive energy fallback
 - **GPU optional**: CUDA float16 when available, CPU int8 otherwise, auto-detected
 - **Controllable daemon**: global hotkey on X11, unix-socket CLI (`parlarctl`) for Wayland shortcut binding, minimal always-on-top indicator
+- **GuionAR integration (optional)**: mirrors dictated text and voice activity to the [GuionAR](https://github.com/SGGaray/GuionAR) teleprompter overlay, fire-and-forget over a local unix socket
 
 ## Tech stack
 
@@ -85,6 +86,27 @@ On Wayland, bind `parlarctl alternar` to a keyboard shortcut in your desktop env
 
 English command aliases (`toggle`, `status`, `mode`, ...) are accepted for compatibility.
 
+## GuionAR integration (teleprompter)
+
+ParlAR can mirror dictated text and voice activity to [GuionAR](https://github.com/SGGaray/GuionAR), an always-on-top teleprompter overlay that shows what you are dictating near the camera.
+
+```bash
+# terminal 1: the teleprompter
+cd GuionAR && python guionar.py --socket
+
+# terminal 2: ParlAR with the integration enabled
+python -m parlar --guionar --modo streaming
+```
+
+| Flag | Description |
+|---|---|
+| `--guionar` (alias `--guionar-enabled`) | Send text and VAD state to the teleprompter |
+| `--guionar-socket PATH` | Socket path override (default `$XDG_RUNTIME_DIR/guionar.sock`) |
+
+It can also be enabled permanently with `"guionar": true` in `~/.config/parlar/config.json`.
+
+The integration is fire-and-forget: if GuionAR is not running, ParlAR works exactly as before (sends are dropped in ~10 µs, no blocking, no errors in the pipeline). If GuionAR dies mid-session, dictation continues and the connection resumes on its own. In streaming mode, committed text appears bright and the still-unconfirmed hypothesis shows as a dim preview; the scroll advances only while the VAD detects speech. Everything stays on a local unix socket with `0600` permissions: the privacy model does not change.
+
 ## Running the tests
 
 ```bash
@@ -95,13 +117,13 @@ The suite covers the VAD segmenter, Spanish text processing, the streaming commi
 
 ## Project status
 
-**v0.1.0, functional and validated on real hardware** (Fedora, RTX 2050, X11), but early:
+**v0.2.0, functional and validated on real hardware** (Fedora, RTX 2050, X11), but early:
 
 - No graphical UI yet beyond the minimal overlay indicator; configuration is JSON plus CLI flags
-- The output system is not yet decoupled (injection is wired directly into the pipeline)
+- The output system is not yet fully decoupled (injection is wired directly into the pipeline; the GuionAR client is the first decoupled output)
 - API and module layout may change between 0.x releases
 
-Roadmap: decoupled output backends, configuration UI, packaging (RPM/deb/Flatpak), teleprompter mode.
+Roadmap: decoupled output backends, configuration UI, packaging (RPM/deb/Flatpak).
 
 ## License
 

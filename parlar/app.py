@@ -13,6 +13,7 @@ import threading
 import time
 
 from .capturador_audio import CapturadorMic, Segmentador, crear_vad
+from .cliente_guionar import crear_cliente
 from .config import Config
 from .control import ServidorControl, normalizar_comando
 from .daemon_atajos import DaemonAtajos
@@ -41,6 +42,10 @@ class App:
         self.proc = ProcesadorTexto(cfg.remove_fillers, cfg.voice_commands,
                                     cfg.rewrite_mode, cfg.ollama_model, cfg.ollama_url)
         self.inyector = Inyector(cfg.injector, cfg.type_delay_ms, cfg.notify)
+        self.guionar = crear_cliente(cfg.guionar, cfg.guionar_socket)
+        if cfg.guionar:
+            print(f"[guionar] integración activa (socket: "
+                  f"{self.guionar.ruta})")
         self.mic = CapturadorMic(cfg.sample_rate, cfg.frame_samples)
         self.ui = crear_ui(cfg.overlay, al_click=self.alternar)
 
@@ -95,12 +100,14 @@ class App:
             return
         self.grabando.clear()
         self.mic.detener()
+        self.guionar.enviar_vad(False)
         self.ui.fijar_estado("idle")
         print("[app] ○ detenido")
 
     def salir(self):
         self.detener_grabacion()
         self.saliendo.set()
+        self.guionar.cerrar()
         self.ui.cerrar()
 
     # ------------------------------------------------------------ trabajador
@@ -128,11 +135,13 @@ class App:
                 continue
             for ev in segmentador.procesar(frame):
                 if ev.tipo == "inicio_voz":
+                    self.guionar.enviar_vad(True)
                     self.ui.fijar_estado("recording")
                 elif ev.tipo == "frame_voz" and cfg.mode == "streaming":
                     self.streaming.aceptar_audio(ev.audio)
                     self._paso_streaming()
                 elif ev.tipo == "frase":
+                    self.guionar.enviar_vad(False)
                     if cfg.mode == "streaming":
                         self._vaciar_streaming()
                     else:
@@ -166,13 +175,18 @@ class App:
             texto = self.proc.procesar_fragmento(trozo)
             if texto:
                 self.inyector.escribir_texto(texto, registrar=False)
+                self.guionar.enviar_texto(texto)
+        # vista previa: hipótesis aún no confirmada (dedup en el cliente)
+        self.guionar.enviar_parcial(self.streaming.hipotesis_pendiente())
 
     def _vaciar_streaming(self):
         cola = self.streaming.finalizar()
+        self.guionar.enviar_parcial("")  # la frase cerró: limpiar vista previa
         if cola:
             texto = self.proc.procesar_fragmento(cola)
             if texto:
                 self.inyector.escribir_texto(texto, registrar=False)
+                self.guionar.enviar_texto(texto)
 
     # ------------------------------------------------------------ emisión
 
@@ -197,6 +211,7 @@ class App:
             salida = (" " + p.texto) if self._necesita_espacio else p.texto
             if self.inyector.escribir_texto(salida):
                 self._necesita_espacio = True
+                self.guionar.enviar_texto(p.texto)
 
     # ------------------------------------------------------------ control
 

@@ -150,6 +150,11 @@ class TranscriptorStreaming:
 
         return salida
 
+    def hipotesis_pendiente(self) -> str:
+        """Texto decodificado pero aún no confirmado por LocalAgreement.
+        Solo lectura; útil como vista previa (p. ej. teleprompter)."""
+        return "".join(p.texto for p in self.palabras_prev[self.n_confirmadas:]).strip()
+
     def finalizar(self) -> str:
         """Vaciado: decodifica lo que queda y devuelve el texto más allá de
         las palabras ya confirmadas."""

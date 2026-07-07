@@ -36,6 +36,13 @@ def main():
                     choices=["auto", "xdotool", "wtype", "ydotool", "clipboard"])
     ap.add_argument("--sin-indicador", "--no-overlay", dest="sin_indicador",
                     action="store_true", help="corre sin el punto indicador")
+    ap.add_argument("--guionar", "--guionar-enabled", dest="guionar",
+                    action="store_true", default=cfg.guionar,
+                    help="envía texto y estado VAD al teleprompter GuionAR")
+    ap.add_argument("--guionar-socket", dest="guionar_socket",
+                    default=cfg.guionar_socket,
+                    help="ruta del socket de GuionAR "
+                         "(por defecto: $XDG_RUNTIME_DIR/guionar.sock)")
     ap.add_argument("--guardar-config", "--save-config", dest="guardar_config",
                     action="store_true",
                     help="persiste los flags actuales en ~/.config/parlar/config.json")
@@ -49,6 +56,8 @@ def main():
     cfg.injector = args.inyector
     if args.sin_indicador:
         cfg.overlay = False
+    cfg.guionar = args.guionar
+    cfg.guionar_socket = args.guionar_socket
     if args.guardar_config:
         cfg.save()
         print("[config] guardada")

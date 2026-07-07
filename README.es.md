@@ -43,6 +43,22 @@ Después:
 python -m parlar --modo streaming
 ```
 
+## Integración con GuionAR (teleprompter)
+
+ParlAR puede enviar el texto dictado y el estado de voz a [GuionAR](https://github.com/SGGaray/GuionAR), un overlay teleprompter que muestra lo que vas dictando cerca de la cámara.
+
+```bash
+# terminal 1: el teleprompter
+cd GuionAR && python guionar.py --socket
+
+# terminal 2: ParlAR con la integración activa
+python -m parlar --guionar --modo streaming
+```
+
+Flags: `--guionar` (alias `--guionar-enabled`) activa el envío; `--guionar-socket RUTA` cambia el socket (default `$XDG_RUNTIME_DIR/guionar.sock`). También podés dejarlo fijo con `"guionar": true` en la config.
+
+Es opcional y fire-and-forget: si GuionAR no está corriendo, ParlAR funciona exactamente igual (los envíos se descartan en ~10 µs, sin bloqueos ni errores). Si GuionAR se cae a mitad de sesión, el dictado sigue y la conexión se retoma sola. En modo streaming, el texto confirmado se ve en blanco y la hipótesis todavía no confirmada aparece en gris como vista previa; el scroll avanza solo mientras el VAD detecta voz. Todo viaja por un socket Unix local con permisos `0600`: el modelo de privacidad no cambia.
+
 ## Comandos de voz (modo frase)
 
 Decilos exactos, como frase aislada: "nuevo párrafo", "punto y aparte", "nueva línea", "borra la última oración", "enviar", "detener dictado". Los equivalentes en inglés ("new paragraph", "delete last sentence", "send", "stop dictation") siguen funcionando.

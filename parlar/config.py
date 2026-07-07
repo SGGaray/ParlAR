@@ -66,6 +66,10 @@ class Config:
     overlay: bool = True
     notify: bool = True                # notificaciones de escritorio vía notify-send
 
+    # --- GuionAR (teleprompter, opcional) ---
+    guionar: bool = False              # enviar texto/VAD al overlay GuionAR
+    guionar_socket: str = ""           # vacío = $XDG_RUNTIME_DIR/guionar.sock
+
     extras: dict = field(default_factory=dict)
 
     @classmethod
