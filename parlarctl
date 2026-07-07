@@ -1,0 +1,7 @@
+#!/usr/bin/env python3
+"""Envía un comando al daemon parlar en ejecución.
+En Wayland, asigná `parlarctl alternar` a un atajo de teclado del DE."""
+import os, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from parlar.control import parlarctl_main
+parlarctl_main()

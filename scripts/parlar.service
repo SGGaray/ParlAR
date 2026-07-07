@@ -1,0 +1,15 @@
+# Servicio systemd de usuario (opcional): copialo a ~/.config/systemd/user/ y luego
+#   systemctl --user daemon-reload && systemctl --user enable --now parlar
+[Unit]
+Description=ParlAR, daemon de dictado local
+After=graphical-session.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/parlar
+ExecStart=%h/parlar/.venv/bin/python -m parlar
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
