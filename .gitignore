@@ -1,0 +1,52 @@
+# --- Entorno virtual (nunca al repo: pesado y con rutas locales) ---
+.venv/
+venv/
+env/
+
+# --- Bytecode y caches de Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Modelos de STT y caches de descarga ---
+# (los modelos viven en ~/.cache/huggingface, pero por si alguno cae local)
+*.bin
+*.ct2
+models/
+.cache/
+
+# --- Audio de pruebas y grabaciones ---
+*.wav
+*.mp3
+*.flac
+*.ogg
+*.opus
+recordings/
+
+# --- Logs y temporales ---
+*.log
+*.tmp
+*.swp
+*~
+
+# --- Configuración local y runtime ---
+# (la config real vive en ~/.config/parlar, pero por si se copia al repo)
+config.local.json
+*.sock
+
+# --- Empaquetado y distribución ---
+build/
+dist/
+*.egg-info/
+*.zip
+
+# --- IDEs y editores ---
+.vscode/
+.idea/
+
+# --- Sistema operativo ---
+.DS_Store
+Thumbs.db
