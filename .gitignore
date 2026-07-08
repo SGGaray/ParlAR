@@ -50,3 +50,4 @@ dist/
 # --- Sistema operativo ---
 .DS_Store
 Thumbs.db
+parlar-guionar.patch
