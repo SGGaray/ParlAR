@@ -1,132 +1,140 @@
 # ParlAR
 
-**Local-first, system-wide voice dictation for Linux. Spanish-first. 100% offline.**
+Dictado local, a nivel sistema, para Linux. Hablás y el texto limpio aparece tipeado en la ventana que tenga el foco. Sin nube, sin claves de API: nada sale de tu máquina.
 
-Speak into any application. ParlAR captures your voice, transcribes it locally with Whisper, cleans up the text (including proper Spanish punctuation like ¿ and ¡), and types it into whatever window has focus. No cloud, no API keys, no telemetry: nothing ever leaves your machine.
+> English version: [README.en.md](README.en.md)
 
-> Documentación en español: [README.es.md](README.es.md)
+ParlAR nació como FlowDictate; el nombre cambió, la arquitectura y la lógica no (ver el historial en CHANGELOG.md).
 
-## Why
-
-Cloud dictation tools send every word you speak to someone else's servers. ParlAR is built on a single constraint: **all processing happens on your hardware**. The optional rewrite feature can use a local Ollama model, and even that call never leaves 127.0.0.1.
-
-## Features
-
-- **System-wide injection**: types into any focused application via xdotool (X11) or wtype/ydotool (Wayland), with clipboard fallback
-- **Two transcription modes**:
-  - *Utterance mode* (default): transcribes each phrase when you pause, roughly 0.2 to 0.6s inference on GPU
-  - *Streaming mode*: words appear while you are still speaking, using the LocalAgreement-2 commit policy so injected text never needs retraction
-- **Spanish-first text processing**: inverted punctuation handling (¿ ¡), sentence capitalization, filler-word removal
-- **Voice commands**: "nuevo párrafo", "borra la última oración", "enviar", "detener dictado" (English equivalents also work)
-- **Rewrite modes**: formal / concise / email, rule-based or through a local Ollama model
-- **VAD-gated capture**: webrtcvad segmentation with pre-roll, plus an adaptive energy fallback
-- **GPU optional**: CUDA float16 when available, CPU int8 otherwise, auto-detected
-- **Controllable daemon**: global hotkey on X11, unix-socket CLI (`parlarctl`) for Wayland shortcut binding, minimal always-on-top indicator
-- **GuionAR integration (optional)**: mirrors dictated text and voice activity to the [GuionAR](https://github.com/SGGaray/GuionAR) teleprompter overlay, fire-and-forget over a local unix socket
-
-## Tech stack
-
-| Concern | Choice |
-|---|---|
-| Speech-to-text | [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (CTranslate2 backend) |
-| Audio capture | sounddevice (PortAudio) |
-| Voice activity detection | webrtcvad, energy-based fallback |
-| Text injection | xdotool / wtype / ydotool |
-| Hotkeys and IPC | pynput (X11), unix domain socket |
-| Overlay | tkinter |
-
-Architecture details, component diagram, and latency strategy: [arquitectura.md](arquitectura.md) (Spanish).
-
-## Installation
-
-Tested on Fedora; Ubuntu/Debian supported by the installer.
+## Inicio rápido
 
 ```bash
-git clone git@github.com:SGGaray/parlar.git
 cd parlar
-./setup.sh                 # system deps, venv, Python deps, model download
+./setup.sh                        # instala dependencias, venv y el modelo
 source .venv/bin/activate
+python -m parlar                  # español por defecto
 ```
 
-NVIDIA GPU note: if faster-whisper reports `libcublas.so.12 not found`, install the CUDA runtime libraries inside the venv and expose them:
+Después:
+
+1. Poné el foco en cualquier campo de texto (editor, navegador, chat, terminal).
+2. Presioná **Ctrl+Alt+D** (X11) o tu atajo asignado (Wayland, ver abajo). El punto del indicador se pone rojo.
+3. Hablá. Pausá un instante. El texto aparece en la app con foco.
+4. Presioná el atajo de nuevo para detener.
+
+## Controles
+
+| Acción | X11 | Wayland / donde sea |
+|---|---|---|
+| Alternar grabación | Ctrl+Alt+D | `./parlarctl alternar` (asignalo a un atajo del DE) |
+| Salir del daemon | Ctrl+Alt+Q | `./parlarctl salir` |
+| Estado | - | `./parlarctl estado` |
+| Cambiar modo en vivo | - | `./parlarctl modo streaming` / `modo frase` |
+| Reescritura en vivo | - | `./parlarctl reescritura formal` (ninguna/formal/conciso/correo) |
+| Alternar con el mouse | click izquierdo en el punto | igual |
+| Mover el indicador | arrastrar con click derecho | igual |
+
+**Asignar el atajo en Wayland:** GNOME: Configuración → Teclado → Atajos personalizados → comando `/ruta/completa/parlarctl alternar`. KDE: Preferencias del sistema → Atajos → Agregar comando. Hyprland: `bind = CTRL ALT, D, exec, /ruta/parlarctl alternar`.
+
+## Modos
+
+- **frase** (por defecto): transcribe cada frase cuando pausás 600ms. Máxima precisión; latencia de 0.8 a 1.1s después de la pausa.
+- **streaming**: las palabras aparecen mientras hablás, confirmadas con la política LocalAgreement, así nunca se retracta nada. Menor latencia percibida, algo más de CPU.
 
 ```bash
-pip install nvidia-cublas-cu12 nvidia-cudnn-cu12
+python -m parlar --modo streaming
 ```
 
-Then append to `.venv/bin/activate` (adjust the Python version to yours):
+## Integración con GuionAR (teleprompter)
+
+Para el diseño completo del sistema (ParlAR + GuionAR, el protocolo del socket, y por qué son dos procesos separados), ver [GuionAR/ARCHITECTURE.md](https://github.com/SGGaray/GuionAR/blob/main/ARCHITECTURE.md).
+
+ParlAR puede enviar el texto dictado y el estado de voz a [GuionAR](https://github.com/SGGaray/GuionAR), un overlay teleprompter que muestra lo que vas dictando cerca de la cámara.
 
 ```bash
-SITE="$VIRTUAL_ENV/lib64/python3.14/site-packages"
-if [ -d "$SITE/nvidia/cublas/lib" ]; then
-    export LD_LIBRARY_PATH="$SITE/nvidia/cublas/lib:$SITE/nvidia/cudnn/lib:$LD_LIBRARY_PATH"
-fi
-```
-
-## Usage
-
-```bash
-python -m parlar                        # utterance mode, Spanish
-python -m parlar --modo streaming       # words appear as you speak
-python -m parlar --idioma en            # dictate in English
-```
-
-1. Focus any text field.
-2. Press **Ctrl+Alt+D** (X11) or your bound shortcut (Wayland). The indicator dot turns red.
-3. Speak. Pause briefly. Clean text appears in the focused app.
-4. Press the hotkey again to stop.
-
-On Wayland, bind `parlarctl alternar` to a keyboard shortcut in your desktop environment (compositors block global key grabs by design). Runtime control:
-
-```bash
-./parlarctl estado
-./parlarctl modo streaming
-./parlarctl reescritura formal
-```
-
-English command aliases (`toggle`, `status`, `mode`, ...) are accepted for compatibility.
-
-## GuionAR integration (teleprompter)
-
-For the full system design (ParlAR + GuionAR, the socket protocol, and why they're two processes), see [GuionAR/ARCHITECTURE.md](https://github.com/SGGaray/GuionAR/blob/main/ARCHITECTURE.md).
-
-ParlAR can mirror dictated text and voice activity to [GuionAR](https://github.com/SGGaray/GuionAR), an always-on-top teleprompter overlay that shows what you are dictating near the camera.
-
-```bash
-# terminal 1: the teleprompter
+# terminal 1: el teleprompter
 cd GuionAR && python guionar.py --socket
 
-# terminal 2: ParlAR with the integration enabled
+# terminal 2: ParlAR con la integración activa
 python -m parlar --guionar --modo streaming
 ```
 
-| Flag | Description |
-|---|---|
-| `--guionar` (alias `--guionar-enabled`) | Send text and VAD state to the teleprompter |
-| `--guionar-socket PATH` | Socket path override (default `$XDG_RUNTIME_DIR/guionar.sock`) |
+Flags: `--guionar` (alias `--guionar-enabled`) activa el envío; `--guionar-socket RUTA` cambia el socket (default `$XDG_RUNTIME_DIR/guionar.sock`). También podés dejarlo fijo con `"guionar": true` en la config.
 
-It can also be enabled permanently with `"guionar": true` in `~/.config/parlar/config.json`.
+Es opcional y fire-and-forget: si GuionAR no está corriendo, ParlAR funciona exactamente igual (los envíos se descartan en ~10 µs, sin bloqueos ni errores). Si GuionAR se cae a mitad de sesión, el dictado sigue y la conexión se retoma sola. En modo streaming, el texto confirmado se ve en blanco y la hipótesis todavía no confirmada aparece en gris como vista previa; el scroll avanza solo mientras el VAD detecta voz. Todo viaja por un socket Unix local con permisos `0600`: el modelo de privacidad no cambia.
 
-The integration is fire-and-forget: if GuionAR is not running, ParlAR works exactly as before (sends are dropped in ~10 µs, no blocking, no errors in the pipeline). If GuionAR dies mid-session, dictation continues and the connection resumes on its own. In streaming mode, committed text appears bright and the still-unconfirmed hypothesis shows as a dim preview; the scroll advances only while the VAD detects speech. Everything stays on a local unix socket with `0600` permissions: the privacy model does not change.
+## Comandos de voz (modo frase)
 
-## Running the tests
+Decilos exactos, como frase aislada: "nuevo párrafo", "punto y aparte", "nueva línea", "borra la última oración", "enviar", "detener dictado". Los equivalentes en inglés ("new paragraph", "delete last sentence", "send", "stop dictation") siguen funcionando.
+
+## Modos de reescritura
+
+`--reescritura formal|conciso|correo`. Por reglas por defecto, optimizadas para español (ok → de acuerdo, porfa → por favor, finde → fin de semana; en conciso se limpian "básicamente", "o sea", "digamos", "viste"). Si corrés [Ollama](https://ollama.com) local, poné `ollama_model` en la config (ej. `"llama3.2:3b"`) y la reescritura pasa por ahí, siempre 127.0.0.1.
+
+## Configuración
+
+`~/.config/parlar/config.json`. Generala con tus flags actuales:
 
 ```bash
-python tests/run_tests.py
+python -m parlar --modelo small --idioma es --guardar-config
 ```
 
-The suite covers the VAD segmenter, Spanish text processing, the streaming commit policy (against a scripted fake engine), injection command construction, and the backward-compatibility shim. No audio hardware required.
+Perillas útiles: `model_size` (tiny/base/small/medium/large-v3), `silence_ms`, `vad_aggressiveness` (subilo a 3 en ambientes ruidosos), `hotkey_toggle`, `type_delay_ms`. Las claves del JSON se mantienen en inglés a propósito para no romper configs existentes.
 
-## Project status
+## Ajuste de rendimiento
 
-**v0.2.0, functional and validated on real hardware** (Fedora, RTX 2050, X11), but early:
+| Situación | Hacé esto |
+|---|---|
+| GPU NVIDIA | Se autodetecta (float16). Verificalo con el chequeo de CUDA del setup.sh. Con CUDA 12 puede hacer falta: `pip install nvidia-cublas-cu12 nvidia-cudnn-cu12` |
+| CPU lenta | `--modelo base` o `--modelo tiny` |
+| Máxima precisión | `--modelo medium` (necesita ~5GB de RAM en CPU int8) |
+| Mínima latencia | `--modo streaming` + `--modelo base` + `--idioma es` fijo |
+| Sesiones largas | Nada que hacer: el audio confirmado se recorta solo |
 
-- No graphical UI yet beyond the minimal overlay indicator; configuration is JSON plus CLI flags
-- The output system is not yet fully decoupled (injection is wired directly into the pipeline; the GuionAR client is the first decoupled output)
-- API and module layout may change between 0.x releases
+Fijar el idioma (`--idioma es`, ya es el defecto) evita la detección de idioma en cada decodificación y baja la latencia notablemente.
 
-Roadmap: decoupled output backends, configuration UI, packaging (RPM/deb/Flatpak).
+## Correr como servicio (opcional)
 
-## License
+```bash
+mkdir -p ~/.config/systemd/user
+cp scripts/parlar.service ~/.config/systemd/user/
+systemctl --user daemon-reload && systemctl --user enable --now parlar
+```
 
-MIT. See [LICENSE](LICENSE).
+## Alias en inglés
+
+Por si te resulta más natural en inglés (o para quien colabore sin ser hispanohablante):
+
+- Los comandos en inglés del socket (toggle/start/stop/status/mode/rewrite/quit) se aceptan como alias.
+- Los flags CLI en inglés (`--model`, `--language`, `--mode`, etc.) se aceptan como alias.
+
+## Solución de problemas
+
+- **No se tipea nada (Wayland):** instalá `wtype`; en GNOME Wayland wtype puede estar bloqueado, usá `ydotool` con su daemon corriendo (`sudo systemctl enable --now ydotool`, agregate al grupo `input`). En el peor caso el texto queda en el portapapeles con una notificación.
+- **El atajo no hace nada en Wayland:** es lo esperado, asigná `parlarctl alternar` en tu DE.
+- **No encuentra el micrófono:** revisá `python -c "import sounddevice; print(sounddevice.query_devices())"` y fijá la entrada por defecto en la configuración de sonido.
+- **Falló la compilación de webrtcvad:** no pasa nada, un VAD de energía adaptativo toma el control automáticamente.
+
+## Estructura del proyecto
+
+```
+parlar/
+├── README.md                    esta guía (instalación, uso, troubleshooting)
+├── arquitectura.md              documento de diseño y diagrama de componentes
+├── setup.sh                     instalador de un paso (Ubuntu/Debian + Fedora)
+├── requirements.txt
+├── parlarctl                    cliente de control (asignalo a atajos en Wayland)
+├── scripts/parlar.service
+├── parlar/
+│   ├── __main__.py              entrada CLI
+│   ├── config.py                dataclass de config + persistencia JSON
+│   ├── capturador_audio.py      captura de mic + Segmentador VAD (puro, testeable)
+│   ├── motor_transcripcion.py   faster-whisper: frase + streaming LocalAgreement
+│   ├── procesador_texto.py      limpieza, comandos de voz, modos de reescritura
+│   ├── inyector_salida.py       inyección xdotool / wtype / ydotool / portapapeles
+│   ├── daemon_atajos.py         atajos globales pynput (X11)
+│   ├── control.py               servidor de socket unix + cliente parlarctl
+│   ├── indicador.py             punto tkinter siempre visible
+│   └── app.py                   orquestador / máquina de estados
+└── tests/                       correr: python tests/run_tests.py
+```
