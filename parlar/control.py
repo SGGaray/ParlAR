@@ -18,7 +18,7 @@ from typing import Callable
 
 from .config import SOCKET_PATH
 
-# alias inglés -> canónico español (compatibilidad hacia atrás con flowctl)
+# alias inglés -> canónico español (UX para quien prefiera comandos en inglés)
 ALIAS_COMANDOS = {
     "toggle": "alternar", "start": "iniciar", "stop": "detener",
     "status": "estado", "mode": "modo", "rewrite": "reescritura",
@@ -111,7 +111,7 @@ def enviar_comando(cmd: str) -> str:
 def parlarctl_main():
     if len(sys.argv) < 2:
         print("uso: parlarctl <alternar|iniciar|detener|estado|modo M|reescritura M|salir>")
-        print("     (los comandos en inglés de flowctl siguen funcionando)")
+        print("     (los comandos en inglés también funcionan)")
         sys.exit(2)
     cmd = " ".join(sys.argv[1:])
     try:

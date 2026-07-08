@@ -1,9 +1,6 @@
 """Tests de la lógica independiente de hardware: segmentación VAD,
 procesamiento de texto, política de confirmación LocalAgreement (con motor
-falso), adaptaciones al español y shim de compatibilidad con flowdictate.
-
-Las primeras secciones son las mismas 24 aserciones de la suite de
-FlowDictate, portadas a los nombres nuevos: si pasan, la lógica no cambió.
+falso) y adaptaciones al español.
 
 Correr: python tests/run_tests.py
 """
@@ -261,35 +258,6 @@ def test_inyector_nueva_linea():
                   comandos.count("28:1") == 2 and comandos.count("28:0") == 2, comandos)
 
 
-# ---------------------------------------------------------------- Shim flowdictate
-
-def test_compat_flowdictate():
-    import warnings
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
-        import flowdictate
-        from flowdictate.textproc import TextProcessor
-        from flowdictate.audio import MicListener, Segmenter
-        from flowdictate.stt import StreamingTranscriber
-        from flowdictate.inject import Injector, detect_session
-        from flowdictate.control import send_command  # noqa: F401
-
-    from parlar.capturador_audio import CapturadorMic
-    from parlar.procesador_texto import ProcesadorTexto as PT
-
-    check("shim: TextProcessor es ProcesadorTexto", TextProcessor is PT)
-    check("shim: MicListener es CapturadorMic", MicListener is CapturadorMic)
-    check("shim: Segmenter es Segmentador", Segmenter is Segmentador)
-    check("shim: StreamingTranscriber es TranscriptorStreaming",
-          StreamingTranscriber is mt.TranscriptorStreaming)
-    check("shim: detect_session funciona", detect_session() in ("x11", "wayland"))
-
-    # la API vieja sigue siendo usable de punta a punta
-    p = TextProcessor(remove_fillers=True, voice_commands=True)
-    r = p.procesar_frase("nuevo párrafo")
-    check("shim: instancia vieja procesa comandos", r.comando == "nueva_linea")
-
-
 if __name__ == "__main__":
     test_segmentador()
     test_procesador_texto()
@@ -297,7 +265,6 @@ if __name__ == "__main__":
     test_confirmacion_streaming()
     test_recorte_streaming()
     test_inyector_nueva_linea()
-    test_compat_flowdictate()
     print()
     if FALLAS:
         print(f"{len(FALLAS)} FALLARON: {FALLAS}")

@@ -1,9 +1,7 @@
 """Configuración de ParlAR.
 
 Se carga desde ~/.config/parlar/config.json si existe; si no, valores por
-defecto. Si existe una configuración legada de FlowDictate
-(~/.config/flowdictate/config.json) y todavía no hay una nueva, se migra
-automáticamente. Todo valor puede sobreescribirse con flags CLI en __main__.py.
+defecto. Todo valor puede sobreescribirse con flags CLI en __main__.py.
 
 Nota: las claves del JSON se mantienen en inglés a propósito, para no romper
 configuraciones existentes (compatibilidad hacia atrás).
@@ -16,8 +14,6 @@ from pathlib import Path
 
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "parlar"
 CONFIG_FILE = CONFIG_DIR / "config.json"
-LEGACY_CONFIG_FILE = (Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-                      / "flowdictate" / "config.json")
 RUNTIME_DIR = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp"))
 SOCKET_PATH = RUNTIME_DIR / "parlar.sock"
 
@@ -77,12 +73,7 @@ class Config:
     @classmethod
     def load(cls) -> "Config":
         cfg = cls()
-        source = None
-        if CONFIG_FILE.exists():
-            source = CONFIG_FILE
-        elif LEGACY_CONFIG_FILE.exists():
-            source = LEGACY_CONFIG_FILE
-            print(f"[config] migrando configuración legada desde {LEGACY_CONFIG_FILE}")
+        source = CONFIG_FILE if CONFIG_FILE.exists() else None
         if source is not None:
             try:
                 data = json.loads(source.read_text())

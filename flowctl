@@ -1,7 +1,0 @@
-#!/usr/bin/env python3
-"""Compatibilidad: flowctl ahora es parlarctl. Este alias delega y funciona igual."""
-import os, sys
-print("aviso: flowctl fue renombrado a parlarctl (este alias sigue funcionando)", file=sys.stderr)
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from parlar.control import parlarctl_main
-parlarctl_main()

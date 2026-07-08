@@ -2,7 +2,7 @@
 
 Dictado local, a nivel sistema, para Linux. Hablás y el texto limpio aparece tipeado en la ventana que tenga el foco. Sin nube, sin claves de API: nada sale de tu máquina.
 
-ParlAR es el nuevo nombre de FlowDictate. Misma arquitectura, misma lógica, ahora en español primero. Los comandos e imports viejos siguen funcionando (ver Compatibilidad).
+ParlAR nació como FlowDictate; el nombre cambió, la arquitectura y la lógica no (ver el historial en CHANGELOG.md).
 
 ## Inicio rápido
 
@@ -69,7 +69,7 @@ Decilos exactos, como frase aislada: "nuevo párrafo", "punto y aparte", "nueva 
 
 ## Configuración
 
-`~/.config/parlar/config.json`. Si existe una config vieja de FlowDictate, se migra sola. Generala con tus flags actuales:
+`~/.config/parlar/config.json`. Generala con tus flags actuales:
 
 ```bash
 python -m parlar --modelo small --idioma es --guardar-config
@@ -97,14 +97,12 @@ cp scripts/parlar.service ~/.config/systemd/user/
 systemctl --user daemon-reload && systemctl --user enable --now parlar
 ```
 
-## Compatibilidad con FlowDictate
+## Alias en inglés
 
-- `./flowctl toggle` sigue funcionando (alias que delega en parlarctl; avisa por stderr).
+Por si te resulta más natural en inglés (o para quien colabore sin ser hispanohablante):
+
 - Los comandos en inglés del socket (toggle/start/stop/status/mode/rewrite/quit) se aceptan como alias.
 - Los flags CLI en inglés (`--model`, `--language`, `--mode`, etc.) se aceptan como alias.
-- `import flowdictate` y los imports de submódulos viejos (`from flowdictate.textproc import TextProcessor`) funcionan vía shim con DeprecationWarning.
-- `python -m flowdictate` delega en parlar.
-- La config vieja en `~/.config/flowdictate/` se migra automáticamente.
 
 ## Solución de problemas
 
@@ -122,7 +120,6 @@ parlar/
 ├── setup.sh                     instalador de un paso (Ubuntu/Debian + Fedora)
 ├── requirements.txt
 ├── parlarctl                    cliente de control (asignalo a atajos en Wayland)
-├── flowctl                      alias de compatibilidad -> parlarctl
 ├── scripts/parlar.service
 ├── parlar/
 │   ├── __main__.py              entrada CLI
@@ -135,6 +132,5 @@ parlar/
 │   ├── control.py               servidor de socket unix + cliente parlarctl
 │   ├── indicador.py             punto tkinter siempre visible
 │   └── app.py                   orquestador / máquina de estados
-├── flowdictate/                 shim de compatibilidad (imports viejos)
 └── tests/                       correr: python tests/run_tests.py
 ```

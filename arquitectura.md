@@ -1,6 +1,6 @@
 # ParlAR: dictado local-primero, a nivel sistema, para Linux
 
-Alternativa a Wispr Flow enfocada en privacidad. Todo corre en tu máquina. Ni audio, ni texto, ni telemetría salen de ella. (ParlAR es el nuevo nombre de FlowDictate; arquitectura y lógica sin cambios.)
+Alternativa a Wispr Flow enfocada en privacidad. Todo corre en tu máquina. Ni audio, ni texto, ni telemetría salen de ella.
 
 ## 1. Cómo funcionan realmente Wispr Flow y herramientas similares
 

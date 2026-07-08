@@ -1,7 +1,7 @@
 """Punto de entrada: python -m parlar [flags]
 
-Los flags están en español; los flags en inglés de FlowDictate se aceptan
-como alias (compatibilidad hacia atrás).
+Los flags están en español; los flags en inglés también se aceptan
+como alias, por si preferís esa nomenclatura.
 """
 
 import argparse

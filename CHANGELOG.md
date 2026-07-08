@@ -3,9 +3,19 @@
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es/1.1.0/). Versionado semántico.
 
 ## [Unreleased]
-### Pendiente (auditoría julio 2026)
-- Breaking (v0.3.0): eliminación de la capa de compatibilidad FlowDictate
-  (paquete shim, flowctl, migración de config legada)
+
+## [0.3.0] - 2026-07
+### Quitado (breaking change)
+- Paquete shim `flowdictate/` y el script `flowctl` (los imports
+  `import flowdictate` y `python -m flowdictate` ya no funcionan)
+- Migración automática de config legada desde
+  `~/.config/flowdictate/config.json`
+- Los 6 tests que validaban el shim
+
+### Nota
+- Los alias en inglés (comandos de socket y flags CLI) NO se tocaron:
+  son UX legítima, no código legacy de FlowDictate, y siguen funcionando
+  igual que siempre
 
 ## [0.2.1] - 2026-07
 ### Corregido
