@@ -17,7 +17,14 @@ from dataclasses import dataclass
 from typing import Optional
 
 MULETILLAS = re.compile(
-    r"\b(um+|uh+|erm+|hmm+|eh+|este+|em|mmm+|ehm)\b[,.]?\s*", re.IGNORECASE
+    r"\b(um+|uh+|erm+|hmm+|eh+|este{2,}|em|mmm+|ehm)\b[,.]?\s*", re.IGNORECASE
+)
+# "este" (una sola e) es el demostrativo español normal ("quiero este
+# informe"), no una muletilla. Solo las formas alargadas ("esteee") lo son.
+# Frase que es ÚNICAMENTE una muletilla suelta ("eh.", "mmm"): se descarta
+# entera en vez de dejar un resto vacío tras MULETILLAS.sub().
+_SOLO_MULETILLA = re.compile(
+    r"^(um+|uh+|erm+|hmm+|eh+|em|mmm+|ehm)[,.]?$", re.IGNORECASE
 )
 
 # patrones de comandos de voz, comparados contra la frase completa normalizada
@@ -70,9 +77,11 @@ def _capitalizar_oraciones(texto: str) -> str:
 class ProcesadorTexto:
     def __init__(self, remove_fillers: bool = True, voice_commands: bool = True,
                  rewrite_mode: str = "none", ollama_model: str = "",
-                 ollama_url: str = "http://127.0.0.1:11434"):
+                 ollama_url: str = "http://127.0.0.1:11434",
+                 comando_enviar: bool = False):
         self.remove_fillers = remove_fillers
         self.voice_commands = voice_commands
+        self.comando_enviar = comando_enviar
         self.rewrite_mode = rewrite_mode
         self.ollama_model = ollama_model
         self.ollama_url = ollama_url.rstrip("/")
@@ -82,6 +91,9 @@ class ProcesadorTexto:
     def procesar_frase(self, crudo: str) -> Procesado:
         crudo = crudo.strip()
         if not crudo:
+            return Procesado()
+
+        if self.remove_fillers and _SOLO_MULETILLA.match(crudo):
             return Procesado()
 
         if self.voice_commands:
@@ -113,6 +125,10 @@ class ProcesadorTexto:
         norm = re.sub(r"[^\w\sáéíóúñü]", "", crudo).strip().lower()
         for pat, (cmd, carga) in _PATRONES_CMD:
             if pat.match(norm):
+                if cmd == "enviar" and not self.comando_enviar:
+                    # Apagado por defecto: audio ambiente no puede presionar
+                    # Enter en la ventana enfocada. Ver SECURITY.md.
+                    return None
                 return Procesado(comando=cmd, carga=carga)
         return None
 

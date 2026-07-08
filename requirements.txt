@@ -2,3 +2,13 @@ faster-whisper>=1.0.0
 sounddevice>=0.4.6
 numpy>=1.24
 pynput>=1.7.6
+
+# VAD real (más preciso que el fallback de energía). Puede fallar la
+# compilación en algunos setups (necesita headers de Python); si eso
+# pasa, ParlAR sigue funcionando con el VAD de energía automáticamente.
+webrtcvad>=2.0.10
+
+# Pin necesario: webrtcvad importa pkg_resources en tiempo de import,
+# y setuptools>=81 lo eliminó. Sin este pin, la instalación de
+# webrtcvad falla en silencio en instalaciones limpias.
+setuptools<81

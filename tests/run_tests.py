@@ -131,7 +131,12 @@ def test_espanol():
     r = p.procesar_frase("borra la última oración")
     check("comando: borra la última oración", r.comando == "borrar_ultima")
     r = p.procesar_frase("Enviar")
-    check("comando: enviar", r.comando == "enviar")
+    check("comando: enviar (apagado por defecto, no se ejecuta)",
+          r.comando is None and r.texto == "Enviar")
+    p_enviar_on = ProcesadorTexto(comando_enviar=True)
+    r = p_enviar_on.procesar_frase("Enviar")
+    check("comando: enviar (activado explícitamente, sí se ejecuta)",
+          r.comando == "enviar")
     r = p.procesar_frase("detener dictado")
     check("comando: detener dictado", r.comando == "detener")
     r = p.procesar_frase("nueva línea")

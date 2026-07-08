@@ -64,6 +64,22 @@ class MotorWhisper:
         return list(segments)
 
 
+# Umbral heurístico: un segmento se descarta como alucinación probable solo
+# si el modelo señala BAJA confianza de que haya voz (no_speech_prob alto)
+# Y BAJA confianza en el texto que generó igual (avg_logprob muy negativo).
+# Exigir las dos condiciones evita descartar voz real y susurrada.
+_UMBRAL_NO_SPEECH = 0.6
+_UMBRAL_LOGPROB = -1.0
+
+# Frases que Whisper "alucina" típicamente sobre silencio o ruido de fondo
+# (artefacto conocido del entrenamiento en subtítulos de YouTube)
+_ALUCINACIONES_CONOCIDAS = re.compile(
+    r"subt[ií]tulos.*amara\.org|www\.youtube\.com|suscr[ií]bete|"
+    r"subscribe to|like and subscribe|gracias por ver el v[ií]deo",
+    re.IGNORECASE,
+)
+
+
 class TranscriptorFrase:
     def __init__(self, motor: MotorWhisper):
         self.motor = motor
@@ -72,7 +88,15 @@ class TranscriptorFrase:
         if audio.size < 1600:  # < 0.1s
             return ""
         segments = self.motor.decodificar(audio)
-        return " ".join(s.text.strip() for s in segments).strip()
+        partes = []
+        for s in segments:
+            if s.no_speech_prob > _UMBRAL_NO_SPEECH and s.avg_logprob < _UMBRAL_LOGPROB:
+                continue  # probable alucinación: silencio con baja confianza
+            partes.append(s.text.strip())
+        texto = " ".join(partes).strip()
+        if _ALUCINACIONES_CONOCIDAS.search(texto):
+            return ""
+        return texto
 
 
 @dataclass

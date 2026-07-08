@@ -40,7 +40,8 @@ class App:
         self.streaming = TranscriptorStreaming(self.motor, cfg.sample_rate,
                                                cfg.stream_interval_s, cfg.stream_trim_s)
         self.proc = ProcesadorTexto(cfg.remove_fillers, cfg.voice_commands,
-                                    cfg.rewrite_mode, cfg.ollama_model, cfg.ollama_url)
+                                    cfg.rewrite_mode, cfg.ollama_model, cfg.ollama_url,
+                                    cfg.comando_enviar)
         self.inyector = Inyector(cfg.injector, cfg.type_delay_ms, cfg.notify)
         self.guionar = crear_cliente(cfg.guionar, cfg.guionar_socket)
         if cfg.guionar:

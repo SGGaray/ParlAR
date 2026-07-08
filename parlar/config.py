@@ -51,6 +51,8 @@ class Config:
     rewrite_mode: str = "none"         # none | formal | concise | email
     remove_fillers: bool = True
     voice_commands: bool = True
+    comando_enviar: bool = False       # comando de voz "enviar" (presiona Enter);
+                                       # apagado por defecto: ver SECURITY.md
     ollama_model: str = ""             # ej. "llama3.2:3b"; vacío = solo reglas
     ollama_url: str = "http://127.0.0.1:11434"
 
