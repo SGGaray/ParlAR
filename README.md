@@ -88,6 +88,8 @@ English command aliases (`toggle`, `status`, `mode`, ...) are accepted for compa
 
 ## GuionAR integration (teleprompter)
 
+For the full system design (ParlAR + GuionAR, the socket protocol, and why they're two processes), see [GuionAR/ARCHITECTURE.md](https://github.com/SGGaray/GuionAR/blob/main/ARCHITECTURE.md).
+
 ParlAR can mirror dictated text and voice activity to [GuionAR](https://github.com/SGGaray/GuionAR), an always-on-top teleprompter overlay that shows what you are dictating near the camera.
 
 ```bash
