@@ -44,6 +44,7 @@ class App:
                                     cfg.comando_enviar)
         self.inyector = Inyector(cfg.injector, cfg.type_delay_ms, cfg.notify)
         self.guionar = crear_cliente(cfg.guionar, cfg.guionar_socket)
+        self.salidas = [self.inyector, self.guionar]  # interfaz uniforme: escribir_texto/evento_vad/cerrar
         if cfg.guionar:
             print(f"[guionar] integración activa (socket: "
                   f"{self.guionar.ruta})")
@@ -101,14 +102,16 @@ class App:
             return
         self.grabando.clear()
         self.mic.detener()
-        self.guionar.enviar_vad(False)
+        for s in self.salidas:
+            s.evento_vad(False)
         self.ui.fijar_estado("idle")
         print("[app] ○ detenido")
 
     def salir(self):
         self.detener_grabacion()
         self.saliendo.set()
-        self.guionar.cerrar()
+        for s in self.salidas:
+            s.cerrar()
         self.ui.cerrar()
 
     # ------------------------------------------------------------ trabajador
@@ -136,13 +139,15 @@ class App:
                 continue
             for ev in segmentador.procesar(frame):
                 if ev.tipo == "inicio_voz":
-                    self.guionar.enviar_vad(True)
+                    for s in self.salidas:
+                        s.evento_vad(True)
                     self.ui.fijar_estado("recording")
                 elif ev.tipo == "frame_voz" and cfg.mode == "streaming":
                     self.streaming.aceptar_audio(ev.audio)
                     self._paso_streaming()
                 elif ev.tipo == "frase":
-                    self.guionar.enviar_vad(False)
+                    for s in self.salidas:
+                        s.evento_vad(False)
                     if cfg.mode == "streaming":
                         self._vaciar_streaming()
                     else:
@@ -175,8 +180,7 @@ class App:
         if trozo:
             texto = self.proc.procesar_fragmento(trozo)
             if texto:
-                self.inyector.escribir_texto(texto, registrar=False)
-                self.guionar.enviar_texto(texto)
+                self._escribir_en_todas(texto)
         # vista previa: hipótesis aún no confirmada (dedup en el cliente)
         self.guionar.enviar_parcial(self.streaming.hipotesis_pendiente())
 
@@ -186,8 +190,16 @@ class App:
         if cola:
             texto = self.proc.procesar_fragmento(cola)
             if texto:
-                self.inyector.escribir_texto(texto, registrar=False)
-                self.guionar.enviar_texto(texto)
+                self._escribir_en_todas(texto)
+
+    def _escribir_en_todas(self, texto: str):
+        # el inyector usa registrar=False acá (fragmentos de streaming no
+        # cuentan como "última oración" para el undo); el resto de las
+        # salidas no tiene ese parámetro, por eso queda aparte del loop.
+        self.inyector.escribir_texto(texto, registrar=False)
+        for s in self.salidas:
+            if s is not self.inyector:
+                s.escribir_texto(texto)
 
     # ------------------------------------------------------------ emisión
 
@@ -209,10 +221,13 @@ class App:
             self._necesita_espacio = False
             return
         if p.texto:
+            # caso especial, fuera del loop uniforme: el inyector recibe el
+            # texto con espacio líder condicional (tipeo natural) y guionar
+            # solo se entera si la inyección real tuvo éxito.
             salida = (" " + p.texto) if self._necesita_espacio else p.texto
             if self.inyector.escribir_texto(salida):
                 self._necesita_espacio = True
-                self.guionar.enviar_texto(p.texto)
+                self.guionar.escribir_texto(p.texto)
 
     # ------------------------------------------------------------ control
 

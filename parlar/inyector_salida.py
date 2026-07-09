@@ -166,6 +166,17 @@ class Inyector:
     def reiniciar_registro(self):
         self._registro_oraciones.clear()
 
+    # ------------------------------------------------------- interfaz de salida
+
+    def evento_vad(self, hablando: bool):
+        """No-op: el inyector no reacciona a VAD, solo lo hacen las salidas
+        que dibujan estado (GuionAR)."""
+        pass
+
+    def cerrar(self):
+        """No-op: el inyector no mantiene recursos que cerrar."""
+        pass
+
     # ---------------------------------------------------------------- ayudantes
 
     def _portapapeles(self, texto: str) -> bool:

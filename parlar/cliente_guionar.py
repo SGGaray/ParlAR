@@ -72,7 +72,7 @@ class ClienteGuionAR:
             self._sock = None  # reconexión en el próximo envío
 
     # ---------------------------------------------------------- API pública
-    def enviar_texto(self, texto: str):
+    def escribir_texto(self, texto: str):
         if texto:
             self._enviar({"type": "text", "data": texto[:_MAX_TEXTO]})
             self._ultimo_parcial = None  # el final invalida el parcial
@@ -84,7 +84,7 @@ class ClienteGuionAR:
         self._ultimo_parcial = texto
         self._enviar({"type": "partial", "data": texto})
 
-    def enviar_vad(self, hablando: bool):
+    def evento_vad(self, hablando: bool):
         hablando = bool(hablando)
         if hablando == self._ultimo_vad:
             return
@@ -106,9 +106,9 @@ class ClienteGuionAR:
 class ClienteNulo:
     """No-op cuando la integración está desactivada. Mismo contrato."""
 
-    def enviar_texto(self, texto: str): pass
+    def escribir_texto(self, texto: str): pass
     def enviar_parcial(self, texto: str): pass
-    def enviar_vad(self, hablando: bool): pass
+    def evento_vad(self, hablando: bool): pass
     def enviar_limpiar(self): pass
     def cerrar(self): pass
 
