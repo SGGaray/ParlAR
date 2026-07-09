@@ -21,6 +21,7 @@ from .inyector_salida import Inyector
 from .indicador import crear_ui
 from .motor_transcripcion import TranscriptorStreaming, TranscriptorFrase, MotorWhisper
 from .procesador_texto import ProcesadorTexto
+from .sesion import crear_salida_sesion
 
 
 class App:
@@ -44,7 +45,8 @@ class App:
                                     cfg.comando_enviar)
         self.inyector = Inyector(cfg.injector, cfg.type_delay_ms, cfg.notify)
         self.guionar = crear_cliente(cfg.guionar, cfg.guionar_socket)
-        self.salidas = [self.inyector, self.guionar]  # interfaz uniforme: escribir_texto/evento_vad/cerrar
+        self.sesion = crear_salida_sesion(cfg.guardar_sesion)
+        self.salidas = [self.inyector, self.guionar, self.sesion]  # interfaz uniforme: escribir_texto/evento_vad/cerrar
         if cfg.guionar:
             print(f"[guionar] integración activa (socket: "
                   f"{self.guionar.ruta})")
@@ -223,11 +225,14 @@ class App:
         if p.texto:
             # caso especial, fuera del loop uniforme: el inyector recibe el
             # texto con espacio líder condicional (tipeo natural) y guionar
-            # solo se entera si la inyección real tuvo éxito.
+            # solo se entera si la inyección real tuvo éxito. La sesión sí
+            # registra siempre: es el respaldo, no depende de que xdotool
+            # (o el que sea) haya podido tipear.
             salida = (" " + p.texto) if self._necesita_espacio else p.texto
             if self.inyector.escribir_texto(salida):
                 self._necesita_espacio = True
                 self.guionar.escribir_texto(p.texto)
+            self.sesion.escribir_texto(p.texto)
 
     # ------------------------------------------------------------ control
 

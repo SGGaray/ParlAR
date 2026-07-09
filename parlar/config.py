@@ -68,6 +68,10 @@ class Config:
     guionar: bool = False              # enviar texto/VAD al overlay GuionAR
     guionar_socket: str = ""           # vacío = $XDG_RUNTIME_DIR/guionar.sock
 
+    # --- Sesión (transcript en disco, opcional) ---
+    guardar_sesion: bool = False       # apagado por defecto: dictados son datos
+                                       # sensibles en reposo, ver SECURITY.md
+
     extras: dict = field(default_factory=dict)
 
     @classmethod

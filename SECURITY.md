@@ -30,6 +30,26 @@ Whisper puede "alucinar" texto sobre silencio o ruido de fondo, típicamente fra
 
 Audio, texto y configuración se procesan y guardan localmente. No hay telemetría, no hay llamadas de red salvo, opcionalmente, a un servidor Ollama que vos mismo corrés en `127.0.0.1` si activás el modo de reescritura por IA. `ollama_url` está fijado a loopback por defecto; si lo cambiás a una IP remota, estás asumiendo ese riesgo vos mismo.
 
+### Transcript de sesión (`--guardar-sesion`, apagado por defecto)
+
+Con este flag, cada texto confirmado que dictás se agrega, en texto plano y sin cifrar, a `~/.local/share/parlar/sesiones/AAAA-MM-DD_HHMM.txt` (un archivo por corrida del daemon, ruta real `$XDG_DATA_HOME/parlar/sesiones/` si esa variable está definida). Es un archivo de datos en reposo: cualquier proceso o usuario con acceso a esa carpeta puede leer todo lo que dictaste en esa sesión.
+
+Por eso `guardar_sesion` está en `false` por defecto. Se activa explícitamente:
+
+```json
+{ "guardar_sesion": true }
+```
+
+en `~/.config/parlar/config.json`, o con `--guardar-sesion` en la línea de comandos.
+
+**Borrado:** ParlAR nunca borra estos archivos solo. Son texto plano común, se borran a mano:
+
+```sh
+rm ~/.local/share/parlar/sesiones/*.txt
+```
+
+o el archivo puntual que corresponda. Si activás este flag en una máquina compartida o con disco sin cifrar, tené presente que el transcript queda ahí hasta que lo borres vos.
+
 ## Qué no está mitigado (limitaciones conocidas)
 
 - Otros comandos de voz ("nuevo párrafo", "borrar última oración", "detener dictado") siguen activos por defecto. El impacto de ejecutarlos por accidente es bajo (insertan una línea, borran la última oración inyectada, o detienen la grabación), a diferencia de "enviar".

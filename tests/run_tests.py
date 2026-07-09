@@ -258,6 +258,53 @@ def test_inyector_nueva_linea():
                   comandos.count("28:1") == 2 and comandos.count("28:0") == 2, comandos)
 
 
+# ---------------------------------------------------------------- SalidaSesion
+
+def test_salida_sesion():
+    import shutil
+    import tempfile
+    from pathlib import Path
+    from parlar.sesion import SalidaSesion, SesionNula, crear_salida_sesion
+
+    tmp = Path(tempfile.mkdtemp(prefix="parlar-sesion-test-"))
+    try:
+        sesion = SalidaSesion(directorio=tmp)
+        check("crea el directorio de sesiones", tmp.is_dir())
+        check("nombre de archivo con patrón AAAA-MM-DD_HHMM.txt",
+              sesion.ruta.name.endswith(".txt") and len(sesion.ruta.stem) == 15,
+              sesion.ruta.name)
+
+        ok1 = sesion.escribir_texto("hola mundo")
+        ok2 = sesion.escribir_texto("segunda línea")
+        check("escribir_texto reporta éxito", ok1 and ok2)
+
+        contenido = sesion.ruta.read_text(encoding="utf-8")
+        check("ambas líneas quedan en el archivo",
+              contenido == "hola mundo\nsegunda línea\n", repr(contenido))
+
+        check("texto vacío no escribe nada", sesion.escribir_texto("") is False)
+        sesion.evento_vad(True)  # no debe lanzar ni afectar el archivo
+
+        sesion.cerrar()
+        check("cerrar no lanza si se llama dos veces",
+              sesion.cerrar() is None)
+
+        nula = crear_salida_sesion(False)
+        check("crear_salida_sesion(False) devuelve SesionNula",
+              isinstance(nula, SesionNula))
+        check("SesionNula.escribir_texto no crea archivos",
+              nula.escribir_texto("no debería persistir") is False)
+        check("directorio de tmp no tiene archivos extra de la nula",
+              len(list(tmp.iterdir())) == 1)  # solo el de 'sesion'
+
+        activa = crear_salida_sesion(True, directorio=tmp)
+        check("crear_salida_sesion(True) devuelve SalidaSesion",
+              isinstance(activa, SalidaSesion))
+        activa.cerrar()
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 if __name__ == "__main__":
     test_segmentador()
     test_procesador_texto()
@@ -265,6 +312,7 @@ if __name__ == "__main__":
     test_confirmacion_streaming()
     test_recorte_streaming()
     test_inyector_nueva_linea()
+    test_salida_sesion()
     print()
     if FALLAS:
         print(f"{len(FALLAS)} FALLARON: {FALLAS}")

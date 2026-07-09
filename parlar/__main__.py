@@ -43,6 +43,11 @@ def main():
                     default=cfg.guionar_socket,
                     help="ruta del socket de GuionAR "
                          "(por defecto: $XDG_RUNTIME_DIR/guionar.sock)")
+    ap.add_argument("--guardar-sesion", "--save-session", dest="guardar_sesion",
+                    action="store_true", default=cfg.guardar_sesion,
+                    help="guarda cada texto confirmado en "
+                         "~/.local/share/parlar/sesiones/AAAA-MM-DD_HHMM.txt "
+                         "(apagado por defecto, ver SECURITY.md)")
     ap.add_argument("--guardar-config", "--save-config", dest="guardar_config",
                     action="store_true",
                     help="persiste los flags actuales en ~/.config/parlar/config.json")
@@ -58,6 +63,7 @@ def main():
         cfg.overlay = False
     cfg.guionar = args.guionar
     cfg.guionar_socket = args.guionar_socket
+    cfg.guardar_sesion = args.guardar_sesion
     if args.guardar_config:
         cfg.save()
         print("[config] guardada")
