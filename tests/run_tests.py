@@ -81,7 +81,7 @@ def test_segmentador():
 def test_procesador_texto():
     p = ProcesadorTexto(remove_fillers=True, voice_commands=True)
 
-    r = p.procesar_frase("um so this is , a test.it works")
+    r = p.procesar_frase("um so this is , a test. it works")
     check("muletillas eliminadas", "um" not in r.texto.lower(), repr(r.texto))
     check("espaciado normalizado", ", a test. It works" in r.texto, repr(r.texto))
     check("oración capitalizada", r.texto.startswith("So"), repr(r.texto))
@@ -120,7 +120,7 @@ def test_espanol():
 
     # espaciado de aperturas: espacio antes, nunca después
     r = p.procesar_frase("hola¿ qué tal")
-    check("aperturas: 'Hola ¿qué'", "Hola ¿qué" in r.texto, repr(r.texto))
+    check("aperturas: 'hola ¿qué'", "hola ¿qué" in r.texto, repr(r.texto))
 
     # comandos español-primero
     r = p.procesar_frase("punto y aparte")

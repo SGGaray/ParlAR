@@ -12,7 +12,7 @@ Haciendo ingeniería inversa del comportamiento observable de Wispr Flow, la arq
 4. **Motor STT.** Modelo de la familia Whisper. Dos estrategias:
    - *Modo por frase (chunked):* transcribe cada segmento VAD al cerrarse. Simple, preciso; latencia = umbral de silencio + inferencia.
    - *Modo streaming:* re-transcribe una ventana creciente cada ~1s y confirma solo las palabras en las que dos hipótesis consecutivas coinciden (política "LocalAgreement" del paper whisper_streaming). Las palabras aparecen mientras seguís hablando.
-5. **Post-procesamiento.** Whisper ya emite puntuación y mayúsculas; una capa de limpieza normaliza espacios, mayúsculas de oración y muletillas, e interpreta comandos de voz ("nuevo párrafo", "borra la última oración"). Las herramientas de nube agregan una pasada de reescritura con LLM; en local esto es opcional (por reglas, o con un modelo de Ollama si el usuario corre uno, siempre 100% local).
+5. **Post-procesamiento.** Whisper ya emite puntuación y mayúsculas; una capa conservadora protege primero tokens estructurados (números, URLs, correos, dominios, versiones, identificadores y código), normaliza solo prosa inequívoca, quita muletillas aisladas e interpreta comandos de voz. La reescritura es opcional y explícita (por reglas acotadas, o con un modelo de Ollama local).
 6. **Inyección a nivel sistema.** El texto limpio se tipea en la ventana con foco usando pulsaciones sintéticas del SO. En Linux: `xdotool` (X11), `wtype`/`ydotool` (Wayland).
 7. **Indicador mínimo.** Un puntito siempre visible que muestra el estado de grabación.
 
@@ -61,7 +61,8 @@ mic → PCM int16 @16kHz → frames de 20ms → puerta VAD
     → (modo frase)     buffer de frase completa a los 600ms de silencio → whisper → texto
     → (modo streaming) ventana creciente cada 1.0s → whisper(word_timestamps)
                         → confirmación LocalAgreement-2 → texto incremental
-    → procesador_texto: normalización de espacios/mayúsculas (con ¿ ¡ del español),
+    → filtro de frase: patrón conocido + baja confianza del mismo segmento
+    → procesador_texto: protección de tokens estructurados, limpieza conservadora,
                         parseo de comandos de voz, reescritura opcional
     → inyector: pulsaciones sintéticas en la ventana con foco (X11 o Wayland)
 ```
@@ -90,6 +91,8 @@ mic → PCM int16 @16kHz → frames de 20ms → puerta VAD
 - El modelo se carga una vez al iniciar el daemon y queda caliente. `beam_size=1` (greedy) en streaming, `beam_size=5` en la pasada final por frase.
 - GPU: autodetectada. CUDA → float16; CPU → int8.
 - Idioma fijado en español por defecto (`language = "es"`), lo que evita la detección de idioma en cada decodificación y reduce latencia.
+- En modo frase, cada segmento se evalúa de manera independiente. Un patrón conocido de alucinación solo se descarta si además cumple simultáneamente `no_speech_prob > 0.6` y `avg_logprob < -1.0`; ni el patrón ni la baja confianza por separado borran texto. No se inventan scores nuevos ni se aplica este filtro al camino streaming.
+- El post-procesador sustituye temporalmente tokens con sintaxis estructurada por marcadores libres de colisiones, limpia la prosa restante y restaura cada token byte por byte. Ante puntuación ambigua (por ejemplo, `test.it`) prioriza fidelidad. La mayúscula inicial solo se agrega tras una transformación inequívoca —muletilla eliminada, regla de reescritura aplicada o signo `¿`/`¡` inicial—; el modo `none` no invoca Ollama.
 
 ## 6. Manejo de fallas y sesiones largas
 

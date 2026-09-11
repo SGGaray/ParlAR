@@ -65,10 +65,8 @@ class MotorWhisper:
         return list(segments)
 
 
-# Umbral heurístico: un segmento se descarta como alucinación probable solo
-# si el modelo señala BAJA confianza de que haya voz (no_speech_prob alto)
-# Y BAJA confianza en el texto que generó igual (avg_logprob muy negativo).
-# Exigir las dos condiciones evita descartar voz real y susurrada.
+# Umbral heurístico: la baja confianza acústica no basta por sí sola para
+# borrar texto. Se combina con un patrón conocido y se decide por segmento.
 _UMBRAL_NO_SPEECH = 0.6
 _UMBRAL_LOGPROB = -1.0
 
@@ -91,13 +89,16 @@ class TranscriptorFrase:
         segments = self.motor.decodificar(audio)
         partes = []
         for s in segments:
-            if s.no_speech_prob > _UMBRAL_NO_SPEECH and s.avg_logprob < _UMBRAL_LOGPROB:
-                continue  # probable alucinación: silencio con baja confianza
-            partes.append(s.text.strip())
-        texto = " ".join(partes).strip()
-        if _ALUCINACIONES_CONOCIDAS.search(texto):
-            return ""
-        return texto
+            texto_segmento = s.text.strip()
+            baja_confianza = (
+                s.no_speech_prob > _UMBRAL_NO_SPEECH
+                and s.avg_logprob < _UMBRAL_LOGPROB
+            )
+            sospechoso = bool(_ALUCINACIONES_CONOCIDAS.search(texto_segmento))
+            if baja_confianza and sospechoso:
+                continue
+            partes.append(texto_segmento)
+        return " ".join(partes).strip()
 
 
 @dataclass

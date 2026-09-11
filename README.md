@@ -69,7 +69,22 @@ Decilos exactos, como frase aislada: "nuevo párrafo", "punto y aparte", "nueva 
 
 ## Modos de reescritura
 
-`--reescritura formal|conciso|correo`. Por reglas por defecto, optimizadas para español (ok → de acuerdo, porfa → por favor, finde → fin de semana; en conciso se limpian "básicamente", "o sea", "digamos", "viste"). Si corrés [Ollama](https://ollama.com) local, poné `ollama_model` en la config (ej. `"llama3.2:3b"`) y la reescritura pasa por ahí, siempre 127.0.0.1.
+Sin reescritura (el valor por defecto), la limpieza es conservadora: preserva
+decimales, URLs, correos, dominios, versiones, identificadores, acrónimos y
+código tal como los entregó Whisper. Solo corrige espaciado inequívoco,
+muletillas aisladas y signos de apertura españoles. Una frase que coincide con
+un comando pero está entre comillas se conserva como texto literal.
+
+`--reescritura formal|conciso|correo` activa transformaciones explícitas. Las
+reglas locales se limitan a equivalencias seguras (ok → de acuerdo, porfa → por
+favor, finde → fin de semana; en conciso se limpian marcadores discursivos). Si
+corrés [Ollama](https://ollama.com) local, poné `ollama_model` en la config (ej.
+`"llama3.2:3b"`) y la reescritura pasa por ahí, siempre 127.0.0.1. Como toda
+reescritura generativa, esa opción puede cambiar la formulación del dictado.
+
+En modo frase, los patrones conocidos de alucinación se descartan únicamente
+cuando el mismo segmento también tiene baja confianza acústica y textual. Un
+URL o una frase como "suscríbete" con buena confianza se conserva.
 
 ## Configuración
 
@@ -146,6 +161,7 @@ parlar/
 │   ├── indicador.py             punto tkinter siempre visible
 │   └── app.py                   orquestador / máquina de estados
 └── tests/                       lógica: python tests/run_tests.py
+                                fidelidad: python -m unittest tests.test_text_fidelity
                                 lifecycle: python -m unittest tests.test_lifecycle
                                 streaming: python -m unittest tests.test_streaming_alignment
                                 backpressure: python -m unittest tests.test_backpressure

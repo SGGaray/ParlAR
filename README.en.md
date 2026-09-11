@@ -86,6 +86,18 @@ On Wayland, bind `parlarctl alternar` to a keyboard shortcut in your desktop env
 
 English command aliases (`toggle`, `status`, `mode`, ...) are accepted for compatibility.
 
+With rewriting disabled (the default), cleanup is conservative: decimals,
+URLs, email addresses, domains, versions, identifiers, acronyms, and code are
+kept exactly as Whisper produced them. Only unambiguous prose spacing,
+isolated fillers, and Spanish opening punctuation are normalized. A quoted
+phrase that resembles a voice command remains literal text.
+
+Formal, concise, and email modes are explicit opt-ins. Local rules only apply
+small, context-safe substitutions; configuring a local Ollama model enables
+generative rewriting and may change the wording. In utterance mode, known
+hallucination phrases are filtered only when that same segment also has low
+acoustic and text confidence, so confident literal speech is preserved.
+
 ## GuionAR integration (teleprompter)
 
 For the full system design (ParlAR + GuionAR, the socket protocol, and why they're two processes), see [GuionAR/ARCHITECTURE.md](https://github.com/SGGaray/GuionAR/blob/main/ARCHITECTURE.md).
@@ -113,6 +125,7 @@ The integration is fire-and-forget: if GuionAR is not running, ParlAR works exac
 
 ```bash
 python tests/run_tests.py
+python -m unittest tests.test_text_fidelity
 python -m unittest tests.test_lifecycle
 python -m unittest tests.test_streaming_alignment
 python -m unittest tests.test_backpressure
@@ -120,7 +133,8 @@ python -m unittest tests.test_backpressure
 
 The suites also cover session lifecycle, deterministic concurrency, mode
 boundaries, shutdown ordering, worker health, microphone ownership, bounded
-capture backpressure, and gap recovery. No audio hardware required.
+capture backpressure, gap recovery, structured-token fidelity, safe rewrite
+rules, and confidence-gated hallucination filtering. No audio hardware required.
 
 Capture keeps a bounded queue of roughly ten seconds. If the worker falls
 behind, the oldest frames are dropped to preserve recent audio. ParlAR cannot

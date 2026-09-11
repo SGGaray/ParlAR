@@ -40,6 +40,14 @@ _PATRONES_CMD = [
 ]
 
 _FIN_ORACION = re.compile(r"([.!?])\s+([¿¡]?)(\w)")
+_TOKEN_NO_ESPACIO = re.compile(r"\S+")
+_ESTRUCTURA_NUMERICA = re.compile(
+    r"^[€$£¥]?\d+(?:[.,:]\d+)+(?:%|[a-zA-Z]+)?$|"
+    r"^[€$£¥]?\d+(?:%|[a-zA-Z]+)$|^\d{2,4}(?:-\d{1,2}){1,2}$"
+)
+_PARES_CITAS = {
+    '"': '"', "'": "'", "“": "”", "‘": "’", "«": "»",
+}
 
 
 @dataclass
@@ -60,14 +68,73 @@ def _normalizar_espaciado(texto: str) -> str:
     return texto
 
 
-def _capitalizar_oraciones(texto: str) -> str:
+def _es_token_estructurado(token: str) -> bool:
+    """Reconoce sintaxis donde puntuación/caso son datos, no prosa.
+
+    La regla es deliberadamente amplia: ante un token ambiguo como
+    ``test.it`` se prioriza fidelidad y se deja intacto.
+    """
+    if not token:
+        return False
+    if _ESTRUCTURA_NUMERICA.fullmatch(token):
+        return True
+    if token.isupper() and any(caracter.isalpha() for caracter in token):
+        return True
+    if any(marca in token for marca in ("://", "@", "/", "_", "+", "#")):
+        return True
+    if re.search(r"\w\.\w", token, re.UNICODE):
+        return True
+    if re.search(r"\w-\w", token, re.UNICODE):
+        return True
+    return bool(re.search(r"\w\([^\s)]*\)", token, re.UNICODE))
+
+
+def _proteger_estructura(texto: str):
+    """Reemplaza tokens estructurados por marcadores sin colisiones."""
+    prefijo = "\ue000PARLAR"
+    while prefijo in texto:
+        prefijo += "X"
+    reemplazos = {}
+
+    def proteger(match):
+        token = match.group(0)
+        if not _es_token_estructurado(token):
+            return token
+        marcador = f"{prefijo}{len(reemplazos)}\ue001"
+        reemplazos[marcador] = token
+        return marcador
+
+    return _TOKEN_NO_ESPACIO.sub(proteger, texto), reemplazos
+
+
+def _restaurar_estructura(texto: str, reemplazos) -> str:
+    for marcador, original in reemplazos.items():
+        texto = texto.replace(marcador, original)
+    return texto
+
+
+def _quitar_muletillas(texto: str):
+    """Quita muletillas sin confundir acrónimos en mayúsculas."""
+    eliminadas = 0
+
+    def quitar(match):
+        nonlocal eliminadas
+        if match.group(1).isupper():
+            return match.group(0)
+        eliminadas += 1
+        return ""
+
+    return MULETILLAS.sub(quitar, texto), eliminadas
+
+
+def _capitalizar_oraciones(texto: str, *, inicio: bool = False) -> str:
     if not texto:
         return texto
     # inicio del texto, contemplando ¿ o ¡ inicial
     if texto[0] in "¿¡":
         if len(texto) > 1:
             texto = texto[0] + texto[1].upper() + texto[2:]
-    else:
+    elif inicio:
         texto = texto[0].upper() + texto[1:]
     return _FIN_ORACION.sub(
         lambda m: m.group(1) + " " + m.group(2) + m.group(3).upper(), texto
@@ -93,19 +160,24 @@ class ProcesadorTexto:
         if not crudo:
             return Procesado()
 
-        if self.remove_fillers and _SOLO_MULETILLA.match(crudo):
-            return Procesado()
+        if self.remove_fillers:
+            solo_muletilla = _SOLO_MULETILLA.match(crudo)
+            if solo_muletilla and not solo_muletilla.group(1).isupper():
+                return Procesado()
 
         if self.voice_commands:
             cmd = self._buscar_comando(crudo)
             if cmd is not None:
                 return cmd
 
-        texto = crudo
+        texto, estructura = _proteger_estructura(crudo)
+        muletillas_eliminadas = 0
         if self.remove_fillers:
-            texto = MULETILLAS.sub("", texto)
+            texto, muletillas_eliminadas = _quitar_muletillas(texto)
         texto = _normalizar_espaciado(texto)
-        texto = _capitalizar_oraciones(texto)
+        texto = _capitalizar_oraciones(
+            texto, inicio=bool(muletillas_eliminadas))
+        texto = _restaurar_estructura(texto, estructura)
 
         if self.rewrite_mode != "none" and texto:
             texto = self._reescribir(texto)
@@ -115,13 +187,18 @@ class ProcesadorTexto:
     def procesar_fragmento(self, crudo: str) -> str:
         """Limpieza liviana para palabras incrementales (ya confirmadas). Sin
         reescritura a nivel oración porque la oración puede estar incompleta."""
+        texto, estructura = _proteger_estructura(crudo)
         if self.remove_fillers:
-            crudo = MULETILLAS.sub("", crudo)
-        return re.sub(r" {2,}", " ", crudo)
+            texto, _eliminadas = _quitar_muletillas(texto)
+        texto = re.sub(r" {2,}", " ", texto)
+        return _restaurar_estructura(texto, estructura)
 
     # ---------------------------------------------------------------- interno
 
     def _buscar_comando(self, crudo: str) -> Optional[Procesado]:
+        if (len(crudo) >= 2 and crudo[0] in _PARES_CITAS
+                and crudo[-1] == _PARES_CITAS[crudo[0]]):
+            return None
         norm = re.sub(r"[^\w\sáéíóúñü]", "", crudo).strip().lower()
         for pat, (cmd, carga) in _PATRONES_CMD:
             if pat.match(norm):
@@ -137,24 +214,33 @@ class ProcesadorTexto:
             salida = self._reescribir_ollama(texto)
             if salida:
                 return salida
+            # Respuesta vacía o servicio inaccesible: fallback determinista.
         return self._reescribir_reglas(texto)
 
     def _reescribir_reglas(self, texto: str) -> str:
+        protegido, estructura = _proteger_estructura(texto)
         modo = self.rewrite_mode
         if modo == "concise":
             # muletillas discursivas: español primero, inglés de respaldo
-            texto = re.sub(r"\b(b[aá]sicamente|literalmente|o sea|digamos|viste|"
-                           r"basically|actually|literally|you know|i mean|kind of|sort of)\b[,]?\s*",
-                           "", texto, flags=re.I)
-            texto = _normalizar_espaciado(texto)
-            return _capitalizar_oraciones(texto)
+            protegido, n_general = re.subn(
+                r"\b(b[aá]sicamente|literalmente|o sea|digamos|basically|"
+                r"actually|literally|you know|i mean|kind of|sort of)\b[,]?\s*",
+                "", protegido, flags=re.IGNORECASE)
+            # "viste" solo es discursivo al final y no después de "no".
+            protegido, n_viste = re.subn(
+                r"(?<!no )\bviste\b[,.;:!?]?\s*$", "", protegido,
+                flags=re.IGNORECASE)
+            if not (n_general or n_viste):
+                return texto
+            protegido = _normalizar_espaciado(protegido)
+            protegido = _capitalizar_oraciones(protegido, inicio=True)
+            return _restaurar_estructura(protegido, estructura)
         if modo in ("formal", "email"):
             # español
             subs_es = {
                 r"\bok\b|\bokey\b|\bokay\b": "de acuerdo",
                 r"\bporfa\b|\bporfis\b": "por favor",
                 r"\bfinde\b": "fin de semana",
-                r"\bdale\b": "de acuerdo",
                 r"\bpa'\b|\bpa\b(?=\s+\w)": "para",
             }
             # inglés (respaldo, inofensivo sobre texto en español)
@@ -167,11 +253,21 @@ class ProcesadorTexto:
                 r"\bisn't\b": "is not", r"\bI'm\b": "I am",
                 r"\bit's\b": "it is", r"\bthat's\b": "that is",
             }
+            cambios = 0
             for pat, rep in subs_es.items():
-                texto = re.sub(pat, rep, texto, flags=re.I)
+                protegido, n = re.subn(
+                    pat, rep, protegido, flags=re.IGNORECASE)
+                cambios += n
             for pat, rep in subs_en.items():
-                texto = re.sub(pat, rep, texto, flags=re.I if pat not in (r"\bI'm\b",) else 0)
-            return _capitalizar_oraciones(_normalizar_espaciado(texto))
+                protegido, n = re.subn(
+                    pat, rep, protegido,
+                    flags=re.IGNORECASE if pat not in (r"\bI'm\b",) else 0)
+                cambios += n
+            if not cambios:
+                return texto
+            protegido = _capitalizar_oraciones(
+                _normalizar_espaciado(protegido), inicio=True)
+            return _restaurar_estructura(protegido, estructura)
         return texto
 
     def _reescribir_ollama(self, texto: str) -> Optional[str]:
