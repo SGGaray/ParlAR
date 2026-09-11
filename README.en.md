@@ -113,9 +113,12 @@ The integration is fire-and-forget: if GuionAR is not running, ParlAR works exac
 
 ```bash
 python tests/run_tests.py
+python -m unittest tests.test_lifecycle
 ```
 
-The suite covers the VAD segmenter, Spanish text processing, the streaming commit policy (against a scripted fake engine), injection command construction, and the backward-compatibility shim. No audio hardware required.
+The suites also cover session lifecycle, deterministic concurrency, mode
+boundaries, shutdown ordering, worker health, and microphone ownership. No
+audio hardware required.
 
 ## Project status
 

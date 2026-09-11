@@ -2,7 +2,8 @@
 
 gris    = inactivo
 rojo    = grabando
-ámbar   = transcribiendo
+ámbar   = transcribiendo/deteniendo
+magenta = error operativo
 
 tkinter corre en el hilo PRINCIPAL (requisito de tk); los hilos de trabajo
 empujan cambios de estado a través de una variable protegida, sondeada con
@@ -16,7 +17,12 @@ interno compartido con app.py; se mantienen en inglés a propósito.
 import threading
 import time
 
-COLORES = {"idle": "#6b7280", "recording": "#dc2626", "transcribing": "#f59e0b"}
+COLORES = {
+    "idle": "#6b7280",
+    "recording": "#dc2626",
+    "transcribing": "#f59e0b",
+    "error": "#db2777",
+}
 
 
 class Indicador:

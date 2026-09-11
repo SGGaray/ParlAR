@@ -95,3 +95,26 @@ mic → PCM int16 @16kHz → frames de 20ms → puerta VAD
 - Un tope de frase (30s) evita buffers sin límite si el VAD nunca ve silencio (ambientes ruidosos).
 - Los errores del subproceso de inyección degradan a copia al portapapeles más una notificación de escritorio, en vez de morir.
 - El daemon es candidato a servicio systemd de usuario (unit incluida) con `Restart=on-failure`.
+
+## 7. Lifecycle, sesiones y ownership
+
+Cada apertura válida del micrófono crea una generación monotónica. El
+callback de PortAudio captura esa generación y cada frame encolado queda
+etiquetado con ella; el worker descarta cualquier frame cuya generación ya no
+sea la activa. Las transiciones pedidas por UI, socket de control y hotkeys se
+serializan en `App`, mientras que el worker conserva ownership exclusivo del
+`Segmentador` y del estado de las estrategias de transcripción.
+
+Los efectos externos (inyector, GuionAR, transcript y VAD observable) validan
+la generación bajo el mismo lock que protege la escritura. STOP deja de
+aceptar audio y el worker drena la cola y finaliza una frase abierta. Un START
+pedido mientras ese drenaje sigue activo reemplaza la sesión e invalida sus
+resultados pendientes. Un cambio de modo se guarda como solicitud escalar y
+se adopta únicamente entre frases; una frase ya iniciada termina con su
+estrategia original.
+
+Shutdown es terminal: cambia primero a `SHUTTING_DOWN`, invalida la sesión,
+cierra el mic, espera al único worker serial y recién después cierra control,
+atajos, sinks y UI. Un fallo inesperado del worker deja el producto en
+`ERROR`, apaga el indicador de grabación y se informa por el canal de control;
+no se reinicia el worker automáticamente.

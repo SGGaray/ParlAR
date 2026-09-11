@@ -29,7 +29,7 @@ Después:
 | Alternar grabación | Ctrl+Alt+D | `./parlarctl alternar` (asignalo a un atajo del DE) |
 | Salir del daemon | Ctrl+Alt+Q | `./parlarctl salir` |
 | Estado | - | `./parlarctl estado` |
-| Cambiar modo en vivo | - | `./parlarctl modo streaming` / `modo frase` |
+| Cambiar modo en vivo | - | `./parlarctl modo streaming` / `modo frase` (se aplica en la próxima frontera de frase) |
 | Reescritura en vivo | - | `./parlarctl reescritura formal` (ninguna/formal/conciso/correo) |
 | Alternar con el mouse | click izquierdo en el punto | igual |
 | Mover el indicador | arrastrar con click derecho | igual |
@@ -136,5 +136,6 @@ parlar/
 │   ├── control.py               servidor de socket unix + cliente parlarctl
 │   ├── indicador.py             punto tkinter siempre visible
 │   └── app.py                   orquestador / máquina de estados
-└── tests/                       correr: python tests/run_tests.py
+└── tests/                       lógica: python tests/run_tests.py
+                                lifecycle: python -m unittest tests.test_lifecycle
 ```
