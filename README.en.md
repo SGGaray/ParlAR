@@ -44,16 +44,33 @@ optional rewrite feature can call Ollama at loopback by default; changing
 
 Architecture details, component diagram, and latency strategy: [arquitectura.md](arquitectura.md) (Spanish).
 
-## Installation
+## Requirements and installation
 
-Tested on Fedora; Ubuntu/Debian supported by the installer.
+The checkout installer supports Debian/Ubuntu and Fedora desktop sessions on
+X11 or Wayland. ParlAR requires Python 3.12 or newer; CI validates 3.12 and the
+current local development environment also validates 3.14. PipeWire or
+PulseAudio must expose an input device to PortAudio.
+
+Required system components are Python, venv, and PortAudio. Desktop
+integrations are optional alternatives: tkinter, notifications, X11/Wayland
+typing tools, clipboard tools, and compilation headers. Required Python
+dependencies are faster-whisper, sounddevice, numpy, and pynput. `webrtcvad`
+is optional; a tested adaptive energy VAD is used when it is unavailable.
 
 ```bash
-git clone git@github.com:SGGaray/parlar.git
+git clone https://github.com/SGGaray/parlar.git
 cd parlar
-./setup.sh                 # system deps, venv, Python deps, model download
+./setup.sh                 # system packages, venv, and Python dependencies
 source .venv/bin/activate
+./scripts/check.sh         # complete hardware-free gate
+python -m parlar           # first start; downloads Whisper small if absent
 ```
+
+Setup reuses a valid `.venv` and does not delete configuration, models, or
+transcripts. It refuses to remove an incomplete `.venv`. Use
+`--skip-system-packages` when system dependencies are already installed. Model
+provisioning is separate: first use downloads the configured model, or
+`./setup.sh --skip-system-packages --preload-model` preloads `small` explicitly.
 
 NVIDIA GPU note: if faster-whisper reports `libcublas.so.12 not found`, install the CUDA runtime libraries inside the venv and expose them:
 
@@ -61,10 +78,10 @@ NVIDIA GPU note: if faster-whisper reports `libcublas.so.12 not found`, install 
 pip install nvidia-cublas-cu12 nvidia-cudnn-cu12
 ```
 
-Then append to `.venv/bin/activate` (adjust the Python version to yours):
+Then append to `.venv/bin/activate`:
 
 ```bash
-SITE="$VIRTUAL_ENV/lib64/python3.14/site-packages"
+SITE="$(python -c 'import site; print(site.getsitepackages()[0])')"
 if [ -d "$SITE/nvidia/cublas/lib" ]; then
     export LD_LIBRARY_PATH="$SITE/nvidia/cublas/lib:$SITE/nvidia/cudnn/lib:$LD_LIBRARY_PATH"
 fi
@@ -162,19 +179,15 @@ are outside the ParlAR process and its storage guarantees.
 ## Running the tests
 
 ```bash
-python tests/run_tests.py
-python -m unittest tests.test_text_fidelity
-python -m unittest tests.test_lifecycle
-python -m unittest tests.test_streaming_alignment
-python -m unittest tests.test_backpressure
-python -m unittest tests.test_delivery_output
-python -m unittest tests.test_guionar_ipc
-python -m unittest tests.test_control_ipc
-python -m unittest tests.test_config_validation
-python -m unittest tests.test_privacy_session
+./scripts/check.sh
 ```
 
-The suites also cover session lifecycle, deterministic concurrency, mode
+This is the same gate CI runs: shell syntax, Python compilation, CLI smokes,
+58 legacy checks, every unittest suite, Unix IPC, and `git diff --check`. It
+does not require audio hardware, a display, a downloaded model, Ollama,
+GuionAR, clipboard, or a real systemd session.
+
+The suites cover session lifecycle, deterministic concurrency, mode
 boundaries, shutdown ordering, worker health, microphone ownership, bounded
 capture backpressure, gap recovery, structured-token fidelity, safe rewrite
 rules, and confidence-gated hallucination filtering. No audio hardware required.
@@ -188,9 +201,26 @@ discontinuities, queue depth, and estimated backlog. Once the gap boundary is
 handled, health becomes `recuperado-con-perdida` while the loss remains
 visible for the rest of that session.
 
+## Optional user service
+
+```bash
+./setup.sh --skip-system-packages --install-service
+systemctl --user enable --now parlar
+```
+
+Setup renders the unit with the checkout's real absolute path and venv Python,
+keeps `UMask=0077`, and will not replace an unrelated unit. Repeating it for
+the same checkout is a no-op. A user service still depends on desktop-specific
+audio, display, X11/Wayland, and clipboard access; launch ParlAR from a terminal
+inside that desktop session if those variables are unavailable to systemd.
+
+For later manual hardware validation, check microphone open, utterance mode,
+streaming, stop, restart, optional GuionAR, clipboard fallback, and shutdown.
+
 ## Project status
 
-**v0.2.0, functional and validated on real hardware** (Fedora, RTX 2050, X11), but early:
+**v0.2.0, experimental.** It has been exercised on Fedora/X11 hardware, but
+still requires broader fresh-install and desktop validation:
 
 - No graphical UI yet beyond the minimal overlay indicator; configuration is JSON plus CLI flags
 - The output system is not yet fully decoupled (injection is wired directly into the pipeline; the GuionAR client is the first decoupled output)

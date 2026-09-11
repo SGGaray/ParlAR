@@ -1,91 +1,161 @@
 #!/usr/bin/env bash
-# Instalación de ParlAR: dependencias del sistema + venv de Python.
-# Objetivo principal Ubuntu/Debian; Fedora también soportado.
+# Instalación reproducible de ParlAR desde un checkout local.
 set -euo pipefail
-cd "$(dirname "$0")"
 
-echo "==> Instalación de ParlAR"
+REPO_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+cd "$REPO_DIR"
 
-# ------------------------------------------------------ dependencias de sistema
-instalar_debian() {
-    sudo apt-get update
-    sudo apt-get install -y \
-        python3 python3-venv python3-dev python3-tk \
-        portaudio19-dev libnotify-bin \
-        xdotool xclip
-    # Herramientas de tipeo para Wayland (en Ubuntu reciente; ignorar si faltan)
-    sudo apt-get install -y wtype wl-clipboard ydotool 2>/dev/null || \
-        echo "    (wtype/ydotool no están en tus repos; no importa si usás X11)"
+INSTALL_SERVICE=0
+PRELOAD_MODEL=0
+SKIP_SYSTEM=0
+
+uso() {
+    cat <<'EOF'
+Uso: ./setup.sh [opciones]
+
+  --install-service       genera la unit de usuario con la ruta real del checkout
+  --preload-model         descarga/precarga Whisper small (requiere red, ~460 MB)
+  --skip-system-packages  omite apt/dnf; las dependencias del sistema ya deben existir
+  -h, --help              muestra esta ayuda sin modificar el sistema
+EOF
 }
 
-instalar_fedora() {
-    sudo dnf install -y \
-        python3 python3-devel python3-tkinter \
-        portaudio-devel libnotify \
-        xdotool xclip wtype wl-clipboard ydotool 2>/dev/null || true
+while (($#)); do
+    case "$1" in
+        --install-service) INSTALL_SERVICE=1 ;;
+        --preload-model) PRELOAD_MODEL=1 ;;
+        --skip-system-packages) SKIP_SYSTEM=1 ;;
+        -h|--help) uso; exit 0 ;;
+        *) echo "!! opción desconocida: $1" >&2; uso >&2; exit 2 ;;
+    esac
+    shift
+done
+
+instalar_opcionales() {
+    local gestor="$1"
+    shift
+    local paquete
+    for paquete in "$@"; do
+        if ! sudo "$gestor" install -y "$paquete"; then
+            echo "!! opcional no instalado: $paquete" >&2
+        fi
+    done
 }
 
-if command -v apt-get >/dev/null 2>&1; then
-    instalar_debian
-elif command -v dnf >/dev/null 2>&1; then
-    instalar_fedora
+echo "==> Instalación de ParlAR en $REPO_DIR"
+
+if ((SKIP_SYSTEM == 0)); then
+    if command -v apt-get >/dev/null 2>&1; then
+        echo "==> Dependencias requeridas (Debian/Ubuntu)"
+        sudo apt-get update
+        sudo apt-get install -y python3 python3-venv portaudio19-dev
+        echo "==> Integraciones opcionales de escritorio y compilación"
+        instalar_opcionales apt-get \
+            python3-dev python3-tk libnotify-bin xdotool xclip \
+            wtype wl-clipboard ydotool
+    elif command -v dnf >/dev/null 2>&1; then
+        echo "==> Dependencias requeridas (Fedora)"
+        sudo dnf install -y python3 portaudio-devel
+        echo "==> Integraciones opcionales de escritorio y compilación"
+        instalar_opcionales dnf \
+            python3-devel python3-tkinter libnotify xdotool xclip \
+            wtype wl-clipboard ydotool
+    else
+        echo "!! distribución no soportada automáticamente." >&2
+        echo "   Usá Debian/Ubuntu o Fedora, o instalá las dependencias y repetí" >&2
+        echo "   con --skip-system-packages." >&2
+        exit 1
+    fi
 else
-    echo "!! Distro no soportada. Instalá a mano: cabeceras de portaudio, tk,"
-    echo "   xdotool (X11) o wtype/ydotool (Wayland), xclip/wl-clipboard, libnotify."
+    echo "==> Dependencias del sistema omitidas por solicitud"
 fi
 
-# ------------------------------------------------------ entorno de Python
-echo "==> Creando entorno virtual"
-python3 -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip wheel
+python3 - <<'PY'
+import sys
+if sys.version_info < (3, 12):
+    raise SystemExit(
+        f"ParlAR requiere Python 3.12 o posterior; encontrado {sys.version.split()[0]}"
+    )
+print(f"==> Python {sys.version.split()[0]}")
+PY
 
-echo "==> Instalando dependencias de Python"
-pip install -r requirements.txt
+if [[ -x .venv/bin/python ]]; then
+    echo "==> Reutilizando entorno virtual existente"
+elif [[ -e .venv ]]; then
+    echo "!! .venv existe pero no contiene un Python ejecutable; no se modifica." >&2
+    exit 1
+else
+    echo "==> Creando entorno virtual"
+    python3 -m venv .venv
+fi
 
-# webrtcvad no publica wheel para algunas versiones de Python; probar y avisar
-pip install webrtcvad 2>/dev/null || \
-    echo "    (falló la compilación de webrtcvad; se usará el VAD de energía)"
+VENV_PYTHON="$REPO_DIR/.venv/bin/python"
+"$VENV_PYTHON" -m pip install --upgrade pip wheel
 
-# ------------------------------------------------------ chequeo de CUDA
-python3 - << 'EOF'
+echo "==> Instalando dependencias Python requeridas"
+"$VENV_PYTHON" -m pip install -r requirements.txt
+
+echo "==> Intentando instalar VAD opcional"
+if "$VENV_PYTHON" -m pip install -r requirements-optional.txt; then
+    echo "==> webrtcvad disponible"
+else
+    echo "!! webrtcvad no se pudo instalar; se usará el VAD de energía probado" >&2
+fi
+
+"$VENV_PYTHON" - <<'PY'
 try:
     import ctranslate2
-    n = ctranslate2.get_cuda_device_count()
-    print(f"==> Dispositivos CUDA detectados: {n} " + ("(se usará GPU)" if n else "(modo CPU int8)"))
-except Exception as e:
-    print(f"==> Chequeo de CUDA omitido: {e}")
-EOF
+    cantidad = ctranslate2.get_cuda_device_count()
+    modo = "se usará GPU" if cantidad else "modo CPU int8"
+    print(f"==> Dispositivos CUDA detectados: {cantidad} ({modo})")
+except Exception as exc:
+    print(f"==> Chequeo de CUDA omitido: {type(exc).__name__}")
+PY
 
-# ------------------------------------------------------ precarga del modelo
-echo "==> Pre-descargando el modelo Whisper 'small' (única vez, ~460MB)"
-python3 - << 'EOF'
+if ((PRELOAD_MODEL)); then
+    echo "==> Descargando/precargando Whisper small (~460 MB)"
+    "$VENV_PYTHON" - <<'PY'
 from faster_whisper import WhisperModel
 WhisperModel("small", device="cpu", compute_type="int8")
-print("==> Modelo en caché.")
-EOF
-
-# ------------------------------------------------------ nota sobre ydotool
-if [ -n "${WAYLAND_DISPLAY:-}" ] && ! command -v wtype >/dev/null 2>&1; then
-    if command -v ydotool >/dev/null 2>&1; then
-        echo "==> Wayland detectado sin wtype. Habilitá el daemon de ydotool:"
-        echo "    sudo systemctl enable --now ydotool"
-        echo "    (o corré 'ydotoold' como tu usuario; puede requerir el grupo 'input')"
-    fi
+print("==> Modelo disponible en caché")
+PY
+else
+    echo "==> Modelo no descargado; se obtendrá en el primer inicio"
+    echo "    Para precargarlo ahora: ./setup.sh --skip-system-packages --preload-model"
 fi
 
-cat << 'EOF'
+if ((INSTALL_SERVICE)); then
+    CONFIG_BASE="${XDG_CONFIG_HOME:-$HOME/.config}"
+    UNIT_PATH="$CONFIG_BASE/systemd/user/parlar.service"
+    "$VENV_PYTHON" scripts/render_service.py --repo "$REPO_DIR" --output "$UNIT_PATH"
+    if command -v systemctl >/dev/null 2>&1; then
+        if ! systemctl --user daemon-reload; then
+            echo "!! unit instalada; daemon-reload queda pendiente en la sesión gráfica" >&2
+        fi
+    fi
+    echo "    Activación opcional: systemctl --user enable --now parlar"
+fi
 
-==> Instalación completa.
+if ! command -v xdotool >/dev/null 2>&1 \
+        && ! command -v wtype >/dev/null 2>&1 \
+        && ! command -v ydotool >/dev/null 2>&1 \
+        && ! command -v xclip >/dev/null 2>&1 \
+        && ! command -v wl-copy >/dev/null 2>&1; then
+    echo "!! no se detectó backend de inyección/clipboard; revisá el README" >&2
+fi
+
+cat <<'EOF'
+
+==> Instalación estructural completa.
 
 Ejecutar:
     source .venv/bin/activate
-    python -m parlar                        # modo frase (por defecto, español)
-    python -m parlar --modo streaming       # palabras mientras hablás
+    python -m parlar
+
+Validar sin hardware:
+    ./scripts/check.sh
 
 Control:
-    X11:      Ctrl+Alt+D alterna la grabación (atajo global)
-    Wayland:  asigná `./parlarctl alternar` a un atajo en tu DE
-    Siempre:  click en el punto del indicador, o `./parlarctl alternar`
-
+    X11: Ctrl+Alt+D
+    Wayland: asigná `./parlarctl alternar` a un atajo del escritorio
 EOF

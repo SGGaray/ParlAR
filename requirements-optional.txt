@@ -1,0 +1,4 @@
+# VAD WebRTC opcional. ParlAR usa su VAD de energía probado si esta
+# dependencia no compila o no está instalada.
+setuptools<81
+webrtcvad>=2.0.10

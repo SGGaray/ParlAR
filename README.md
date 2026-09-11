@@ -9,14 +9,38 @@ explícitamente un servicio externo, por ejemplo un `ollama_url` remoto.
 
 ParlAR nació como FlowDictate; el nombre cambió, la arquitectura y la lógica no (ver el historial en CHANGELOG.md).
 
+## Requisitos
+
+- Debian/Ubuntu o Fedora, con una sesión gráfica Linux sobre X11 o Wayland.
+- Python 3.12 o posterior. CI verifica 3.12; el desarrollo local también se
+  valida actualmente con 3.14.
+- PipeWire/PulseAudio y un dispositivo de entrada visible para PortAudio.
+- Algún backend compatible con tu escritorio para insertar o copiar texto.
+
+El instalador separa dependencias requeridas de integraciones opcionales:
+
+| Capa | Requerido | Opcional con fallback |
+|---|---|---|
+| Sistema | Python, venv, PortAudio | tkinter, notificaciones, herramientas X11/Wayland/clipboard, headers de compilación |
+| Python | faster-whisper, sounddevice, numpy, pynput | webrtcvad; sin él se usa el VAD de energía probado |
+
 ## Inicio rápido
 
 ```bash
+git clone https://github.com/SGGaray/parlar.git
 cd parlar
-./setup.sh                        # instala dependencias, venv y el modelo
+./setup.sh                        # paquetes, .venv y dependencias Python
 source .venv/bin/activate
-python -m parlar                  # español por defecto
+./scripts/check.sh                # gate completo sin hardware
+python -m parlar                  # primer inicio; descarga Whisper small si falta
 ```
+
+`./setup.sh` reutiliza una `.venv` válida y se puede ejecutar nuevamente. No
+borra configuración, modelos ni transcripts. Una `.venv` incompleta se reporta
+sin eliminarla. Si ya instalaste los paquetes del sistema, usá
+`--skip-system-packages`. La descarga del modelo está separada: ocurre en el
+primer inicio o explícitamente con
+`./setup.sh --skip-system-packages --preload-model`.
 
 Después:
 
@@ -178,10 +202,35 @@ sesión no quedó completa.
 ## Correr como servicio (opcional)
 
 ```bash
-mkdir -p ~/.config/systemd/user
-cp scripts/parlar.service ~/.config/systemd/user/
-systemctl --user daemon-reload && systemctl --user enable --now parlar
+./setup.sh --skip-system-packages --install-service
+systemctl --user enable --now parlar
 ```
+
+El setup genera la unit con la ruta absoluta del checkout y el Python de su
+`.venv`; no presupone `%h/parlar`. Conserva `UMask=0077` y no reemplaza una
+unit ajena. Una repetición con el mismo checkout no produce cambios.
+
+Un servicio de usuario necesita heredar una sesión gráfica utilizable y acceso
+al audio. Las variables y permisos de display, PipeWire/PulseAudio, X11,
+Wayland y clipboard varían entre escritorios; si la unit no dispone de ellos,
+iniciá ParlAR desde una terminal de esa sesión. `Restart=on-failure` reinicia
+el proceso principal, no sustituye el estado de health interno del worker.
+
+## Validación
+
+```bash
+source .venv/bin/activate
+./scripts/check.sh
+```
+
+Ese comando es la misma puerta usada por CI: sintaxis shell, compilación
+Python, smokes de CLI, los 58 checks legacy, todas las suites unittest, IPC y
+`git diff --check`. No necesita micrófono, display, modelo descargado, Ollama,
+GuionAR, clipboard ni systemd reales.
+
+Para una validación manual posterior con hardware: confirmar apertura del
+micrófono, dictado por frase, streaming, stop, restart, GuionAR opcional,
+fallback de clipboard y shutdown.
 
 ## Alias en inglés
 
@@ -206,7 +255,9 @@ parlar/
 ├── setup.sh                     instalador de un paso (Ubuntu/Debian + Fedora)
 ├── requirements.txt
 ├── parlarctl                    cliente de control (asignalo a atajos en Wayland)
-├── scripts/parlar.service
+├── scripts/check.sh              gate local/CI sin hardware
+├── scripts/parlar.service.in     template de la unit generada por setup
+├── scripts/render_service.py     render seguro con la ruta real del checkout
 ├── parlar/
 │   ├── __main__.py              entrada CLI
 │   ├── config.py                dataclass de config + persistencia JSON
@@ -218,9 +269,5 @@ parlar/
 │   ├── control.py               servidor de socket unix + cliente parlarctl
 │   ├── indicador.py             punto tkinter siempre visible
 │   └── app.py                   orquestador / máquina de estados
-└── tests/                       lógica: python tests/run_tests.py
-                                fidelidad: python -m unittest tests.test_text_fidelity
-                                lifecycle: python -m unittest tests.test_lifecycle
-                                streaming: python -m unittest tests.test_streaming_alignment
-                                backpressure: python -m unittest tests.test_backpressure
+└── tests/                       suites por invariantes; ejecutar scripts/check.sh
 ```

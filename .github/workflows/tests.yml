@@ -19,15 +19,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run tests
-        run: |
-          python tests/run_tests.py
-          python -m unittest tests.test_text_fidelity
-          python -m unittest tests.test_lifecycle
-          python -m unittest tests.test_streaming_alignment
-          python -m unittest tests.test_backpressure
-          python -m unittest tests.test_delivery_output
-          python -m unittest tests.test_guionar_ipc
-          python -m unittest tests.test_control_ipc
-          python -m unittest tests.test_config_validation
-          python -m unittest tests.test_privacy_session
+      - name: Run the same quality gate as local development
+        env:
+          PARLAR_PYTHON: python
+        run: ./scripts/check.sh
