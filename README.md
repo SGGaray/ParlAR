@@ -202,10 +202,27 @@ La captura usa una cola acotada de aproximadamente 10 segundos. Si el worker
 no alcanza a consumirla, se descartan primero los frames más antiguos para
 preservar audio reciente. ParlAR no puede reconstruir ese audio: numera los
 frames, detecta el hueco y separa la unidad anterior de la posterior para no
-presentarlas como una frase continua. `parlarctl estado` expone salud, drops,
-discontinuidades, profundidad y backlog estimado; después de procesar la
-frontera puede indicar `recuperado-con-perdida`, conservando visible que la
-sesión no quedó completa.
+presentarlas como una frase continua. Un `input_overflow` informado por
+PortAudio crea la misma frontera, invalida cualquier frame parcial previo y se
+cuenta por separado en `device_overflows`, sin inventar una cantidad de frames
+perdidos. `parlarctl estado` expone salud de captura, drops de cola,
+overflows de dispositivo, discontinuidades, profundidad y backlog estimado;
+después de procesar la frontera puede indicar `recuperado-con-perdida`,
+conservando visible que la sesión no quedó completa.
+
+Durante la apertura, el callback puede aceptar audio apenas el backend está
+activo, pero el worker espera a que el inicio termine antes de procesarlo. Si
+la apertura falla, esa generación y sus frames se invalidan; el micrófono
+vuelve a un estado reintentable. La salida de `parlarctl estado` mantiene
+además health separado para STT y VAD (`healthy`, `degraded` o `recovered`),
+contadores históricos y el último tipo de error, sin guardar audio ni texto.
+El VAD falla abierto para priorizar no perder habla; mientras está degradado
+puede aumentar el trabajo de STT y producir unidades falsas.
+
+Streaming conserva su mínimo acústico para una unidad inicialmente demasiado
+corta. Si un trim válido deja un remanente menor a ese mínimo, stop realiza una
+última decodificación del remanente en vez de descartarlo automáticamente; la
+salida sigue pasando por el acuerdo append-only y nunca retracta texto.
 
 ## Correr como servicio (opcional)
 
@@ -223,6 +240,9 @@ al audio. Las variables y permisos de display, PipeWire/PulseAudio, X11,
 Wayland y clipboard varían entre escritorios; si la unit no dispone de ellos,
 iniciá ParlAR desde una terminal de esa sesión. `Restart=on-failure` reinicia
 el proceso principal, no sustituye el estado de health interno del worker.
+El shutdown invalida primero la generación y termina el worker antes de cerrar
+las salidas. Cada recurso recibe su intento de cleanup aunque otro falle; el
+estado alcanza `closed` y conserva los tipos de error de cierre para diagnóstico.
 
 ## Validación
 

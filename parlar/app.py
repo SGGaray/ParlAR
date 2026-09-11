@@ -69,7 +69,14 @@ class App:
         self._stops_listos: set[int] = set()
         self._errores_stop: set[int] = set()
         self._shutdown_completo = threading.Event()
+        self._shutdown_errores: list[str] = []
         self._trabajador_hilo: Optional[threading.Thread] = None
+        self._stt_health = "healthy"
+        self._vad_health = "healthy"
+        self._stt_failures = 0
+        self._vad_failures = 0
+        self._last_stt_error_type: Optional[str] = None
+        self._last_vad_error_type: Optional[str] = None
         self._vad_factory = vad_factory
         self._segmentador_factory = segmentador_factory
 
@@ -128,17 +135,21 @@ class App:
             hilo = threading.Thread(
                 target=self._trabajador, name="trabajador", daemon=True)
             self._trabajador_hilo = hilo
-            hilo.start()
+            try:
+                hilo.start()
+            except BaseException:
+                self._trabajador_hilo = None
+                raise
 
     def ejecutar(self):
-        self._iniciar_trabajador()
-        self.control.iniciar()
-        self.atajos.iniciar()
-        pista = (f"atajo {self.cfg.hotkey_toggle}" if self.atajos._listener
-                 else "`parlarctl alternar`")
-        print(f"[app] listo. Modo: {self.cfg.mode}. Iniciá/detené con {pista}, "
-              f"o con un click en el punto del indicador.")
         try:
+            self._iniciar_trabajador()
+            self.control.iniciar()
+            self.atajos.iniciar()
+            pista = (f"atajo {self.cfg.hotkey_toggle}" if self.atajos._listener
+                     else "`parlarctl alternar`")
+            print(f"[app] listo. Modo: {self.cfg.mode}. Iniciá/detené con {pista}, "
+                  f"o con un click en el punto del indicador.")
             self.ui.ejecutar()
         except KeyboardInterrupt:
             pass
@@ -166,6 +177,10 @@ class App:
                 anterior = self._sesion_activa
                 self._generacion += 1
                 generacion = self._generacion
+                # START reemplaza cualquier generación anterior. Sus señales
+                # de stop ya no pueden ser consumidas legítimamente.
+                self._stops_listos.clear()
+                self._errores_stop.clear()
                 self._estado = EstadoApp.STARTING
                 self._ultimo_error = ""
                 self._estado_cv.notify_all()
@@ -191,9 +206,21 @@ class App:
                         if self._sesion_activa == generacion:
                             self._sesion_activa = None
                         self._modo_por_sesion.pop(generacion, None)
+                        self._stops_listos.discard(generacion)
+                        self._errores_stop.discard(generacion)
                         self._estado = EstadoApp.ERROR
                         self._ultimo_error = f"micrófono: {exc}"
                         self._estado_cv.notify_all()
+                try:
+                    self.mic.detener(vaciar=True)
+                except Exception as cleanup_exc:
+                    print("[app] rollback de micrófono falló: "
+                          f"{type(cleanup_exc).__name__}", file=sys.stderr)
+                try:
+                    self.mic.descartar_pendientes(generacion)
+                except Exception as cleanup_exc:
+                    print("[app] descarte de audio falló: "
+                          f"{type(cleanup_exc).__name__}", file=sys.stderr)
                 self.grabando.clear()
                 self.ui.fijar_estado("error")
                 print(f"[app] no se pudo abrir el micrófono: {exc}", file=sys.stderr)
@@ -280,12 +307,13 @@ class App:
                     with self._estado_cv:
                         self._sesion_activa = None
                         self._modo_por_sesion.clear()
+                        self._stops_listos.clear()
+                        self._errores_stop.clear()
                         self._estado_cv.notify_all()
                 try:
                     self.mic.detener(vaciar=True)
-                except Exception as exc:
-                    print(f"[app] error cerrando micrófono: {type(exc).__name__}",
-                          file=sys.stderr)
+                except BaseException as exc:
+                    self._registrar_error_shutdown("mic", exc)
 
         if not propietario:
             espera.wait()
@@ -302,18 +330,43 @@ class App:
         self._finalizar_shutdown(hilo)
 
     def _finalizar_shutdown(self, hilo):
-        if hilo is not None:
-            hilo.join()
+        try:
+            if hilo is not None:
+                try:
+                    hilo.join()
+                except BaseException as exc:
+                    self._registrar_error_shutdown("worker", exc)
 
-        self.control.detener()
-        self.atajos.detener()
-        for salida in self.salidas:
-            salida.cerrar()
-        self.ui.cerrar()
+            recursos = [
+                ("control", self.control.detener),
+                ("hotkeys", self.atajos.detener),
+            ]
+            recursos.extend(
+                (nombre, salida.cerrar)
+                for nombre, salida in zip(
+                    ("inyector", "guionar", "sesion"), self.salidas)
+            )
+            recursos.append(("ui", self.ui.cerrar))
+            for nombre, cerrar in recursos:
+                try:
+                    cerrar()
+                except BaseException as exc:
+                    self._registrar_error_shutdown(nombre, exc)
+        finally:
+            with self._estado_cv:
+                if self._shutdown_errores:
+                    self._ultimo_error = "shutdown: " + ",".join(
+                        self._shutdown_errores)
+                self._estado = EstadoApp.CLOSED
+                self._estado_cv.notify_all()
+            self._shutdown_completo.set()
+
+    def _registrar_error_shutdown(self, etapa: str, exc: BaseException):
+        detalle = f"{etapa}:{type(exc).__name__}"
         with self._estado_cv:
-            self._estado = EstadoApp.CLOSED
-            self._estado_cv.notify_all()
-        self._shutdown_completo.set()
+            self._shutdown_errores.append(detalle)
+        print(f"[app] cleanup falló etapa={etapa} "
+              f"tipo={type(exc).__name__}", file=sys.stderr)
 
     # ------------------------------------------------------------ trabajador
 
@@ -337,6 +390,7 @@ class App:
         modo_unidad = None
         modo_entre_unidades = None
         secuencia_esperada = None
+        vad_fallos_vistos = 0
 
         while not self.saliendo.is_set():
             if generacion is not None and not self._sesion_procesable(generacion):
@@ -344,10 +398,11 @@ class App:
                 self._descartar_stop(generacion)
                 generacion = segmentador = modo_unidad = modo_entre_unidades = None
                 secuencia_esperada = None
+                vad_fallos_vistos = 0
 
             item = self.mic.leer_frame(timeout=0.05)
             if item is not None:
-                if not self._sesion_procesable(item.generacion):
+                if not self._esperar_sesion_lista(item.generacion):
                     continue
                 if generacion != item.generacion:
                     self.streaming.reiniciar()
@@ -356,6 +411,7 @@ class App:
                     modo_entre_unidades = self._modo_de(generacion)
                     modo_unidad = None
                     secuencia_esperada = 1
+                    vad_fallos_vistos = 0
 
                 secuencia = getattr(item, "secuencia", 0)
                 hay_gap = getattr(item, "discontinuidad_antes", False)
@@ -387,6 +443,8 @@ class App:
                         self._cerrar_unidad(evento.audio, modo_unidad, generacion)
                         modo_unidad = None
                         modo_entre_unidades = self._modo_de(generacion)
+                vad_fallos_vistos = self._actualizar_salud_vad(
+                    segmentador, vad_fallos_vistos, generacion)
                 continue
 
             if generacion is not None and self._stop_listo(generacion):
@@ -398,6 +456,7 @@ class App:
                 self.streaming.reiniciar()
                 generacion = segmentador = modo_unidad = modo_entre_unidades = None
                 secuencia_esperada = None
+                vad_fallos_vistos = 0
             elif generacion is not None and modo_unidad == "streaming":
                 self._paso_streaming(generacion)
             else:
@@ -441,9 +500,10 @@ class App:
         try:
             crudo = self.frases.transcribir(audio)
         except Exception as exc:
-            print(f"[app] la transcripción falló: {type(exc).__name__}",
-                  file=sys.stderr)
+            self._registrar_fallo_etapa("stt", exc, generacion)
             crudo = ""
+        else:
+            self._registrar_recuperacion_etapa("stt")
         dt = time.time() - t0
         if crudo:
             print(f"[app] transcripción lista en {dt:.2f}s")
@@ -452,12 +512,15 @@ class App:
         self._estado_visual_si_vigente("recording", generacion)
 
     def _paso_streaming(self, generacion: int):
+        antes = self._snapshot_streaming()
         try:
             trozo = self.streaming.procesar()
         except Exception as exc:
-            print(f"[app] falló la decodificación streaming: {type(exc).__name__}",
-                  file=sys.stderr)
+            if not self._actualizar_salud_streaming(
+                    antes, generacion, permitir_recuperacion=False):
+                self._registrar_fallo_etapa("stt", exc, generacion)
             return
+        self._actualizar_salud_streaming(antes, generacion)
         if trozo:
             texto = self.proc.procesar_fragmento(trozo)
             if texto:
@@ -468,7 +531,16 @@ class App:
                 self.guionar.enviar_parcial(parcial)
 
     def _vaciar_streaming(self, generacion: int):
-        cola = self.streaming.finalizar()
+        antes = self._snapshot_streaming()
+        try:
+            cola = self.streaming.finalizar()
+        except Exception as exc:
+            if not self._actualizar_salud_streaming(
+                    antes, generacion, permitir_recuperacion=False):
+                self._registrar_fallo_etapa("stt", exc, generacion)
+            cola = ""
+        else:
+            self._actualizar_salud_streaming(antes, generacion)
         with self._salida_lock:
             if not self._puede_emit(generacion):
                 print(f"[app] resultado stale descartado (sesión {generacion})")
@@ -579,6 +651,91 @@ class App:
                     and self._estado in (EstadoApp.STARTING, EstadoApp.RECORDING,
                                          EstadoApp.STOPPING))
 
+    def _esperar_sesion_lista(self, generacion: int) -> bool:
+        """No deja que STARTING produzca efectos irreversibles.
+
+        El callback puede seguir encolando. El worker conserva como máximo el
+        frame ya leído y duerme sobre la condición hasta que start se resuelva.
+        """
+        with self._estado_cv:
+            self._estado_cv.wait_for(
+                lambda: (self.saliendo.is_set()
+                         or self._sesion_activa != generacion
+                         or self._estado != EstadoApp.STARTING)
+            )
+            return (self._sesion_activa == generacion
+                    and self._estado in (EstadoApp.RECORDING,
+                                         EstadoApp.STOPPING))
+
+    def _registrar_fallo_etapa(self, etapa: str, error,
+                               generacion: int, cantidad: int = 1):
+        if not hasattr(self, "_estado_cv"):
+            return
+        tipo_error = error if isinstance(error, str) else type(error).__name__
+        with self._estado_cv:
+            if etapa == "stt":
+                anterior = self._stt_health
+                self._stt_failures += cantidad
+                self._last_stt_error_type = tipo_error
+                self._stt_health = "degraded"
+                contador = self._stt_failures
+            else:
+                anterior = self._vad_health
+                self._vad_failures += cantidad
+                self._last_vad_error_type = tipo_error
+                self._vad_health = "degraded"
+                contador = self._vad_failures
+        if anterior != "degraded":
+            print(f"[app] etapa={etapa} degradada "
+                  f"tipo={tipo_error} contador={contador} "
+                  f"generacion={generacion}", file=sys.stderr)
+
+    def _registrar_recuperacion_etapa(self, etapa: str):
+        if not hasattr(self, "_estado_cv"):
+            return
+        with self._estado_cv:
+            if etapa == "stt" and self._stt_failures:
+                self._stt_health = "recovered"
+            elif etapa == "vad" and self._vad_failures:
+                self._vad_health = "recovered"
+
+    def _actualizar_salud_vad(self, segmentador, vistos: int,
+                              generacion: int) -> int:
+        fallos = getattr(segmentador, "vad_failures", None)
+        if fallos is None:
+            return vistos
+        if fallos > vistos:
+            tipo = getattr(segmentador, "last_vad_error_type", None) or "Exception"
+            self._registrar_fallo_etapa(
+                "vad", tipo, generacion, cantidad=fallos - vistos)
+        elif getattr(segmentador, "vad_last_ok", False):
+            self._registrar_recuperacion_etapa("vad")
+        return fallos
+
+    def _snapshot_streaming(self):
+        return (getattr(self.streaming, "decodificaciones", None),
+                getattr(self.streaming, "fallos", None))
+
+    def _actualizar_salud_streaming(
+            self, antes, generacion: int,
+            permitir_recuperacion: bool = True) -> bool:
+        dec_antes, fallos_antes = antes
+        dec_despues = getattr(self.streaming, "decodificaciones", None)
+        fallos_despues = getattr(self.streaming, "fallos", None)
+        if fallos_antes is not None and fallos_despues is not None \
+                and fallos_despues > fallos_antes:
+            tipo = getattr(self.streaming, "last_error_type", None) or "Exception"
+            self._registrar_fallo_etapa(
+                "stt", tipo, generacion,
+                cantidad=fallos_despues - fallos_antes)
+            return True
+        if permitir_recuperacion \
+                and dec_antes is not None and dec_despues is not None \
+                and dec_despues > dec_antes:
+            self._registrar_recuperacion_etapa("stt")
+            return True
+        return False
+
     def _modo_de(self, generacion: int) -> str:
         with self._estado_cv:
             return self._modo_por_sesion.get(generacion, self._modo_solicitado)
@@ -653,6 +810,12 @@ class App:
         with self._estado_cv:
             estado = self._estado
             error = self._ultimo_error
+            salud_etapas = (
+                f"stt={self._stt_health} stt_failures={self._stt_failures} "
+                f"last_stt_error_type={self._last_stt_error_type or 'none'} "
+                f"vad={self._vad_health} vad_failures={self._vad_failures} "
+                f"last_vad_error_type={self._last_vad_error_type or 'none'}"
+            )
         if estado == EstadoApp.ERROR:
             base = f"error detalle={error or 'desconocido'}"
         elif estado == EstadoApp.RECORDING:
@@ -661,21 +824,25 @@ class App:
             base = "deteniendo"
         elif estado in (EstadoApp.SHUTTING_DOWN, EstadoApp.CLOSED):
             base = "cerrando" if estado == EstadoApp.SHUTTING_DOWN else "cerrado"
+            if error:
+                base += f" detalle={error}"
         else:
             base = "inactivo"
         respuesta = (base + f" modo={self._modo_solicitado} "
-                     f"reescritura={self.cfg.rewrite_mode}")
+                     f"reescritura={self.cfg.rewrite_mode} {salud_etapas}")
         obtener_estado = getattr(self.mic, "estado_captura", None)
         if obtener_estado is None:
             return respuesta
         captura = obtener_estado()
+        device_overflows = getattr(captura, "device_overflows", 0)
         if captura.degradada:
             salud = "degradado"
-        elif captura.frames_descartados:
+        elif captura.frames_descartados or device_overflows:
             salud = "recuperado-con-perdida"
         else:
             salud = "saludable"
         return (respuesta + f" audio={salud} drops={captura.frames_descartados} "
+                f"device_overflows={device_overflows} "
                 f"discontinuidades={captura.discontinuidades} "
                 f"cola={captura.queue_depth}/{self.mic.capacidad} "
                 f"backlog_ms={captura.backlog_ms:.1f}")

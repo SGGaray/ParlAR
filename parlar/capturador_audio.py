@@ -72,6 +72,7 @@ class EstadoCaptura:
     frames_capturados: int
     frames_entregados: int
     frames_descartados: int
+    device_overflows: int
     discontinuidades: int
     queue_depth: int
     max_queue_depth: int
@@ -97,6 +98,9 @@ class Segmentador:
         self.min_frames_voz = max(1, min_speech_ms // frame_ms)
         self.max_frames = int(max_utterance_s * 1000 // frame_ms)
         self.preroll = collections.deque(maxlen=max(1, preroll_ms // frame_ms))
+        self.vad_failures = 0
+        self.last_vad_error_type: Optional[str] = None
+        self.vad_last_ok = True
         self._reiniciar()
 
     def _reiniciar(self):
@@ -112,7 +116,11 @@ class Segmentador:
     def procesar(self, frame: bytes) -> Iterator[EventoSegmento]:
         try:
             con_voz = self.vad.is_speech(frame, self.sr)
-        except Exception:
+            self.vad_last_ok = True
+        except Exception as exc:
+            self.vad_failures += 1
+            self.last_vad_error_type = type(exc).__name__
+            self.vad_last_ok = False
             con_voz = True  # falla abierto: mejor transcribir silencio que perder voz
 
         if not self.en_voz:
@@ -196,9 +204,11 @@ class CapturadorMic:
         self._frames_capturados = 0
         self._frames_entregados = 0
         self._frames_descartados = 0
+        self._device_overflows = 0
         self._discontinuidades = 0
         self._max_queue_depth = 0
         self._gap_pendiente = False
+        self._marcar_discontinuidad = False
         self._ultima_discontinuidad: Optional[int] = None
 
     def _preparar_generacion(self, generacion: int):
@@ -212,20 +222,28 @@ class CapturadorMic:
         self._frames_capturados = 0
         self._frames_entregados = 0
         self._frames_descartados = 0
+        self._device_overflows = 0
         self._discontinuidades = 0
         self._max_queue_depth = 0
         self._gap_pendiente = False
+        self._marcar_discontinuidad = False
         self._ultima_discontinuidad = None
 
     def _callback(self, generacion: int, indata, frames, time_info, status):
-        if status:
-            print(f"[audio] estado del stream: {status}", file=sys.stderr)
         # El lock es breve y exclusivo del callback/buffer. No cubre ninguna
         # operación de PortAudio ni inferencia. Al detener, primero se invalida
         # la generación y después se toma este lock para drenar con seguridad.
         with self._callback_lock:
             if generacion != self._generacion_aceptada:
                 return
+            if getattr(status, "input_overflow", False):
+                # PortAudio no informa cuántas muestras perdió. Conservamos
+                # una métrica propia, invalidamos todo resto pre-gap y hacemos
+                # explícita la frontera en el primer frame posterior.
+                self._device_overflows += 1
+                self._gap_pendiente = True
+                self._marcar_discontinuidad = True
+                self._resto = b""
             crudo = self._resto + bytes(indata)
             fb = self.frame_samples * 2
             n = len(crudo) // fb
@@ -236,7 +254,9 @@ class CapturadorMic:
                     generacion,
                     crudo[i * fb:(i + 1) * fb],
                     secuencia=self._secuencia,
+                    discontinuidad_antes=self._marcar_discontinuidad,
                 )
+                self._marcar_discontinuidad = False
                 try:
                     self.q.put_nowait(trozo)
                 except queue.Full:
@@ -265,8 +285,8 @@ class CapturadorMic:
             self._estado = "starting"
 
         stream = None
-        import sounddevice as sd  # import diferido para testear sin hardware
         try:
+            import sounddevice as sd  # import diferido para testear sin hardware
             with self._callback_lock:
                 self._preparar_generacion(generacion)
             stream = sd.RawInputStream(
@@ -283,6 +303,7 @@ class CapturadorMic:
                 self._generacion_aceptada = None
                 self._generacion_metricas = None
                 self._resto = b""
+                self._vaciar_cola()
             if stream is not None:
                 try:
                     stream.close()
@@ -398,6 +419,7 @@ class CapturadorMic:
                 frames_capturados=self._frames_capturados,
                 frames_entregados=self._frames_entregados,
                 frames_descartados=self._frames_descartados,
+                device_overflows=self._device_overflows,
                 discontinuidades=self._discontinuidades,
                 queue_depth=profundidad,
                 max_queue_depth=self._max_queue_depth,

@@ -204,10 +204,26 @@ Capture keeps a bounded queue of roughly ten seconds. If the worker falls
 behind, the oldest frames are dropped to preserve recent audio. ParlAR cannot
 reconstruct discarded audio: per-session sequence numbers expose the gap and
 the worker separates audio before and after it instead of presenting a false
-continuous utterance. `parlarctl estado` reports audio health, drops,
-discontinuities, queue depth, and estimated backlog. Once the gap boundary is
-handled, health becomes `recuperado-con-perdida` while the loss remains
-visible for the rest of that session.
+continuous utterance. A PortAudio `input_overflow` creates the same boundary,
+invalidates any preceding partial frame, and is counted separately as
+`device_overflows` without inventing a dropped-frame count. `parlarctl estado`
+reports capture health, queue drops, device overflows, discontinuities, queue
+depth, and estimated backlog. Once the boundary is handled, health becomes
+`recuperado-con-perdida` while the loss remains visible for that session.
+
+The callback may accept audio while backend startup is still completing, but
+the worker waits for startup to resolve before processing it. A failed open
+invalidates that generation and its frames and leaves microphone startup
+retryable. `parlarctl estado` also keeps STT and VAD health separate
+(`healthy`, `degraded`, or `recovered`), with historical counters and the last
+exception type but no audio or transcript content. VAD deliberately fails
+open to avoid losing speech; while degraded it can increase STT work and
+produce false utterances.
+
+Streaming retains its acoustic minimum for an initially short utterance. When
+a valid trim leaves a tail below that minimum, stop performs one final decode
+instead of dropping the tail automatically; append-only agreement still gates
+the result and never retracts emitted text.
 
 ## Optional user service
 
@@ -221,6 +237,9 @@ keeps `UMask=0077`, and will not replace an unrelated unit. Repeating it for
 the same checkout is a no-op. A user service still depends on desktop-specific
 audio, display, X11/Wayland, and clipboard access; launch ParlAR from a terminal
 inside that desktop session if those variables are unavailable to systemd.
+Shutdown invalidates the generation and joins the worker before closing output
+sinks. Every resource receives a cleanup attempt even when another closer
+fails; the app reaches `closed` and retains closure error types for diagnosis.
 
 For later manual hardware validation, check microphone open, utterance mode,
 streaming, stop, restart, optional GuionAR, clipboard fallback, and shutdown.

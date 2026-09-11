@@ -17,7 +17,6 @@ whisper.cpp, solo cambia este archivo.
 """
 
 import re
-import sys
 import time
 import unicodedata
 from dataclasses import dataclass
@@ -169,6 +168,9 @@ class TranscriptorStreaming:
         self.interval_s = interval_s
         self.trim_s = trim_s
         self.divergencias = 0
+        self.decodificaciones = 0
+        self.fallos = 0
+        self.last_error_type: Optional[str] = None
         self.reiniciar()
 
     def reiniciar(self):
@@ -177,20 +179,28 @@ class TranscriptorStreaming:
         self.palabras_confirmadas: List[_Palabra] = []
         self._hipotesis_alineada = True
         self._ultimo_len_decodificado = 0
+        self._hubo_trim = False
 
     def aceptar_audio(self, trozo: np.ndarray):
         self.buffer = np.concatenate([self.buffer, trozo.astype(np.float32)])
 
     def _decodificar_palabras(self, audio: np.ndarray) -> List[_Palabra]:
-        segments = self.motor.decodificar(audio, word_timestamps=True, beam_size=1)
-        palabras: List[_Palabra] = []
-        for seg in segments:
-            for w in (seg.words or []):
-                palabras.append(_Palabra(
-                    texto=w.word,
-                    fin=w.end,
-                    inicio=getattr(w, "start", None),
-                ))
+        try:
+            segments = self.motor.decodificar(
+                audio, word_timestamps=True, beam_size=1)
+            palabras: List[_Palabra] = []
+            for seg in segments:
+                for w in (seg.words or []):
+                    palabras.append(_Palabra(
+                        texto=w.word,
+                        fin=w.end,
+                        inicio=getattr(w, "start", None),
+                    ))
+        except Exception as exc:
+            self.fallos += 1
+            self.last_error_type = type(exc).__name__
+            raise
+        self.decodificaciones += 1
         return palabras
 
     def procesar(self) -> str:
@@ -260,6 +270,7 @@ class TranscriptorStreaming:
         self.palabras_prev = []
         self.palabras_confirmadas = []
         self._hipotesis_alineada = True
+        self._hubo_trim = True
 
     def hipotesis_pendiente(self) -> str:
         """Texto decodificado pero aún no confirmado por LocalAgreement.
@@ -272,15 +283,14 @@ class TranscriptorStreaming:
     def finalizar(self) -> str:
         """Vaciado: decodifica lo que queda y devuelve el texto más allá de
         las palabras ya confirmadas."""
-        if self.buffer.size < 1600:
+        if not self.buffer.size or (self.buffer.size < 1600 and not self._hubo_trim):
             self.reiniciar()
             return ""
         try:
             palabras = self._decodificar_palabras(self.buffer)
             cola = self._resto_final(palabras)
             salida = "".join(p.texto for p in cola)
-        except Exception as exc:
-            print(f"[stt] finalizar falló: {type(exc).__name__}", file=sys.stderr)
+        except Exception:
             salida = ""
         self.reiniciar()
         return salida
