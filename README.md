@@ -93,6 +93,15 @@ Perillas útiles: `model_size` (tiny/base/small/medium/large-v3), `silence_ms`, 
 
 Fijar el idioma (`--idioma es`, ya es el defecto) evita la detección de idioma en cada decodificación y baja la latencia notablemente.
 
+La captura usa una cola acotada de aproximadamente 10 segundos. Si el worker
+no alcanza a consumirla, se descartan primero los frames más antiguos para
+preservar audio reciente. ParlAR no puede reconstruir ese audio: numera los
+frames, detecta el hueco y separa la unidad anterior de la posterior para no
+presentarlas como una frase continua. `parlarctl estado` expone salud, drops,
+discontinuidades, profundidad y backlog estimado; después de procesar la
+frontera puede indicar `recuperado-con-perdida`, conservando visible que la
+sesión no quedó completa.
+
 ## Correr como servicio (opcional)
 
 ```bash
@@ -139,4 +148,5 @@ parlar/
 └── tests/                       lógica: python tests/run_tests.py
                                 lifecycle: python -m unittest tests.test_lifecycle
                                 streaming: python -m unittest tests.test_streaming_alignment
+                                backpressure: python -m unittest tests.test_backpressure
 ```

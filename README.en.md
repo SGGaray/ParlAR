@@ -115,11 +115,21 @@ The integration is fire-and-forget: if GuionAR is not running, ParlAR works exac
 python tests/run_tests.py
 python -m unittest tests.test_lifecycle
 python -m unittest tests.test_streaming_alignment
+python -m unittest tests.test_backpressure
 ```
 
 The suites also cover session lifecycle, deterministic concurrency, mode
-boundaries, shutdown ordering, worker health, and microphone ownership. No
-audio hardware required.
+boundaries, shutdown ordering, worker health, microphone ownership, bounded
+capture backpressure, and gap recovery. No audio hardware required.
+
+Capture keeps a bounded queue of roughly ten seconds. If the worker falls
+behind, the oldest frames are dropped to preserve recent audio. ParlAR cannot
+reconstruct discarded audio: per-session sequence numbers expose the gap and
+the worker separates audio before and after it instead of presenting a false
+continuous utterance. `parlarctl estado` reports audio health, drops,
+discontinuities, queue depth, and estimated backlog. Once the gap boundary is
+handled, health becomes `recuperado-con-perdida` while the loss remains
+visible for the rest of that session.
 
 ## Project status
 

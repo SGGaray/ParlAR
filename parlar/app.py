@@ -333,12 +333,14 @@ class App:
         segmentador = None
         modo_unidad = None
         modo_entre_unidades = None
+        secuencia_esperada = None
 
         while not self.saliendo.is_set():
             if generacion is not None and not self._sesion_procesable(generacion):
                 self.streaming.reiniciar()
                 self._descartar_stop(generacion)
                 generacion = segmentador = modo_unidad = modo_entre_unidades = None
+                secuencia_esperada = None
 
             item = self.mic.leer_frame(timeout=0.05)
             if item is not None:
@@ -350,6 +352,17 @@ class App:
                     segmentador = self._crear_segmentador()
                     modo_entre_unidades = self._modo_de(generacion)
                     modo_unidad = None
+                    secuencia_esperada = 1
+
+                secuencia = getattr(item, "secuencia", 0)
+                hay_gap = getattr(item, "discontinuidad_antes", False)
+                if secuencia > 0:
+                    hay_gap = hay_gap or secuencia != secuencia_esperada
+                    secuencia_esperada = secuencia + 1
+                if hay_gap:
+                    modo_unidad, modo_entre_unidades = \
+                        self._resolver_discontinuidad(
+                            segmentador, modo_unidad, generacion)
 
                 if not segmentador.en_voz:
                     nuevo = self._modo_de(generacion)
@@ -378,12 +391,29 @@ class App:
                 self._completar_stop(generacion)
                 self.streaming.reiniciar()
                 generacion = segmentador = modo_unidad = modo_entre_unidades = None
+                secuencia_esperada = None
             elif generacion is not None and modo_unidad == "streaming":
                 self._paso_streaming(generacion)
             else:
                 stop_sin_audio = self._stop_activo_sin_audio()
                 if stop_sin_audio is not None:
                     self._completar_stop(stop_sin_audio)
+
+    def _resolver_discontinuidad(self, segmentador, modo_unidad,
+                                 generacion: int):
+        """Traza una frontera real antes del primer frame posterior al gap."""
+        for evento in segmentador.discontinuidad():
+            if evento.tipo == "frase":
+                self._evento_vad(False, generacion)
+                self._cerrar_unidad(
+                    evento.audio, modo_unidad, generacion)
+        # ``finalizar`` reinicia streaming cuando había una unidad abierta.
+        # Este reinicio adicional cubre gaps fuera de voz y fakes parciales.
+        self.streaming.reiniciar()
+        with self._salida_lock:
+            if self._puede_emit(generacion):
+                self.guionar.enviar_parcial("")
+        return None, self._modo_de(generacion)
 
     def _cerrar_unidad(self, audio, modo: Optional[str], generacion: int):
         if modo == "streaming":
@@ -576,8 +606,22 @@ class App:
             base = "cerrando" if estado == EstadoApp.SHUTTING_DOWN else "cerrado"
         else:
             base = "inactivo"
-        return (base + f" modo={self._modo_solicitado} "
-                f"reescritura={self.cfg.rewrite_mode}")
+        respuesta = (base + f" modo={self._modo_solicitado} "
+                     f"reescritura={self.cfg.rewrite_mode}")
+        obtener_estado = getattr(self.mic, "estado_captura", None)
+        if obtener_estado is None:
+            return respuesta
+        captura = obtener_estado()
+        if captura.degradada:
+            salud = "degradado"
+        elif captura.frames_descartados:
+            salud = "recuperado-con-perdida"
+        else:
+            salud = "saludable"
+        return (respuesta + f" audio={salud} drops={captura.frames_descartados} "
+                f"discontinuidades={captura.discontinuidades} "
+                f"cola={captura.queue_depth}/{self.mic.capacidad} "
+                f"backlog_ms={captura.backlog_ms:.1f}")
 
     def _atender_comando(self, cmd: str) -> str:
         partes = normalizar_comando(cmd)

@@ -93,7 +93,9 @@ mic → PCM int16 @16kHz → frames de 20ms → puerta VAD
 
 ## 6. Manejo de fallas y sesiones largas
 
-- El callback de audio solo encola; todo el trabajo pesado ocurre en un hilo trabajador. Si la cola desborda, se descarta el audio más viejo con un aviso en vez de crashear.
+- El callback de audio solo copia, numera y encola; todo el trabajo pesado ocurre en un hilo trabajador. La cola conserva un máximo de 500 frames (unos 10s con frames de 20ms). Si desborda, se descarta primero el frame más antiguo para preservar el audio reciente sin bloquear PortAudio. El descarte incrementa contadores por generación y deja un hueco observable en la secuencia; no se loguea cada frame.
+- El primer frame entregado después de un hueco lleva una frontera de discontinuidad. El worker cierra la unidad contigua anterior si ya había voz confirmada —en streaming también finaliza y reinicia su buffer— o limpia VAD/pre-roll si aún no había frase. Recién después procesa el audio retenido como una unidad nueva. No se fabrican muestras ni silencio: el audio descartado no puede reconstruirse.
+- `parlarctl estado` expone `drops`, discontinuidades, profundidad de cola y backlog aproximado (`frames_en_cola × frame_ms`). `audio=degradado` significa que existe un gap todavía pendiente de entregar; `audio=recuperado-con-perdida` indica que el pipeline cruzó esa frontera y volvió a operar, aunque la pérdida histórica de la sesión sigue visible. Los contadores se reinician al abrir una nueva generación.
 - Un tope de frase (30s) evita buffers sin límite si el VAD nunca ve silencio (ambientes ruidosos).
 - Los errores del subproceso de inyección degradan a copia al portapapeles más una notificación de escritorio, en vez de morir.
 - El daemon es candidato a servicio systemd de usuario (unit incluida) con `Restart=on-failure`.

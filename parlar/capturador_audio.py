@@ -9,7 +9,7 @@ import collections
 import queue
 import sys
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Iterator, Optional
 
 import numpy as np
@@ -60,6 +60,24 @@ class FrameAudio:
 
     generacion: int
     audio: bytes
+    secuencia: int = 0
+    discontinuidad_antes: bool = False
+
+
+@dataclass(frozen=True)
+class EstadoCaptura:
+    """Snapshot operativo de la generación de captura actual."""
+
+    generacion: Optional[int]
+    frames_capturados: int
+    frames_entregados: int
+    frames_descartados: int
+    discontinuidades: int
+    queue_depth: int
+    max_queue_depth: int
+    backlog_ms: float
+    degradada: bool
+    ultima_discontinuidad: Optional[int]
 
 
 class Segmentador:
@@ -147,6 +165,14 @@ class Segmentador:
         self.preroll.clear()
         yield EventoSegmento("frase", audio=audio)
 
+    def discontinuidad(self) -> Iterator[EventoSegmento]:
+        """Cierra la unidad contigua previa al gap y limpia todo contexto.
+
+        Si todavía no había voz confirmada, sólo invalida pre-roll y rachas.
+        Nunca inventa silencio ni une muestras de ambos lados del hueco.
+        """
+        yield from self.finalizar()
+
 
 # ---------------------------------------------------------------- CapturadorMic
 
@@ -156,13 +182,40 @@ class CapturadorMic:
     def __init__(self, sample_rate: int, frame_samples: int, max_cola: int = 500):
         self.sample_rate = sample_rate
         self.frame_samples = frame_samples
+        self.capacidad = max_cola
         self.q: "queue.Queue[FrameAudio]" = queue.Queue(maxsize=max_cola)
         self._stream = None
         self._resto = b""
         self._estado = "idle"
         self._generacion_aceptada: Optional[int] = None
+        self._generacion_metricas: Optional[int] = None
         self._lock = threading.Condition()
         self._callback_lock = threading.Lock()
+        self._secuencia = 0
+        self._ultima_secuencia_entregada = 0
+        self._frames_capturados = 0
+        self._frames_entregados = 0
+        self._frames_descartados = 0
+        self._discontinuidades = 0
+        self._max_queue_depth = 0
+        self._gap_pendiente = False
+        self._ultima_discontinuidad: Optional[int] = None
+
+    def _preparar_generacion(self, generacion: int):
+        """Inicializa cola y contadores. Requiere ``_callback_lock``."""
+        self._vaciar_cola()
+        self._resto = b""
+        self._generacion_aceptada = generacion
+        self._generacion_metricas = generacion
+        self._secuencia = 0
+        self._ultima_secuencia_entregada = 0
+        self._frames_capturados = 0
+        self._frames_entregados = 0
+        self._frames_descartados = 0
+        self._discontinuidades = 0
+        self._max_queue_depth = 0
+        self._gap_pendiente = False
+        self._ultima_discontinuidad = None
 
     def _callback(self, generacion: int, indata, frames, time_info, status):
         if status:
@@ -177,15 +230,26 @@ class CapturadorMic:
             fb = self.frame_samples * 2
             n = len(crudo) // fb
             for i in range(n):
-                trozo = FrameAudio(generacion, crudo[i * fb:(i + 1) * fb])
+                self._secuencia += 1
+                self._frames_capturados += 1
+                trozo = FrameAudio(
+                    generacion,
+                    crudo[i * fb:(i + 1) * fb],
+                    secuencia=self._secuencia,
+                )
                 try:
                     self.q.put_nowait(trozo)
                 except queue.Full:
-                    try:  # descarta el más viejo para mantenerse en tiempo real
+                    try:  # conserva el audio más reciente sin bloquear callback
                         self.q.get_nowait()
-                        self.q.put_nowait(trozo)
                     except queue.Empty:
                         pass
+                    else:
+                        self._frames_descartados += 1
+                        self._gap_pendiente = True
+                    self.q.put_nowait(trozo)
+                self._max_queue_depth = max(
+                    self._max_queue_depth, self.q.qsize())
             self._resto = crudo[n * fb:]
 
     def iniciar(self, generacion: int) -> bool:
@@ -204,9 +268,7 @@ class CapturadorMic:
         import sounddevice as sd  # import diferido para testear sin hardware
         try:
             with self._callback_lock:
-                self._vaciar_cola()
-                self._resto = b""
-                self._generacion_aceptada = generacion
+                self._preparar_generacion(generacion)
             stream = sd.RawInputStream(
                 samplerate=self.sample_rate,
                 channels=1,
@@ -219,6 +281,7 @@ class CapturadorMic:
         except BaseException:
             with self._callback_lock:
                 self._generacion_aceptada = None
+                self._generacion_metricas = None
                 self._resto = b""
             if stream is not None:
                 try:
@@ -306,6 +369,39 @@ class CapturadorMic:
 
     def leer_frame(self, timeout: float = 0.1) -> Optional[FrameAudio]:
         try:
-            return self.q.get(timeout=timeout)
+            item = self.q.get(timeout=timeout)
         except queue.Empty:
             return None
+        with self._callback_lock:
+            if item.generacion != self._generacion_metricas:
+                return item
+            self._frames_entregados += 1
+            discontinuidad = item.discontinuidad_antes
+            if item.secuencia > 0:
+                esperado = self._ultima_secuencia_entregada + 1
+                discontinuidad = discontinuidad or item.secuencia != esperado
+                self._ultima_secuencia_entregada = item.secuencia
+            if discontinuidad:
+                self._discontinuidades += 1
+                self._ultima_discontinuidad = item.secuencia or None
+                self._gap_pendiente = False
+                return replace(item, discontinuidad_antes=True)
+            return item
+
+    def estado_captura(self) -> EstadoCaptura:
+        """Devuelve métricas consistentes sin audio ni contenido transcripto."""
+        with self._callback_lock:
+            profundidad = self.q.qsize()
+            frame_ms = self.frame_samples * 1000.0 / self.sample_rate
+            return EstadoCaptura(
+                generacion=self._generacion_metricas,
+                frames_capturados=self._frames_capturados,
+                frames_entregados=self._frames_entregados,
+                frames_descartados=self._frames_descartados,
+                discontinuidades=self._discontinuidades,
+                queue_depth=profundidad,
+                max_queue_depth=self._max_queue_depth,
+                backlog_ms=profundidad * frame_ms,
+                degradada=self._gap_pendiente,
+                ultima_discontinuidad=self._ultima_discontinuidad,
+            )
