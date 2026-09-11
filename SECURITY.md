@@ -10,21 +10,28 @@ Ejemplos concretos del riesgo:
 
 ## Mitigaciones implementadas
 
-### Comando de voz "enviar" (apagado por defecto)
+### Acciones que generan Enter/Return (apagadas por defecto)
 
-El comando de voz "enviar" hace que ParlAR presione Enter en la ventana con foco. Si estuviera siempre activo, cualquier audio ambiente que Whisper transcriba como "enviar" ejecutaría esa tecla, lo que en una terminal enfocada puede significar ejecutar un comando.
+Los comandos "enviar", "nueva línea" y "nuevo párrafo" generan una o más
+pulsaciones de Enter. En una terminal, chat o formulario cualquiera de ellas
+puede ejecutar o enviar contenido.
 
-Por eso `comando_enviar` está en `false` por defecto. Solo se activa explícitamente:
+Por compatibilidad, `comando_enviar` es el gate único de todas esas acciones y
+está en `false` por defecto. Solo se activa explícitamente:
 
 ```json
 { "comando_enviar": true }
 ```
 
-en `~/.config/parlar/config.json`. Si lo activás, tené presente que cualquier frase que Whisper interprete como "enviar" (dicha por vos, por una radio, por quien sea) va a presionar Enter en lo que tengas enfocado.
+en `~/.config/parlar/config.json`. Si lo activás, cualquier frase completa que
+Whisper interprete como uno de esos comandos puede presionar Enter en la
+ventana enfocada. Las frases completamente citadas se tratan como texto.
 
 ### Filtro de alucinaciones de Whisper
 
-Whisper puede "alucinar" texto sobre silencio o ruido de fondo, típicamente frases como avisos de suscripción o créditos de subtítulos (artefacto conocido de su entrenamiento). ParlAR descarta segmentos con baja confianza (`no_speech_prob` alto y `avg_logprob` muy negativo simultáneamente) y frases que coinciden con un patrón de alucinaciones conocidas. Esto reduce el riesgo pero no lo elimina: un modelo puede alucinar frases no cubiertas por el patrón.
+Whisper puede "alucinar" texto sobre silencio o ruido de fondo. ParlAR descarta
+un segmento únicamente cuando combina baja confianza acústica y textual con
+un patrón conocido. Esto reduce el riesgo pero no lo elimina.
 
 ### Nada sale de la máquina
 
@@ -52,7 +59,9 @@ o el archivo puntual que corresponda. Si activás este flag en una máquina comp
 
 ## Qué no está mitigado (limitaciones conocidas)
 
-- Otros comandos de voz ("nuevo párrafo", "borrar última oración", "detener dictado") siguen activos por defecto. El impacto de ejecutarlos por accidente es bajo (insertan una línea, borran la última oración inyectada, o detienen la grabación), a diferencia de "enviar".
+- "Borrar última oración" y "detener dictado" siguen activos por defecto. Undo
+  solo usa inserciones que el backend reportó como tipeadas, pero depende del
+  foco y del estado del editor externo y no es transaccional.
 - El filtro de alucinaciones es heurístico, no elimina el riesgo, lo reduce.
 - Si grabás en un ambiente con audio de terceros (oficina, videollamada), ParlAR va a transcribir e inyectar esa voz igual que la tuya. La responsabilidad de cuándo grabar es del usuario.
 

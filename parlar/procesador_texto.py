@@ -202,10 +202,6 @@ class ProcesadorTexto:
         norm = re.sub(r"[^\w\sáéíóúñü]", "", crudo).strip().lower()
         for pat, (cmd, carga) in _PATRONES_CMD:
             if pat.match(norm):
-                if cmd == "enviar" and not self.comando_enviar:
-                    # Apagado por defecto: audio ambiente no puede presionar
-                    # Enter en la ventana enfocada. Ver SECURITY.md.
-                    return None
                 return Procesado(comando=cmd, carga=carga)
         return None
 

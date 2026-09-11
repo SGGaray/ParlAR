@@ -19,7 +19,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-
 def directorio_sesiones_por_defecto() -> Path:
     base = os.environ.get("XDG_DATA_HOME")
     if base:
@@ -70,6 +69,8 @@ class SalidaSesion:
 
 class SesionNula:
     """No-op cuando --guardar-sesion está desactivado. Mismo contrato."""
+
+    es_nulo = True
 
     def escribir_texto(self, texto: str) -> bool: return False
     def evento_vad(self, hablando: bool): pass

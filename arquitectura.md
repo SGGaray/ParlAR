@@ -67,6 +67,22 @@ mic → PCM int16 @16kHz → frames de 20ms → puerta VAD
     → inyector: pulsaciones sintéticas en la ventana con foco (X11 o Wayland)
 ```
 
+Cada texto confirmado se distribuye de manera independiente al inyector, a
+GuionAR y al transcript. Los resultados distinguen `inserted`, `copied`,
+`mirrored`, `persisted`, `failed` y `skipped`; éxito significa que ParlAR
+completó su operación local, no que un editor o GuionAR la haya confirmado.
+Las acciones de teclado no se espejan como texto.
+
+El control acepta una operación UTF-8 por conexión, delimitada por newline o
+EOF, con máximo 4 KiB y timeout acotado por cliente. Los clientes se atienden
+con concurrencia limitada para que uno silencioso no bloquee a los demás. El
+endpoint conserva identidad de inode: solo su dueño puede retirarlo.
+
+GuionAR conserva estado deseado y último estado enviado por separado. Una
+conexión nueva recibe el VAD y parcial actuales; los textos finales históricos
+no se reenvían. El transporte es best-effort, sin ACK, y respeta el límite
+documentado de 2.000 caracteres por mensaje final.
+
 ## 4. Stack tecnológico y justificación
 
 | Aspecto              | Elección                        | Por qué |

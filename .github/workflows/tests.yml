@@ -26,3 +26,6 @@ jobs:
           python -m unittest tests.test_lifecycle
           python -m unittest tests.test_streaming_alignment
           python -m unittest tests.test_backpressure
+          python -m unittest tests.test_delivery_output
+          python -m unittest tests.test_guionar_ipc
+          python -m unittest tests.test_control_ipc

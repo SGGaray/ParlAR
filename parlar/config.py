@@ -14,8 +14,10 @@ from pathlib import Path
 
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "parlar"
 CONFIG_FILE = CONFIG_DIR / "config.json"
-RUNTIME_DIR = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp"))
-SOCKET_PATH = RUNTIME_DIR / "parlar.sock"
+_runtime = os.environ.get("XDG_RUNTIME_DIR")
+RUNTIME_DIR = Path(_runtime) if _runtime and Path(_runtime).is_dir() else Path("/tmp")
+SOCKET_PATH = (RUNTIME_DIR / "parlar.sock" if _runtime and Path(_runtime).is_dir()
+               else RUNTIME_DIR / f"parlar-{os.getuid()}.sock")
 
 
 @dataclass
@@ -47,7 +49,7 @@ class Config:
     rewrite_mode: str = "none"         # none | formal | concise | email
     remove_fillers: bool = True
     voice_commands: bool = True
-    comando_enviar: bool = False       # comando de voz "enviar" (presiona Enter);
+    comando_enviar: bool = False       # autoriza TODA acción que genera Enter;
                                        # apagado por defecto: ver SECURITY.md
     ollama_model: str = ""             # ej. "llama3.2:3b"; vacío = solo reglas
     ollama_url: str = "http://127.0.0.1:11434"

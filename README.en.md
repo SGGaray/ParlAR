@@ -119,7 +119,20 @@ python -m parlar --guionar --modo streaming
 
 It can also be enabled permanently with `"guionar": true` in `~/.config/parlar/config.json`.
 
-The integration is fire-and-forget: if GuionAR is not running, ParlAR works exactly as before (sends are dropped in ~10 µs, no blocking, no errors in the pipeline). If GuionAR dies mid-session, dictation continues and the connection resumes on its own. In streaming mode, committed text appears bright and the still-unconfirmed hypothesis shows as a dim preview; the scroll advances only while the VAD detects speech. Everything stays on a local unix socket with `0600` permissions: the privacy model does not change.
+The integration is best-effort. Reconnection sends the current VAD and partial
+snapshot, but does not replay historical final text and has no application ACK.
+GuionAR limits each final text message to 2,000 characters. Its receiving
+socket permissions are owned by GuionAR, not ParlAR.
+
+Insertion, clipboard copy, GuionAR mirroring, and transcript persistence are
+independent results. Streaming clipboard fallback accumulates a recoverable
+utterance, but does not insert it or add it to undo history. Undo remains
+dependent on the focused external editor. By default `comando_enviar=false`
+blocks every voice action that generates Enter, including newline and paragraph.
+
+Control uses a `0600` Unix socket, one newline-terminated UTF-8 operation per
+connection, a 4 KiB limit, verified stale-socket recovery, and UID-qualified
+fallback paths under `/tmp`.
 
 ## Running the tests
 
@@ -129,6 +142,9 @@ python -m unittest tests.test_text_fidelity
 python -m unittest tests.test_lifecycle
 python -m unittest tests.test_streaming_alignment
 python -m unittest tests.test_backpressure
+python -m unittest tests.test_delivery_output
+python -m unittest tests.test_guionar_ipc
+python -m unittest tests.test_control_ipc
 ```
 
 The suites also cover session lifecycle, deterministic concurrency, mode

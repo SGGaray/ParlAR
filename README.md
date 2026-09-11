@@ -61,11 +61,33 @@ python -m parlar --guionar --modo streaming
 
 Flags: `--guionar` (alias `--guionar-enabled`) activa el envío; `--guionar-socket RUTA` cambia el socket (default `$XDG_RUNTIME_DIR/guionar.sock`). También podés dejarlo fijo con `"guionar": true` en la config.
 
-Es opcional y fire-and-forget: si GuionAR no está corriendo, ParlAR funciona exactamente igual (los envíos se descartan en ~10 µs, sin bloqueos ni errores). Si GuionAR se cae a mitad de sesión, el dictado sigue y la conexión se retoma sola. En modo streaming, el texto confirmado se ve en blanco y la hipótesis todavía no confirmada aparece en gris como vista previa; el scroll avanza solo mientras el VAD detecta voz. Todo viaja por un socket Unix local con permisos `0600`: el modelo de privacidad no cambia.
+Es opcional y best-effort: si GuionAR no está corriendo, el dictado continúa.
+Al reconectar se envía un snapshot del VAD y parcial actuales, pero no se
+reproduce texto final histórico y no existe ACK del consumidor. El receptor
+limita cada `text` a 2.000 caracteres. ParlAR no controla los permisos del
+socket receptor; GuionAR documenta `0600` para su endpoint.
 
 ## Comandos de voz (modo frase)
 
 Decilos exactos, como frase aislada: "nuevo párrafo", "punto y aparte", "nueva línea", "borra la última oración", "enviar", "detener dictado". Los equivalentes en inglés ("new paragraph", "delete last sentence", "send", "stop dictation") siguen funcionando.
+
+`comando_enviar=false` —el default— bloquea **toda** acción que genere
+Enter/Return, incluyendo nueva línea y nuevo párrafo. Activarlo autoriza esas
+acciones sobre cualquier ventana enfocada. Las frases completamente citadas no
+se ejecutan.
+
+## Semántica de salida
+
+Insertar, copiar, espejar en GuionAR y persistir el transcript son resultados
+independientes. Un fallo no cancela los otros sinks. El fallback de clipboard
+acumula la unidad streaming completa para que pueda pegarse manualmente, pero
+copiar no equivale a insertar y no entra al historial de undo. Undo solo opera
+sobre inserciones reconocidas y sigue dependiendo del foco/editor externo.
+
+El control usa un socket Unix `0600`, una operación UTF-8 por conexión,
+terminada por newline (EOF se acepta para clientes antiguos), con máximo 4 KiB.
+Una segunda instancia no reemplaza un listener activo ni archivos ajenos; un
+socket stale verificado sí se recupera. En `/tmp` la ruta incluye el UID.
 
 ## Modos de reescritura
 

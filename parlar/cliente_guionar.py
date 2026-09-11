@@ -1,9 +1,8 @@
 """Cliente GuionAR: envía texto y estado VAD al teleprompter por socket Unix.
 
 Diseño:
-- Fire-and-forget: si GuionAR no está corriendo, los envíos se descartan en
-  silencio y se reintenta la conexión en el próximo envío. Este módulo no
-  puede bloquear, demorar ni tirar excepciones hacia el pipeline de dictado.
+- Best-effort con timeout corto: si GuionAR no está corriendo, se reintenta la
+  conexión en el próximo envío. Nunca propaga excepciones al pipeline.
 - Opcional: se activa con `guionar: true` en la config o el flag --guionar.
   Si está desactivado, crear_cliente() devuelve un ClienteNulo (no-ops).
 - Deduplicación local: VAD solo se envía cuando cambia; los parciales solo
@@ -19,6 +18,8 @@ Protocolo (JSON por líneas, ver GuionAR/INTEGRATION.md):
 import json
 import os
 import socket
+import sys
+import threading
 
 
 def ruta_socket_por_defecto() -> str:
@@ -33,83 +34,145 @@ _MAX_TEXTO = 2000  # GuionAR trunca a esto; truncamos acá para no gastar socket
 
 
 class ClienteGuionAR:
-    """Emisor no bloqueante hacia GuionAR. Nunca lanza excepciones."""
+    """Emisor best-effort hacia GuionAR. Nunca lanza excepciones."""
 
     def __init__(self, ruta: str = ""):
         self.ruta = ruta or ruta_socket_por_defecto()
         self._sock = None
-        self._ultimo_vad = None
-        self._ultimo_parcial = None
+        self._vad_deseado = None
+        self._parcial_deseado = None
+        self._vad_enviado = None
+        self._parcial_enviado = None
+        self._cerrado = False
+        self._lock = threading.RLock()
 
     # ---------------------------------------------------------- transporte
     def _conectar(self) -> bool:
+        if self._cerrado:
+            return False
         if self._sock is not None:
             return True
         try:
             s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            s.setblocking(False)
+            s.settimeout(0.05)
             s.connect(self.ruta)
             self._sock = s
-            # tras reconectar, el estado remoto es desconocido: reenviá todo
-            self._ultimo_vad = None
-            self._ultimo_parcial = None
+            self._vad_enviado = None
+            self._parcial_enviado = None
+            if self._vad_deseado is not None:
+                if not self._enviar_conectado(
+                        {"type": "vad", "data": self._vad_deseado}):
+                    return False
+                self._vad_enviado = self._vad_deseado
+            if self._parcial_deseado is not None:
+                if not self._enviar_conectado(
+                        {"type": "partial", "data": self._parcial_deseado}):
+                    return False
+                self._parcial_enviado = self._parcial_deseado
             return True
         except OSError:
+            try:
+                s.close()
+            except (OSError, UnboundLocalError):
+                pass
             self._sock = None
             return False
 
-    def _enviar(self, obj: dict):
-        if not self._conectar():
-            return
+    def _desconectar(self):
+        sock, self._sock = self._sock, None
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+    def _enviar_conectado(self, obj: dict) -> bool:
         try:
             self._sock.sendall((json.dumps(obj, ensure_ascii=False) + "\n")
                                .encode("utf-8"))
+            return True
         except (OSError, BlockingIOError):
-            try:
-                self._sock.close()
-            except OSError:
-                pass
-            self._sock = None  # reconexión en el próximo envío
+            self._desconectar()
+            return False
+
+    def _enviar(self, obj: dict) -> bool:
+        with self._lock:
+            return self._conectar() and self._enviar_conectado(obj)
 
     # ---------------------------------------------------------- API pública
     def escribir_texto(self, texto: str):
-        if texto:
-            self._enviar({"type": "text", "data": texto[:_MAX_TEXTO]})
-            self._ultimo_parcial = None  # el final invalida el parcial
+        if not texto:
+            return False
+        limitado = texto[:_MAX_TEXTO]
+        if len(texto) > _MAX_TEXTO:
+            print("[guionar] texto final limitado a 2000 caracteres por el "
+                  "contrato del receptor", file=sys.stderr)
+        with self._lock:
+            if self._cerrado:
+                return False
+            conectado = self._conectar()
+            self._parcial_deseado = ""
+            ok = conectado and self._enviar_conectado(
+                {"type": "text", "data": limitado})
+            if ok:
+                self._parcial_enviado = ""
+            return ok
 
     def enviar_parcial(self, texto: str):
         texto = (texto or "")[-_MAX_TEXTO:]
-        if texto == self._ultimo_parcial:
-            return
-        self._ultimo_parcial = texto
-        self._enviar({"type": "partial", "data": texto})
+        with self._lock:
+            if self._cerrado:
+                return False
+            self._parcial_deseado = texto
+            if not self._conectar():
+                return False
+            if texto == self._parcial_enviado:
+                return True
+            ok = self._enviar_conectado({"type": "partial", "data": texto})
+            if ok:
+                self._parcial_enviado = texto
+            return ok
 
     def evento_vad(self, hablando: bool):
         hablando = bool(hablando)
-        if hablando == self._ultimo_vad:
-            return
-        self._ultimo_vad = hablando
-        self._enviar({"type": "vad", "data": hablando})
+        with self._lock:
+            if self._cerrado:
+                return False
+            self._vad_deseado = hablando
+            if not self._conectar():
+                return False
+            if hablando == self._vad_enviado:
+                return True
+            ok = self._enviar_conectado({"type": "vad", "data": hablando})
+            if ok:
+                self._vad_enviado = hablando
+            return ok
 
     def enviar_limpiar(self):
-        self._enviar({"type": "clear"})
+        with self._lock:
+            if self._cerrado:
+                return False
+            self._parcial_deseado = ""
+            ok = self._conectar() and self._enviar_conectado({"type": "clear"})
+            if ok:
+                self._parcial_enviado = ""
+            return ok
 
     def cerrar(self):
-        if self._sock is not None:
-            try:
-                self._sock.close()
-            except OSError:
-                pass
-            self._sock = None
+        with self._lock:
+            self._cerrado = True
+            self._desconectar()
 
 
 class ClienteNulo:
     """No-op cuando la integración está desactivada. Mismo contrato."""
 
-    def escribir_texto(self, texto: str): pass
-    def enviar_parcial(self, texto: str): pass
-    def evento_vad(self, hablando: bool): pass
-    def enviar_limpiar(self): pass
+    es_nulo = True
+
+    def escribir_texto(self, texto: str): return False
+    def enviar_parcial(self, texto: str): return False
+    def evento_vad(self, hablando: bool): return False
+    def enviar_limpiar(self): return False
     def cerrar(self): pass
 
 

@@ -12,11 +12,16 @@ Comandos (español primero, alias en inglés entre paréntesis):
 
 import os
 import socket
+import stat
 import sys
 import threading
 from typing import Callable
 
 from .config import SOCKET_PATH
+
+_MAX_COMANDO = 4096
+_TIMEOUT_CLIENTE = 0.35
+_MAX_CLIENTES = 8
 
 # alias inglés -> canónico español (UX para quien prefiera comandos en inglés)
 ALIAS_COMANDOS = {
@@ -43,27 +48,48 @@ def normalizar_comando(cmd: str) -> list[str]:
 
 
 class ServidorControl:
-    def __init__(self, manejador: Callable[[str], str]):
+    def __init__(self, manejador: Callable[[str], str], ruta=None):
         self.manejador = manejador
+        self.ruta = ruta or SOCKET_PATH
         self._sock: socket.socket | None = None
         self._hilo: threading.Thread | None = None
         self._corriendo = False
+        self._identidad = None
+        self._clientes = threading.BoundedSemaphore(_MAX_CLIENTES)
+        self._hilos_clientes = set()
+        self._hilos_lock = threading.Lock()
 
     def iniciar(self):
-        try:
-            if SOCKET_PATH.exists():
-                SOCKET_PATH.unlink()
-        except OSError:
-            pass
+        self._preparar_ruta()
         self._sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self._sock.bind(str(SOCKET_PATH))
-        os.chmod(SOCKET_PATH, 0o600)
-        self._sock.listen(4)
+        self._sock.bind(str(self.ruta))
+        info = os.lstat(self.ruta)
+        self._identidad = (info.st_dev, info.st_ino)
+        os.chmod(self.ruta, 0o600)
+        self._sock.listen(_MAX_CLIENTES)
         self._sock.settimeout(0.5)
         self._corriendo = True
         self._hilo = threading.Thread(target=self._bucle, name="control", daemon=True)
         self._hilo.start()
-        print(f"[control] escuchando en {SOCKET_PATH}")
+        print(f"[control] escuchando en {self.ruta}")
+
+    def _preparar_ruta(self):
+        try:
+            info = os.lstat(self.ruta)
+        except FileNotFoundError:
+            return
+        if not stat.S_ISSOCK(info.st_mode):
+            raise RuntimeError(f"la ruta de control existe y no es socket: {self.ruta}")
+        prueba = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        prueba.settimeout(0.1)
+        try:
+            prueba.connect(str(self.ruta))
+        except (ConnectionRefusedError, FileNotFoundError):
+            os.unlink(self.ruta)
+            return
+        finally:
+            prueba.close()
+        raise RuntimeError("ya existe una instancia activa de ParlAR")
 
     def _bucle(self):
         while self._corriendo:
@@ -73,15 +99,61 @@ class ServidorControl:
                 continue
             except OSError:
                 break
-            try:
-                conn.settimeout(2.0)
-                data = conn.recv(4096).decode(errors="replace").strip()
-                respuesta = self.manejador(data) if data else "ERR vacío"
-                conn.sendall((respuesta + "\n").encode())
-            except Exception as e:
-                print(f"[control] error de cliente: {e}", file=sys.stderr)
-            finally:
+            if not self._clientes.acquire(blocking=False):
                 conn.close()
+                continue
+            hilo = threading.Thread(
+                target=self._atender_cliente, args=(conn,),
+                name="control-cliente", daemon=True)
+            with self._hilos_lock:
+                self._hilos_clientes.add(hilo)
+            hilo.start()
+
+    def _leer_comando(self, conn):
+        conn.settimeout(_TIMEOUT_CLIENTE)
+        datos = bytearray()
+        while len(datos) <= _MAX_COMANDO:
+            trozo = conn.recv(min(1024, _MAX_COMANDO + 1 - len(datos)))
+            if not trozo:
+                break
+            datos.extend(trozo)
+            if b"\n" in trozo:
+                break
+        if len(datos) > _MAX_COMANDO:
+            return None, "ERR demasiado largo"
+        if not datos:
+            return None, "ERR vacío"
+        if b"\n" in datos:
+            linea, resto = bytes(datos).split(b"\n", 1)
+            if resto:
+                return None, "ERR múltiples líneas"
+        else:
+            linea = bytes(datos)  # compatibilidad: comando terminado por EOF
+        try:
+            comando = linea.decode("utf-8", errors="strict").strip()
+        except UnicodeDecodeError:
+            return None, "ERR UTF-8 inválido"
+        return (comando, None) if comando else (None, "ERR vacío")
+
+    def _atender_cliente(self, conn):
+        try:
+            comando, error = self._leer_comando(conn)
+            respuesta = error or self.manejador(comando)
+            conn.sendall((respuesta + "\n").encode("utf-8"))
+        except socket.timeout:
+            try:
+                conn.sendall(b"ERR incompleto\n")
+            except OSError:
+                pass
+        except BrokenPipeError:
+            pass
+        except (OSError, ValueError) as exc:
+            print(f"[control] error de cliente: {exc}", file=sys.stderr)
+        finally:
+            conn.close()
+            with self._hilos_lock:
+                self._hilos_clientes.discard(threading.current_thread())
+            self._clientes.release()
 
     def detener(self):
         self._corriendo = False
@@ -91,8 +163,11 @@ class ServidorControl:
             except OSError:
                 pass
         try:
-            SOCKET_PATH.unlink()
-        except OSError:
+            info = os.lstat(self.ruta)
+            identidad = (info.st_dev, info.st_ino)
+            if stat.S_ISSOCK(info.st_mode) and identidad == self._identidad:
+                os.unlink(self.ruta)
+        except FileNotFoundError:
             pass
 
 
@@ -102,7 +177,7 @@ def enviar_comando(cmd: str) -> str:
     s.settimeout(3.0)
     try:
         s.connect(str(SOCKET_PATH))
-        s.sendall(cmd.encode())
+        s.sendall((cmd + "\n").encode("utf-8"))
         return s.recv(4096).decode(errors="replace").strip()
     finally:
         s.close()

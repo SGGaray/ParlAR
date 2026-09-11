@@ -15,6 +15,8 @@ import subprocess
 import sys
 from typing import List, Optional
 
+from .entrega import EstadoEntrega, ResultadoSink
+
 
 def _cual(nombre: str) -> Optional[str]:
     return shutil.which(nombre)
@@ -34,6 +36,9 @@ class Inyector:
         self.type_delay_ms = max(0, type_delay_ms)
         self.backend = self._resolver(backend)
         self._registro_oraciones: List[str] = []  # para borrar_ultima
+        self._clipboard_unidad = ""
+        self._clipboard_unidad_activa = False
+        self._clipboard_generacion = None
         print(f"[inyector] backend: {self.backend}")
 
     # ---------------------------------------------------------------- setup
@@ -57,15 +62,35 @@ class Inyector:
 
     # ---------------------------------------------------------------- tipeo
 
-    def escribir_texto(self, texto: str, registrar: bool = True) -> bool:
+    def escribir_texto(self, texto: str, registrar: bool = True) -> ResultadoSink:
         if not texto:
-            return True
+            return ResultadoSink(EstadoEntrega.SKIPPED)
         ok = self._tipear(texto)
-        if not ok:
-            ok = self._portapapeles(texto)
-        if ok and registrar:
-            self._registrar(texto)
-        return ok
+        if ok:
+            if registrar:
+                self._registrar(texto)
+            return ResultadoSink(EstadoEntrega.INSERTED)
+        contenido = texto
+        if self._clipboard_unidad_activa:
+            self._clipboard_unidad += texto
+            contenido = self._clipboard_unidad
+        if self._portapapeles(contenido):
+            return ResultadoSink(EstadoEntrega.COPIED)
+        return ResultadoSink(EstadoEntrega.FAILED)
+
+    def iniciar_unidad(self, generacion=None):
+        self._clipboard_unidad = ""
+        self._clipboard_unidad_activa = True
+        self._clipboard_generacion = generacion
+
+    def finalizar_unidad(self):
+        self._clipboard_unidad_activa = False
+        self._clipboard_generacion = None
+
+    def cancelar_unidad(self):
+        self._clipboard_unidad = ""
+        self._clipboard_unidad_activa = False
+        self._clipboard_generacion = None
 
     def _tipear(self, texto: str) -> bool:
         try:
@@ -113,12 +138,16 @@ class Inyector:
         return False
 
     def presionar_enter(self) -> bool:
-        if self.backend == "xdotool":
-            return self._correr(["xdotool", "key", "--clearmodifiers", "Return"])
-        if self.backend == "wtype":
-            return self._correr(["wtype", "-k", "Return"])
-        if self.backend == "ydotool":
-            return self._correr(["ydotool", "key", "28:1", "28:0"])
+        try:
+            if self.backend == "xdotool":
+                return self._correr(
+                    ["xdotool", "key", "--clearmodifiers", "Return"])
+            if self.backend == "wtype":
+                return self._correr(["wtype", "-k", "Return"])
+            if self.backend == "ydotool":
+                return self._correr(["ydotool", "key", "28:1", "28:0"])
+        except Exception as exc:
+            print(f"[inyector] Enter falló: {exc}", file=sys.stderr)
         return False
 
     def nueva_linea(self, cantidad: int = 1) -> bool:
@@ -165,6 +194,7 @@ class Inyector:
 
     def reiniciar_registro(self):
         self._registro_oraciones.clear()
+        self.cancelar_unidad()
 
     # ------------------------------------------------------- interfaz de salida
 
@@ -175,7 +205,7 @@ class Inyector:
 
     def cerrar(self):
         """No-op: el inyector no mantiene recursos que cerrar."""
-        pass
+        self.cancelar_unidad()
 
     # ---------------------------------------------------------------- ayudantes
 
