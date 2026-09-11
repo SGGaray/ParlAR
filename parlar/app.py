@@ -49,6 +49,7 @@ class App:
                  proc=None, inyector=None, guionar=None, sesion=None, mic=None,
                  ui=None, control=None, atajos=None,
                  vad_factory=crear_vad, segmentador_factory=Segmentador):
+        cfg.validate()
         self.cfg = cfg
         self.grabando = threading.Event()
         self.saliendo = threading.Event()
@@ -73,7 +74,7 @@ class App:
         self._segmentador_factory = segmentador_factory
 
         print("=" * 60)
-        print("ParlAR: dictado local. Nada sale de esta máquina.")
+        print("ParlAR: dictado local, sin telemetría.")
         print("=" * 60)
 
         if motor is None and (frases is None or streaming is None):
@@ -244,7 +245,7 @@ class App:
             return error is None
 
     def cambiar_modo(self, modo: str) -> bool:
-        if modo not in ("utterance", "streaming"):
+        if modo not in Config.MODOS:
             return False
         with self._transicion_lock:
             with self._estado_cv:
@@ -692,11 +693,11 @@ class App:
             return self._respuesta_control_lifecycle(self.detener_grabacion())
         if op == "estado":
             return self._respuesta_estado()
-        if op == "modo" and len(partes) > 1 and partes[1] in ("utterance", "streaming"):
+        if op == "modo" and len(partes) > 1 and partes[1] in Config.MODOS:
             return (f"OK modo={partes[1]}" if self.cambiar_modo(partes[1])
                     else "ERR aplicación cerrada")
         if op == "reescritura" and len(partes) > 1 \
-                and partes[1] in ("none", "formal", "concise", "email"):
+                and partes[1] in Config.REESCRITURAS:
             with self._estado_cv:
                 if self._estado in (EstadoApp.SHUTTING_DOWN, EstadoApp.CLOSED):
                     return "ERR aplicación cerrada"

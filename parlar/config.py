@@ -8,9 +8,11 @@ configuraciones existentes (compatibilidad hacia atrás).
 """
 
 import json
+import math
 import os
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
+from typing import ClassVar
 
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "parlar"
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -20,8 +22,27 @@ SOCKET_PATH = (RUNTIME_DIR / "parlar.sock" if _runtime and Path(_runtime).is_dir
                else RUNTIME_DIR / f"parlar-{os.getuid()}.sock")
 
 
+class ErrorConfiguracion(ValueError):
+    """Configuración inválida que impide iniciar ParlAR con seguridad."""
+
+
 @dataclass
 class Config:
+    MODOS: ClassVar[frozenset[str]] = frozenset({"utterance", "streaming"})
+    DISPOSITIVOS: ClassVar[frozenset[str]] = frozenset({"auto", "cpu", "cuda"})
+    COMPUTE_TYPES: ClassVar[frozenset[str]] = frozenset(
+        {"auto", "int8", "float16", "int8_float16"}
+    )
+    REESCRITURAS: ClassVar[frozenset[str]] = frozenset(
+        {"none", "formal", "concise", "email"}
+    )
+    INYECTORES: ClassVar[frozenset[str]] = frozenset(
+        {"auto", "xdotool", "wtype", "ydotool", "clipboard"}
+    )
+    CAMPOS_DINAMICOS: ClassVar[frozenset[str]] = frozenset(
+        {"mode", "rewrite_mode"}
+    )
+
     # --- STT ---
     model_size: str = "small"          # tiny | base | small | medium | large-v3
     device: str = "auto"               # auto | cpu | cuda
@@ -79,22 +100,166 @@ class Config:
     @classmethod
     def load(cls) -> "Config":
         cfg = cls()
-        source = CONFIG_FILE if CONFIG_FILE.exists() else None
-        if source is not None:
+        if CONFIG_FILE.exists():
             try:
-                data = json.loads(source.read_text())
-                for k, v in data.items():
-                    if hasattr(cfg, k):
-                        setattr(cfg, k, v)
-                    else:
-                        cfg.extras[k] = v
+                data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
             except (json.JSONDecodeError, OSError) as e:
-                print(f"[config] no se pudo leer {source}: {e}; usando valores por defecto")
+                raise ErrorConfiguracion(
+                    f"no se pudo leer {CONFIG_FILE}: {e}"
+                ) from e
+            if not isinstance(data, dict):
+                raise ErrorConfiguracion(
+                    f"{CONFIG_FILE}: la raíz debe ser un objeto JSON"
+                )
+
+            configurables = {
+                campo.name: campo.type for campo in fields(cls)
+                if campo.name != "extras"
+            }
+            for nombre, valor in data.items():
+                if nombre == "extras":
+                    if type(valor) is not dict:
+                        raise ErrorConfiguracion(
+                            f"{CONFIG_FILE}: 'extras' debe ser un objeto JSON"
+                        )
+                    cfg.extras.update(valor)
+                elif nombre in configurables:
+                    esperado = configurables[nombre]
+                    if type(valor) is not esperado:
+                        raise ErrorConfiguracion(
+                            f"{CONFIG_FILE}: '{nombre}' debe ser "
+                            f"{cls._nombre_tipo(esperado)}, no "
+                            f"{type(valor).__name__}"
+                        )
+                    setattr(cfg, nombre, valor)
+                else:
+                    cfg.extras[nombre] = valor
+        cfg.validate()
         return cfg
 
     def save(self) -> None:
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        CONFIG_FILE.write_text(json.dumps(asdict(self), indent=2))
+        self.validate()
+        directorio = CONFIG_FILE.parent
+        creado = not directorio.exists()
+        directorio.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if creado:
+            directorio.chmod(0o700)
+
+        contenido = (json.dumps(asdict(self), indent=2, ensure_ascii=False) + "\n").encode()
+        temporal = None
+        fd = None
+        try:
+            for intento in range(100):
+                candidata = directorio / f".{CONFIG_FILE.name}.tmp-{os.getpid()}-{intento}"
+                try:
+                    fd = os.open(candidata, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                    temporal = candidata
+                    break
+                except FileExistsError:
+                    continue
+            else:
+                raise OSError("no se pudo reservar un archivo temporal")
+
+            archivo = os.fdopen(fd, "wb")
+            fd = None  # desde aquí el objeto archivo es dueño del descriptor
+            with archivo:
+                archivo.write(contenido)
+                archivo.flush()
+            os.replace(temporal, CONFIG_FILE)
+            temporal = None
+            CONFIG_FILE.chmod(0o600)
+        finally:
+            if fd is not None:
+                os.close(fd)
+            if temporal is not None:
+                try:
+                    temporal.unlink()
+                except FileNotFoundError:
+                    pass
+
+    def validate(self) -> None:
+        """Verifica tipos, dominios y relaciones antes de crear recursos."""
+        errores = []
+        for campo in fields(self):
+            esperado = campo.type
+            valor = getattr(self, campo.name)
+            if type(valor) is not esperado:
+                errores.append(
+                    f"'{campo.name}' debe ser {self._nombre_tipo(esperado)}, "
+                    f"no {type(valor).__name__}"
+                )
+        if errores:
+            raise ErrorConfiguracion("; ".join(errores))
+
+        def enum(nombre, opciones):
+            valor = getattr(self, nombre)
+            if valor not in opciones:
+                permitidos = ", ".join(sorted(opciones))
+                errores.append(
+                    f"'{nombre}'={valor!r} no es válido; se esperaba: {permitidos}"
+                )
+
+        enum("device", self.DISPOSITIVOS)
+        enum("compute_type", self.COMPUTE_TYPES)
+        enum("mode", self.MODOS)
+        enum("rewrite_mode", self.REESCRITURAS)
+        enum("injector", self.INYECTORES)
+
+        if not self.model_size.strip():
+            errores.append("'model_size' no puede estar vacío")
+        if self.sample_rate != 16000:
+            errores.append(
+                f"'sample_rate'={self.sample_rate}: solo se admite 16000 Hz "
+                "(sin resampling)"
+            )
+        if self.frame_ms not in {10, 20, 30}:
+            errores.append(
+                f"'frame_ms'={self.frame_ms}: WebRTC VAD requiere 10, 20 o 30"
+            )
+        if not 0 <= self.vad_aggressiveness <= 3:
+            errores.append(
+                f"'vad_aggressiveness'={self.vad_aggressiveness}: "
+                "debe estar entre 0 y 3"
+            )
+        if self.beam_size <= 0:
+            errores.append(f"'beam_size'={self.beam_size}: debe ser mayor que 0")
+        if self.silence_ms <= 0:
+            errores.append(f"'silence_ms'={self.silence_ms}: debe ser mayor que 0")
+        if self.preroll_ms < 0:
+            errores.append(f"'preroll_ms'={self.preroll_ms}: no puede ser negativo")
+        if self.preroll_ms < self.min_speech_ms:
+            errores.append(
+                f"'preroll_ms'={self.preroll_ms}: debe ser mayor o igual que "
+                f"'min_speech_ms'={self.min_speech_ms}"
+            )
+        if self.min_speech_ms <= 0:
+            errores.append(
+                f"'min_speech_ms'={self.min_speech_ms}: debe ser mayor que 0"
+            )
+        if self.type_delay_ms < 0:
+            errores.append(
+                f"'type_delay_ms'={self.type_delay_ms}: no puede ser negativo"
+            )
+
+        for nombre in ("max_utterance_s", "stream_interval_s", "stream_trim_s"):
+            valor = getattr(self, nombre)
+            if not math.isfinite(valor) or valor <= 0:
+                errores.append(
+                    f"'{nombre}'={valor!r}: debe ser finito y mayor que 0"
+                )
+        if self.min_speech_ms > self.max_utterance_s * 1000:
+            errores.append(
+                f"'min_speech_ms'={self.min_speech_ms}: no puede superar "
+                f"'max_utterance_s'={self.max_utterance_s}"
+            )
+
+        if errores:
+            raise ErrorConfiguracion("; ".join(errores))
+
+    @staticmethod
+    def _nombre_tipo(tipo) -> str:
+        return {str: "texto", int: "entero", float: "número decimal",
+                bool: "booleano"}.get(tipo, tipo.__name__)
 
     @property
     def frame_samples(self) -> int:

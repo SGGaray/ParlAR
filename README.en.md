@@ -1,14 +1,21 @@
 # ParlAR
 
-**Local-first, system-wide voice dictation for Linux. Spanish-first. 100% offline.**
+**Local-first, system-wide voice dictation for Linux. Spanish-first.**
 
-Speak into any application. ParlAR captures your voice, transcribes it locally with Whisper, cleans up the text (including proper Spanish punctuation like ¿ and ¡), and types it into whatever window has focus. No cloud, no API keys, no telemetry: nothing ever leaves your machine.
+Speak into any application. ParlAR captures your voice, transcribes it locally
+with Whisper, cleans up the text (including proper Spanish punctuation like ¿
+and ¡), and types it into whatever window has focus. It has no telemetry and
+needs no API keys. Network traffic occurs only if you explicitly configure an
+external service, such as a remote `ollama_url`.
 
 > Versión en español (principal): [README.md](README.md)
 
 ## Why
 
-Cloud dictation tools send every word you speak to someone else's servers. ParlAR is built on a single constraint: **all processing happens on your hardware**. The optional rewrite feature can use a local Ollama model, and even that call never leaves 127.0.0.1.
+Cloud dictation tools send every word you speak to someone else's servers.
+ParlAR performs transcription and its default cleanup on your hardware. The
+optional rewrite feature can call Ollama at loopback by default; changing
+`ollama_url` to a remote endpoint sends rewrite text to that endpoint.
 
 ## Features
 
@@ -134,6 +141,24 @@ Control uses a `0600` Unix socket, one newline-terminated UTF-8 operation per
 connection, a 4 KiB limit, verified stale-socket recovery, and UID-qualified
 fallback paths under `/tmp`.
 
+Configuration is validated before the model or microphone is initialized.
+JSON types are strict, capture is fixed at 16 kHz, and WebRTC VAD frame size
+must be 10, 20, or 30 ms. Only `mode` and `rewrite_mode` are runtime-dynamic;
+other changes require a restart. Saved configuration is atomically replaced
+and uses mode `0600` in a newly created `0700` directory.
+
+Session transcripts are disabled by default. `--guardar-sesion` creates one
+exclusive `0600` plaintext file per daemon run in the session directory,
+which is created as `0700`; concurrent runs never append to the same file.
+ParlAR does not delete or encrypt these files. A transcript is an append-only
+history of confirmed emissions, not a reconstruction of Return, undo, editor,
+or clipboard state. Normal logs contain operational metadata, not dictated
+text.
+
+Installation and provisioning may download dependencies and models. At
+runtime, GuionAR uses local Unix IPC. The clipboard and destination application
+are outside the ParlAR process and its storage guarantees.
+
 ## Running the tests
 
 ```bash
@@ -145,6 +170,8 @@ python -m unittest tests.test_backpressure
 python -m unittest tests.test_delivery_output
 python -m unittest tests.test_guionar_ipc
 python -m unittest tests.test_control_ipc
+python -m unittest tests.test_config_validation
+python -m unittest tests.test_privacy_session
 ```
 
 The suites also cover session lifecycle, deterministic concurrency, mode

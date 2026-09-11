@@ -1,6 +1,9 @@
 # ParlAR: dictado local-primero, a nivel sistema, para Linux
 
-Alternativa a Wispr Flow enfocada en privacidad. Todo corre en tu máquina. Ni audio, ni texto, ni telemetría salen de ella.
+Alternativa a Wispr Flow enfocada en privacidad. Captura, transcripción y
+limpieza predeterminada corren en tu máquina, sin telemetría. Una reescritura
+con `ollama_url` remoto, configurada explícitamente, sí envía texto a ese
+endpoint.
 
 ## 1. Cómo funcionan realmente Wispr Flow y herramientas similares
 
@@ -83,6 +86,16 @@ conexión nueva recibe el VAD y parcial actuales; los textos finales históricos
 no se reenvían. El transporte es best-effort, sin ACK, y respeta el límite
 documentado de 2.000 caracteres por mensaje final.
 
+La red no forma parte de captura ni STT. El provisioning puede descargar
+dependencias/modelos y la reescritura puede usar la `ollama_url` configurable;
+loopback es el default, no una restricción. GuionAR usa IPC Unix local. El
+portapapeles y la aplicación destino son fronteras externas al proceso.
+
+El transcript opcional es un historial append-only de emisiones confirmadas,
+no event sourcing del editor: no reconstruye Return, undo ni clipboard. Cada
+corrida reserva con creación exclusiva un archivo `0600`; si ParlAR crea el
+directorio, lo hace `0700`.
+
 ## 4. Stack tecnológico y justificación
 
 | Aspecto              | Elección                        | Por qué |
@@ -95,7 +108,7 @@ documentado de 2.000 caracteres por mensaje final.
 | Atajos               | pynput en X11; socket unix + `parlarctl` en Wayland | Los compositores Wayland no permiten capturas globales de teclas desde apps arbitrarias; el patrón correcto es asignar `parlarctl alternar` a un atajo del compositor. |
 | Indicador            | tkinter                         | Cero dependencias extra (python3-tk), puntito sin bordes siempre visible. |
 | IPC                  | Socket de dominio Unix          | Permite que cualquier script/daemon de atajos controle la instancia corriendo. |
-| Reescritura (opcional)| Reglas, u Ollama local         | Mantiene la garantía de "nada sale de la máquina". La llamada a Ollama va solo a 127.0.0.1. |
+| Reescritura (opcional)| Reglas, u Ollama configurable  | Las reglas son locales. Ollama usa 127.0.0.1 por defecto; una URL remota envía allí el texto. |
 
 ## 5. Estrategia de latencia
 

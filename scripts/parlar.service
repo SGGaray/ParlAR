@@ -10,6 +10,7 @@ WorkingDirectory=%h/parlar
 ExecStart=%h/parlar/.venv/bin/python -m parlar
 Restart=on-failure
 RestartSec=3
+UMask=0077
 
 [Install]
 WantedBy=default.target

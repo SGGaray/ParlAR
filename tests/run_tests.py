@@ -128,8 +128,8 @@ def test_espanol():
     r = p.procesar_frase("borra la última oración")
     check("comando: borra la última oración", r.comando == "borrar_ultima")
     r = p.procesar_frase("Enviar")
-    check("comando: enviar (apagado por defecto, no se ejecuta)",
-          r.comando is None and r.texto == "Enviar")
+    check("comando: enviar se reconoce; App aplica el gate de Return",
+          r.comando == "enviar")
     p_enviar_on = ProcesadorTexto(comando_enviar=True)
     r = p_enviar_on.procesar_frase("Enviar")
     check("comando: enviar (activado explícitamente, sí se ejecuta)",
@@ -270,8 +270,11 @@ def test_salida_sesion():
     try:
         sesion = SalidaSesion(directorio=tmp)
         check("crea el directorio de sesiones", tmp.is_dir())
-        check("nombre de archivo con patrón AAAA-MM-DD_HHMM.txt",
-              sesion.ruta.name.endswith(".txt") and len(sesion.ruta.stem) == 15,
+        partes_nombre = sesion.ruta.stem.split("-")
+        check("nombre de archivo exclusivo legible con token",
+              (len(partes_nombre) == 5 and partes_nombre[0] == "parlar" and
+               len(partes_nombre[1]) == 8 and len(partes_nombre[2]) == 6 and
+               len(partes_nombre[3]) == 6 and len(partes_nombre[4]) == 8),
               sesion.ruta.name)
 
         ok1 = sesion.escribir_texto("hola mundo")

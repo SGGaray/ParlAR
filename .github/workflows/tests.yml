@@ -29,3 +29,5 @@ jobs:
           python -m unittest tests.test_delivery_output
           python -m unittest tests.test_guionar_ipc
           python -m unittest tests.test_control_ipc
+          python -m unittest tests.test_config_validation
+          python -m unittest tests.test_privacy_session

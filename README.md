@@ -1,6 +1,9 @@
 # ParlAR
 
-Dictado local, a nivel sistema, para Linux. Hablás y el texto limpio aparece tipeado en la ventana que tenga el foco. Sin nube, sin claves de API: nada sale de tu máquina.
+Dictado local-primero, a nivel sistema, para Linux. Hablás y el texto limpio
+aparece tipeado en la ventana que tenga el foco. No usa telemetría ni necesita
+claves de API. La transcripción es local; solo hay tráfico de red si configurás
+explícitamente un servicio externo, por ejemplo un `ollama_url` remoto.
 
 > English version: [README.en.md](README.en.md)
 
@@ -101,8 +104,10 @@ un comando pero está entre comillas se conserva como texto literal.
 reglas locales se limitan a equivalencias seguras (ok → de acuerdo, porfa → por
 favor, finde → fin de semana; en conciso se limpian marcadores discursivos). Si
 corrés [Ollama](https://ollama.com) local, poné `ollama_model` en la config (ej.
-`"llama3.2:3b"`) y la reescritura pasa por ahí, siempre 127.0.0.1. Como toda
-reescritura generativa, esa opción puede cambiar la formulación del dictado.
+`"llama3.2:3b"`) y la reescritura pasa por ahí. `ollama_url` apunta a
+`127.0.0.1` por defecto, pero es configurable: una URL remota envía allí el
+texto a reescribir. Como toda reescritura generativa, esa opción puede cambiar
+la formulación del dictado.
 
 En modo frase, los patrones conocidos de alucinación se descartan únicamente
 cuando el mismo segmento también tiene baja confianza acústica y textual. Un
@@ -116,7 +121,38 @@ URL o una frase como "suscríbete" con buena confianza se conserva.
 python -m parlar --modelo small --idioma es --guardar-config
 ```
 
-Perillas útiles: `model_size` (tiny/base/small/medium/large-v3), `silence_ms`, `vad_aggressiveness` (subilo a 3 en ambientes ruidosos), `hotkey_toggle`, `type_delay_ms`. Las claves del JSON se mantienen en inglés a propósito para no romper configs existentes.
+La configuración se valida completa antes de cargar el modelo o abrir el
+micrófono. Los tipos JSON son estrictos (`false` no equivale a `"false"`), los
+valores fuera de dominio impiden arrancar y el error se informa sin traceback.
+La captura tiene un contrato fijo de 16 kHz; WebRTC VAD admite frames de 10,
+20 o 30 ms. En ejecución solo `mode` y `rewrite_mode` cambian dinámicamente;
+el resto requiere reiniciar. Las claves desconocidas se conservan en `extras`
+sin poder reemplazar métodos internos.
+
+`--guardar-config` reemplaza el JSON de forma atómica. Si ParlAR crea el
+directorio usa permisos `0700`, y el archivo queda `0600` aun con una umask
+permisiva.
+
+Perillas útiles: `model_size` (tiny/base/small/medium/large-v3), `silence_ms`,
+`vad_aggressiveness` (subilo a 3 en ambientes ruidosos), `hotkey_toggle` y
+`type_delay_ms`. Las claves del JSON se mantienen en inglés por compatibilidad.
+
+## Transcript local opcional
+
+`--guardar-sesion` está apagado por defecto. Al activarlo, cada corrida crea
+un archivo exclusivo con nombre
+`parlar-AAAAMMDD-HHMMSS-microsegundos-token.txt`; nunca reutiliza ni agrega a
+un transcript de otra instancia. Si crea el directorio lo hace `0700` y cada
+archivo es `0600`. El contenido sigue siendo texto plano sin cifrar y ParlAR
+no lo elimina automáticamente. Los logs normales registran estado, tiempos y
+rutas, pero no el texto dictado. El transcript es un historial append-only de
+emisiones confirmadas: no reconstruye Return, undo, estado del editor ni del
+portapapeles.
+
+La instalación/provisión sí puede descargar dependencias y modelos. En
+ejecución, GuionAR usa IPC Unix local. El portapapeles y la aplicación que
+recibe el tipeo están fuera del proceso y de las garantías de almacenamiento
+de ParlAR.
 
 ## Ajuste de rendimiento
 

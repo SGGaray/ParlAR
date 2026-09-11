@@ -112,7 +112,8 @@ class Inyector:
             if self.backend == "clipboard":
                 return False
         except Exception as e:
-            print(f"[inyector] {self.backend} falló: {e}", file=sys.stderr)
+            print(f"[inyector] {self.backend} falló: {type(e).__name__}",
+                  file=sys.stderr)
         return False
 
     def retroceso(self, cantidad: int) -> bool:
@@ -216,7 +217,8 @@ class Inyector:
         elif _cual("xclip"):
             herramienta = ["xclip", "-selection", "clipboard"]
         if herramienta is None:
-            print(f"[inyector] SIN herramienta de inyección. El texto era:\n{texto}",
+            print(f"[inyector] SIN herramienta de inyección; texto no insertado "
+                  f"({len(texto)} caracteres)",
                   file=sys.stderr)
             return False
         try:
@@ -226,7 +228,8 @@ class Inyector:
                             "portapapeles, presioná Ctrl+V.")
             return True
         except Exception as e:
-            print(f"[inyector] portapapeles falló: {e}", file=sys.stderr)
+            print(f"[inyector] portapapeles falló: {type(e).__name__}",
+                  file=sys.stderr)
             return False
 
     def _notificar(self, titulo: str, cuerpo: str):
@@ -236,8 +239,10 @@ class Inyector:
 
     @staticmethod
     def _correr(cmd: List[str]) -> bool:
-        r = subprocess.run(cmd, capture_output=True, timeout=30)
+        r = subprocess.run(cmd, capture_output=True, check=False, timeout=30)
         if r.returncode != 0:
-            print(f"[inyector] {' '.join(cmd[:2])} rc={r.returncode}: "
-                  f"{r.stderr.decode(errors='replace')[:200]}", file=sys.stderr)
+            # stderr pertenece a una herramienta externa y podría repetir el
+            # argumento dictado. Solo registramos metadatos no sensibles.
+            print(f"[inyector] {' '.join(cmd[:2])} rc={r.returncode}",
+                  file=sys.stderr)
         return r.returncode == 0

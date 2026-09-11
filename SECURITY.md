@@ -33,13 +33,37 @@ Whisper puede "alucinar" texto sobre silencio o ruido de fondo. ParlAR descarta
 un segmento únicamente cuando combina baja confianza acústica y textual con
 un patrón conocido. Esto reduce el riesgo pero no lo elimina.
 
-### Nada sale de la máquina
+### Procesamiento local y límite de red
 
-Audio, texto y configuración se procesan y guardan localmente. No hay telemetría, no hay llamadas de red salvo, opcionalmente, a un servidor Ollama que vos mismo corrés en `127.0.0.1` si activás el modo de reescritura por IA. `ollama_url` está fijado a loopback por defecto; si lo cambiás a una IP remota, estás asumiendo ese riesgo vos mismo.
+La captura y transcripción de audio son locales y ParlAR no envía telemetría.
+La reescritura por IA puede llamar a Ollama: `ollama_url` usa loopback por
+defecto, pero es configurable. Si elegís una URL remota, el texto que se
+reescribe sale de la máquina hacia ese servicio. ParlAR no promete privacidad
+ni tratamiento local para un endpoint configurado por el usuario.
+
+La instalación y el provisioning pueden descargar dependencias y modelos.
+GuionAR se comunica por IPC Unix local. El portapapeles y la aplicación destino
+son procesos externos: ParlAR no controla cómo persisten o sincronizan el texto
+que reciben.
+
+Los logs normales no incluyen audio ni texto dictado. Registran metadatos
+operativos como estados, tiempos, backend, conteos y rutas. Tampoco se copia el
+stderr de las herramientas de inyección porque podría repetir sus argumentos.
 
 ### Transcript de sesión (`--guardar-sesion`, apagado por defecto)
 
-Con este flag, cada texto confirmado que dictás se agrega, en texto plano y sin cifrar, a `~/.local/share/parlar/sesiones/AAAA-MM-DD_HHMM.txt` (un archivo por corrida del daemon, ruta real `$XDG_DATA_HOME/parlar/sesiones/` si esa variable está definida). Es un archivo de datos en reposo: cualquier proceso o usuario con acceso a esa carpeta puede leer todo lo que dictaste en esa sesión.
+Con este flag, cada texto confirmado que dictás se agrega a un archivo
+exclusivo por corrida bajo `~/.local/share/parlar/sesiones/` (ruta real
+`$XDG_DATA_HOME/parlar/sesiones/` si esa variable está definida). El nombre
+incluye fecha, microsegundos y un token aleatorio. Se crea con `O_EXCL` para
+que instancias simultáneas nunca compartan archivo. Si ParlAR crea el
+directorio usa `0700`; cada transcript usa `0600`, independientemente de la
+umask. Sigue siendo texto plano sin cifrar: procesos del mismo usuario y quien
+tenga acceso efectivo a su cuenta o disco pueden leerlo.
+
+El transcript es un historial append-only de emisiones confirmadas, no un
+documento final reconstruido. No registra automáticamente Return, undo, estado
+del editor ni estado del portapapeles.
 
 Por eso `guardar_sesion` está en `false` por defecto. Se activa explícitamente:
 
@@ -56,6 +80,15 @@ rm ~/.local/share/parlar/sesiones/*.txt
 ```
 
 o el archivo puntual que corresponda. Si activás este flag en una máquina compartida o con disco sin cifrar, tené presente que el transcript queda ahí hasta que lo borres vos.
+
+### Configuración local
+
+El JSON se valida antes de cargar el modelo o abrir micrófono. Tipos incorrectos,
+valores fuera de dominio, sample rates distintos de 16 kHz y frames VAD que no
+sean 10/20/30 ms hacen fallar el inicio de forma explícita. Las claves
+desconocidas se aíslan en `extras` y no pueden sobrescribir métodos. Al guardar,
+el reemplazo es atómico, el archivo queda `0600` y un directorio creado por
+ParlAR queda `0700`.
 
 ## Qué no está mitigado (limitaciones conocidas)
 

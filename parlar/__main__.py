@@ -5,19 +5,25 @@ como alias, por si preferís esa nomenclatura.
 """
 
 import argparse
+import sys
 
-from .config import Config
+from .config import Config, ErrorConfiguracion
 
 _ALIAS_MODO = {"frase": "utterance"}
 _ALIAS_REESCRITURA = {"ninguna": "none", "conciso": "concise", "correo": "email"}
 
 
 def main():
-    cfg = Config.load()
+    try:
+        cfg = Config.load()
+    except ErrorConfiguracion as e:
+        print(f"[config] configuración inválida: {e}", file=sys.stderr)
+        raise SystemExit(2)
     ap = argparse.ArgumentParser(
         prog="parlar",
         description="ParlAR: dictado local a nivel sistema para Linux. "
-                    "Nada sale de tu máquina.")
+                    "Sin telemetría; la red solo se usa si configurás un "
+                    "servicio externo, como Ollama remoto.")
     ap.add_argument("--modelo", "--model", dest="modelo", default=cfg.model_size,
                     help="tiny|base|small|medium|large-v3 (por defecto: %(default)s)")
     ap.add_argument("--dispositivo", "--device", dest="dispositivo", default=cfg.device,
@@ -26,14 +32,14 @@ def main():
                     help="código ISO, ej. es, en. Vacío = autodetectar "
                          "(por defecto: %(default)s)")
     ap.add_argument("--modo", "--mode", dest="modo", default=cfg.mode,
-                    choices=["utterance", "frase", "streaming"],
+                    choices=sorted(Config.MODOS | {"frase"}),
                     help="frase (=utterance) o streaming")
     ap.add_argument("--reescritura", "--rewrite", dest="reescritura",
                     default=cfg.rewrite_mode,
-                    choices=["none", "ninguna", "formal", "concise", "conciso",
-                             "email", "correo"])
+                    choices=sorted(Config.REESCRITURAS |
+                                   {"ninguna", "conciso", "correo"}))
     ap.add_argument("--inyector", "--injector", dest="inyector", default=cfg.injector,
-                    choices=["auto", "xdotool", "wtype", "ydotool", "clipboard"])
+                    choices=sorted(Config.INYECTORES))
     ap.add_argument("--sin-indicador", "--no-overlay", dest="sin_indicador",
                     action="store_true", help="corre sin el punto indicador")
     ap.add_argument("--guionar", "--guionar-enabled", dest="guionar",
@@ -46,7 +52,7 @@ def main():
     ap.add_argument("--guardar-sesion", "--save-session", dest="guardar_sesion",
                     action="store_true", default=cfg.guardar_sesion,
                     help="guarda cada texto confirmado en "
-                         "~/.local/share/parlar/sesiones/AAAA-MM-DD_HHMM.txt "
+                         "~/.local/share/parlar/sesiones/ (archivo exclusivo) "
                          "(apagado por defecto, ver SECURITY.md)")
     ap.add_argument("--guardar-config", "--save-config", dest="guardar_config",
                     action="store_true",
@@ -64,8 +70,17 @@ def main():
     cfg.guionar = args.guionar
     cfg.guionar_socket = args.guionar_socket
     cfg.guardar_sesion = args.guardar_sesion
+    try:
+        cfg.validate()
+    except ErrorConfiguracion as e:
+        print(f"[config] configuración inválida: {e}", file=sys.stderr)
+        raise SystemExit(2)
     if args.guardar_config:
-        cfg.save()
+        try:
+            cfg.save()
+        except OSError as e:
+            print(f"[config] no se pudo guardar: {e}", file=sys.stderr)
+            raise SystemExit(2)
         print("[config] guardada")
 
     from .app import App  # imports pesados diferidos hasta después del parseo
