@@ -41,9 +41,13 @@ _PATRONES_CMD = [
 
 _FIN_ORACION = re.compile(r"([.!?])\s+([¿¡]?)(\w)")
 _TOKEN_NO_ESPACIO = re.compile(r"\S+")
+_MARCADOR_ESTRUCTURA = re.compile(r"\ue000PARLARX*\d+\ue001")
 _ESTRUCTURA_NUMERICA = re.compile(
-    r"^[€$£¥]?\d+(?:[.,:]\d+)+(?:%|[a-zA-Z]+)?$|"
-    r"^[€$£¥]?\d+(?:%|[a-zA-Z]+)$|^\d{2,4}(?:-\d{1,2}){1,2}$"
+    r"^[+-]?[€$£¥]?\d+(?:[.,:]\d+)+(?:%|[a-zA-Z]+)?$|"
+    r"^[+-]?[€$£¥]?\d+(?:%|[a-zA-Z]+)$|^\d{2,4}(?:-\d{1,2}){1,2}$"
+)
+_LINEA_ESTRUCTURADA = re.compile(
+    r"(?:^|\s)[A-Za-z_]\w*\s*=|^[\[{].*[\]}]$", re.DOTALL
 )
 _PARES_CITAS = {
     '"': '"', "'": "'", "“": "”", "‘": "’", "«": "»",
@@ -76,11 +80,14 @@ def _es_token_estructurado(token: str) -> bool:
     """
     if not token:
         return False
-    if _ESTRUCTURA_NUMERICA.fullmatch(token):
+    nucleo = token.rstrip(",.;:!?") or token
+    if _ESTRUCTURA_NUMERICA.fullmatch(nucleo):
         return True
     if token.isupper() and any(caracter.isalpha() for caracter in token):
         return True
     if any(marca in token for marca in ("://", "@", "/", "_", "+", "#")):
+        return True
+    if any(marca in token for marca in ("[", "]", "{", "}", "=", "\\")):
         return True
     if re.search(r"\w\.\w", token, re.UNICODE):
         return True
@@ -89,27 +96,95 @@ def _es_token_estructurado(token: str) -> bool:
     return bool(re.search(r"\w\([^\s)]*\)", token, re.UNICODE))
 
 
+def _proteger_regiones_citadas(texto: str, guardar) -> str:
+    """Protege pares de citas en una pasada, tolerando escapes con barra."""
+    def esta_escapada(posicion: int) -> bool:
+        barras = 0
+        posicion -= 1
+        while posicion >= 0 and texto[posicion] == "\\":
+            barras += 1
+            posicion -= 1
+        return barras % 2 == 1
+
+    salida = []
+    inicio_copia = 0
+    indice = 0
+    largo = len(texto)
+    while indice < largo:
+        apertura = texto[indice]
+        cierre = _PARES_CITAS.get(apertura)
+        if cierre is None:
+            indice += 1
+            continue
+        if apertura in "\"'" and esta_escapada(indice):
+            indice += 1
+            continue
+        if (apertura == "'" and indice > 0
+                and (texto[indice - 1].isalnum() or texto[indice - 1] == "_")):
+            indice += 1
+            continue
+        final = indice + 1
+        while final < largo:
+            if apertura in "\"'" and texto[final] == "\\":
+                final += 2
+                continue
+            if texto[final] == cierre:
+                if (cierre == "'" and final + 1 < largo
+                        and (texto[final + 1].isalnum()
+                             or texto[final + 1] == "_")):
+                    final += 1
+                    continue
+                break
+            final += 1
+        if final >= largo:
+            indice += 1
+            continue
+        salida.append(texto[inicio_copia:indice])
+        salida.append(guardar(texto[indice:final + 1]))
+        indice = final + 1
+        inicio_copia = indice
+    salida.append(texto[inicio_copia:])
+    return "".join(salida)
+
+
 def _proteger_estructura(texto: str):
-    """Reemplaza tokens estructurados por marcadores sin colisiones."""
+    """Protege regiones literales y tokens estructurados sin colisiones.
+
+    La detección es deliberadamente conservadora: las citas completas y las
+    líneas con forma de asignación/objeto se tratan como datos. Sobre el resto
+    solo se embalsaman tokens inequívocamente técnicos o numéricos.
+    """
     prefijo = "\ue000PARLAR"
     while prefijo in texto:
         prefijo += "X"
     reemplazos = {}
 
-    def proteger(match):
-        token = match.group(0)
-        if not _es_token_estructurado(token):
-            return token
+    def guardar(original):
         marcador = f"{prefijo}{len(reemplazos)}\ue001"
-        reemplazos[marcador] = token
+        reemplazos[marcador] = original
         return marcador
 
-    return _TOKEN_NO_ESPACIO.sub(proteger, texto), reemplazos
+    if _LINEA_ESTRUCTURADA.search(texto):
+        return guardar(texto), reemplazos
+
+    texto = _proteger_regiones_citadas(texto, guardar)
+
+    def proteger_token(match):
+        token = match.group(0)
+        return guardar(token) if _es_token_estructurado(token) else token
+
+    return _TOKEN_NO_ESPACIO.sub(proteger_token, texto), reemplazos
 
 
 def _restaurar_estructura(texto: str, reemplazos) -> str:
-    for marcador, original in reemplazos.items():
-        texto = texto.replace(marcador, original)
+    # Una cita puede quedar envuelta por el token de código que la contiene.
+    # Como la profundidad máxima es dos, ambas capas se restauran linealmente.
+    for _ in range(2):
+        restaurado = _MARCADOR_ESTRUCTURA.sub(
+            lambda match: reemplazos.get(match.group(0), match.group(0)), texto)
+        if restaurado == texto:
+            break
+        texto = restaurado
     return texto
 
 
@@ -196,8 +271,7 @@ class ProcesadorTexto:
     # ---------------------------------------------------------------- interno
 
     def _buscar_comando(self, crudo: str) -> Optional[Procesado]:
-        if (len(crudo) >= 2 and crudo[0] in _PARES_CITAS
-                and crudo[-1] == _PARES_CITAS[crudo[0]]):
+        if self._frase_completamente_citada(crudo):
             return None
         norm = re.sub(r"[^\w\sáéíóúñü]", "", crudo).strip().lower()
         for pat, (cmd, carga) in _PATRONES_CMD:
@@ -205,12 +279,29 @@ class ProcesadorTexto:
                 return Procesado(comando=cmd, carga=carga)
         return None
 
+    @staticmethod
+    def _frase_completamente_citada(crudo: str) -> bool:
+        """Acepta puntuación de oración después de la comilla de cierre."""
+        if len(crudo) < 2 or crudo[0] not in _PARES_CITAS:
+            return False
+        final = len(crudo)
+        while final > 0 and crudo[final - 1] in ".?!":
+            final -= 1
+        return final > 1 and crudo[final - 1] == _PARES_CITAS[crudo[0]]
+
     def _reescribir(self, texto: str) -> str:
         if self.ollama_model:
-            salida = self._reescribir_ollama(texto)
-            if salida:
-                return salida
+            protegido, estructura = _proteger_estructura(texto)
+            salida = self._reescribir_ollama(protegido)
+            marcadores_visibles = [
+                marcador for marcador in estructura if marcador in protegido
+            ]
+            if salida and all(
+                    salida.count(marcador) == protegido.count(marcador)
+                    for marcador in marcadores_visibles):
+                return _restaurar_estructura(salida, estructura)
             # Respuesta vacía o servicio inaccesible: fallback determinista.
+            # También se usa si el modelo pierde una región protegida.
         return self._reescribir_reglas(texto)
 
     def _reescribir_reglas(self, texto: str) -> str:
@@ -222,11 +313,15 @@ class ProcesadorTexto:
                 r"\b(b[aá]sicamente|literalmente|o sea|digamos|basically|"
                 r"actually|literally|you know|i mean|kind of|sort of)\b[,]?\s*",
                 "", protegido, flags=re.IGNORECASE)
-            # "viste" solo es discursivo al final y no después de "no".
-            protegido, n_viste = re.subn(
-                r"(?<!no )\bviste\b[,.;:!?]?\s*$", "", protegido,
+            # "viste" es ambiguo como verbo: solo se quita cuando una coma lo
+            # separa inequívocamente como marcador discursivo.
+            protegido, n_viste_inicio = re.subn(
+                r"^\s*viste\s*,\s*", "", protegido,
                 flags=re.IGNORECASE)
-            if not (n_general or n_viste):
+            protegido, n_viste_final = re.subn(
+                r"\s*,\s*viste([.!?]?)\s*$", r"\1", protegido,
+                flags=re.IGNORECASE)
+            if not (n_general or n_viste_inicio or n_viste_final):
                 return texto
             protegido = _normalizar_espaciado(protegido)
             protegido = _capitalizar_oraciones(protegido, inicio=True)

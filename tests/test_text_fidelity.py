@@ -231,7 +231,7 @@ class PruebasRewrite(unittest.TestCase):
         self.assertEqual(
             procesador.procesar_frase(
                 "básicamente o sea esto funciona viste").texto,
-            "Esto funciona",
+            "Esto funciona viste",
         )
         self.assertEqual(
             procesador.procesar_frase("no viste el error").texto,

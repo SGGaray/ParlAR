@@ -99,9 +99,12 @@ socket receptor; GuionAR documenta `0600` para su endpoint.
 Decilos exactos, como frase aislada: "nuevo párrafo", "punto y aparte", "nueva línea", "borra la última oración", "enviar", "detener dictado". Los equivalentes en inglés ("new paragraph", "delete last sentence", "send", "stop dictation") siguen funcionando.
 
 `comando_enviar=false` —el default— bloquea **toda** acción que genere
-Enter/Return, incluyendo nueva línea y nuevo párrafo. Activarlo autoriza esas
-acciones sobre cualquier ventana enfocada. Las frases completamente citadas no
-se ejecutan.
+Enter/Return, incluyendo comandos, texto multilínea, fragmentos streaming y
+resultados de reescritura. En ese caso, el texto multilínea se copia intacto al
+portapapeles y se informa como copiado, no insertado; tampoco entra al historial
+de undo. Activarlo autoriza esas acciones sobre cualquier ventana enfocada. Las
+frases completamente citadas no se ejecutan, aun si llevan `.`, `?` o `!`
+después de la comilla de cierre.
 
 ## Semántica de salida
 
@@ -119,15 +122,20 @@ socket stale verificado sí se recupera. En `/tmp` la ruta incluye el UID.
 ## Modos de reescritura
 
 Sin reescritura (el valor por defecto), la limpieza es conservadora: preserva
-decimales, URLs, correos, dominios, versiones, identificadores, acrónimos y
-código tal como los entregó Whisper. Solo corrige espaciado inequívoco,
-muletillas aisladas y signos de apertura españoles. Una frase que coincide con
-un comando pero está entre comillas se conserva como texto literal.
+decimales con signo, horarios, URLs, correos, dominios, versiones,
+identificadores, strings y regiones de código tal como los entregó Whisper.
+Ante ambigüedad prioriza preservación. Solo corrige espaciado inequívoco,
+muletillas aisladas fuera de regiones literales y signos de apertura españoles.
+Una frase que coincide con un comando pero está entre comillas se conserva como
+texto literal, incluso con puntuación de oración exterior.
 
 `--reescritura formal|conciso|correo` activa transformaciones explícitas. Las
 reglas locales se limitan a equivalencias seguras (ok → de acuerdo, porfa → por
-favor, finde → fin de semana; en conciso se limpian marcadores discursivos). Si
-corrés [Ollama](https://ollama.com) local, poné `ollama_model` en la config (ej.
+favor, finde → fin de semana; en conciso solo se limpian marcadores discursivos
+inequívocos y se conservan usos verbales ambiguos). Las regiones estructuradas
+reconocidas se protegen durante la reescritura; si un modelo pierde un marcador,
+se usa el fallback local conservador. Si corrés
+[Ollama](https://ollama.com) local, poné `ollama_model` en la config (ej.
 `"llama3.2:3b"`) y la reescritura pasa por ahí. `ollama_url` apunta a
 `127.0.0.1` por defecto, pero es configurable: una URL remota envía allí el
 texto a reescribir. Como toda reescritura generativa, esa opción puede cambiar

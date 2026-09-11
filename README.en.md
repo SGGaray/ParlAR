@@ -110,15 +110,20 @@ On Wayland, bind `parlarctl alternar` to a keyboard shortcut in your desktop env
 
 English command aliases (`toggle`, `status`, `mode`, ...) are accepted for compatibility.
 
-With rewriting disabled (the default), cleanup is conservative: decimals,
-URLs, email addresses, domains, versions, identifiers, acronyms, and code are
-kept exactly as Whisper produced them. Only unambiguous prose spacing,
-isolated fillers, and Spanish opening punctuation are normalized. A quoted
-phrase that resembles a voice command remains literal text.
+With rewriting disabled (the default), cleanup is conservative: decimals
+(including signed values), times, URLs, email addresses, domains, versions,
+identifiers, strings, and code regions are kept exactly as Whisper produced
+them. Preservation wins when the input is ambiguous. Only unambiguous prose
+spacing, isolated fillers outside literal regions, and Spanish opening
+punctuation are normalized. A quoted phrase that resembles a voice command
+remains literal text even when `.`, `?`, or `!` follows the closing quote.
 
 Formal, concise, and email modes are explicit opt-ins. Local rules only apply
-small, context-safe substitutions; configuring a local Ollama model enables
-generative rewriting and may change the wording. In utterance mode, known
+small, context-safe substitutions; concise mode removes `viste` only when a
+comma makes its discourse-marker role unambiguous. Recognized structured
+regions are protected during rewriting; if a model drops a marker, ParlAR uses
+the conservative local fallback. Configuring a local Ollama model enables
+generative rewriting and may change the prose wording. In utterance mode, known
 hallucination phrases are filtered only when that same segment also has low
 acoustic and text confidence, so confident literal speech is preserved.
 
@@ -152,7 +157,10 @@ Insertion, clipboard copy, GuionAR mirroring, and transcript persistence are
 independent results. Streaming clipboard fallback accumulates a recoverable
 utterance, but does not insert it or add it to undo history. Undo remains
 dependent on the focused external editor. By default `comando_enviar=false`
-blocks every voice action that generates Enter, including newline and paragraph.
+blocks every physical Enter/Return action, whether it comes from a command,
+multiline text, streaming, or rewrite output. Multiline content is then copied
+intact and reported as copied rather than inserted, without entering undo
+history.
 
 Control uses a `0600` Unix socket, one newline-terminated UTF-8 operation per
 connection, a 4 KiB limit, verified stale-socket recovery, and UID-qualified

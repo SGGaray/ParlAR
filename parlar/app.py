@@ -88,7 +88,7 @@ class App:
             cfg.remove_fillers, cfg.voice_commands, cfg.rewrite_mode,
             cfg.ollama_model, cfg.ollama_url, cfg.comando_enviar)
         self.inyector = inyector or Inyector(
-            cfg.injector, cfg.type_delay_ms, cfg.notify)
+            cfg.injector, cfg.type_delay_ms, cfg.notify, cfg.comando_enviar)
         self.guionar = guionar or crear_cliente(cfg.guionar, cfg.guionar_socket)
         self.sesion = sesion or crear_salida_sesion(cfg.guardar_sesion)
         self.salidas = [self.inyector, self.guionar, self.sesion]
