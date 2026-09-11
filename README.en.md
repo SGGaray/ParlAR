@@ -114,6 +114,7 @@ The integration is fire-and-forget: if GuionAR is not running, ParlAR works exac
 ```bash
 python tests/run_tests.py
 python -m unittest tests.test_lifecycle
+python -m unittest tests.test_streaming_alignment
 ```
 
 The suites also cover session lifecycle, deterministic concurrency, mode

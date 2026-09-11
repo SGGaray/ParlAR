@@ -138,4 +138,5 @@ parlar/
 │   └── app.py                   orquestador / máquina de estados
 └── tests/                       lógica: python tests/run_tests.py
                                 lifecycle: python -m unittest tests.test_lifecycle
+                                streaming: python -m unittest tests.test_streaming_alignment
 ```

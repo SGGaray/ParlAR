@@ -23,3 +23,4 @@ jobs:
         run: |
           python tests/run_tests.py
           python -m unittest tests.test_lifecycle
+          python -m unittest tests.test_streaming_alignment

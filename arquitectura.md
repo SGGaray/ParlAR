@@ -84,7 +84,9 @@ mic → PCM int16 @16kHz → frames de 20ms → puerta VAD
 
 - Un umbral de silencio de 600ms cierra la frase; con `small` int8 en una CPU moderna, una frase de pocos segundos se transcribe en 200-500ms, así que la latencia percibida es de aproximadamente 0.8-1.1s después de dejar de hablar.
 - El modo streaming apunta a latencia sub-segundo por palabra: la ventana se re-decodifica cada 1.0s y las palabras estables se inyectan de inmediato. Solo se tipean palabras *confirmadas* (con acuerdo entre hipótesis), así que nunca hay que retractar nada de la app destino.
+- La frontera streaming conserva explícitamente las palabras ya emitidas del buffer actual. Una hipótesis nueva sólo puede extenderla si mantiene ese prefijo lexical y coincide con la hipótesis anterior. Mayúsculas y puntuación de frase en los bordes se consideran cosméticas, pero símbolos técnicos (`+`, `#`, `/`, `_` y puntos internos) conservan identidad. Si Whisper revisa una zona ya emitida, se congela esa contradicción en lugar de fabricar una corrección que los sinks append-only no podrían insertar en su posición original.
 - La parte confirmada del buffer de audio se recorta continuamente, manteniendo acotado el tiempo de decodificación en sesiones de cualquier duración.
+- El recorte usa el `end` de la última palabra confirmada únicamente mientras la hipótesis siga alineada, los timestamps sean válidos y el `start` de una palabra pendiente no se superponga. Después del recorte se exige agreement fresco sobre el nuevo origen temporal.
 - El modelo se carga una vez al iniciar el daemon y queda caliente. `beam_size=1` (greedy) en streaming, `beam_size=5` en la pasada final por frase.
 - GPU: autodetectada. CUDA → float16; CPU → int8.
 - Idioma fijado en español por defecto (`language = "es"`), lo que evita la detección de idioma en cada decodificación y reduce latencia.

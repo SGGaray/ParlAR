@@ -19,6 +19,7 @@ whisper.cpp, solo cambia este archivo.
 import re
 import sys
 import time
+import unicodedata
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -103,17 +104,62 @@ class TranscriptorFrase:
 class _Palabra:
     texto: str
     fin: float  # segundos, relativo al inicio del buffer actual
+    inicio: Optional[float] = None
 
 
-_re_norm = re.compile(r"[^\w']+", re.UNICODE)
+_PUNTUACION_COSMETICA = " \t\r\n.,;:!?¿¡…\"“”«»'‘’()[]{}"
 
 
 def _norm(w: str) -> str:
-    return _re_norm.sub("", w).lower()
+    """Identidad lexical para agreement, sin modificar el texto emitido.
+
+    Sólo ignora mayúsculas y puntuación de frase en los bordes. Símbolos con
+    valor lexical como ``+``, ``#``, ``/``, ``_`` o puntos internos se
+    conservan, por lo que C++, C#, HTTP/2, foo.bar y foo_bar no colisionan.
+    """
+    original = unicodedata.normalize("NFC", w).strip().lower()
+    sin_bordes = original.strip(_PUNTUACION_COSMETICA)
+    return sin_bordes or original
+
+
+def _mismo_token(a: _Palabra, b: _Palabra) -> bool:
+    return _norm(a.texto) == _norm(b.texto)
+
+
+def _es_prefijo(prefijo: List[_Palabra], palabras: List[_Palabra]) -> bool:
+    return len(prefijo) <= len(palabras) and all(
+        _mismo_token(esperada, actual)
+        for esperada, actual in zip(prefijo, palabras)
+    )
+
+
+def _largo_prefijo_comun(a: List[_Palabra], b: List[_Palabra]) -> int:
+    k = 0
+    while k < len(a) and k < len(b) and _mismo_token(a[k], b[k]):
+        k += 1
+    return k
+
+
+def _fin_subsecuencia(aguja: List[_Palabra], pajar: List[_Palabra]):
+    """Índice posterior al match ordenado de ``aguja``; None si no existe."""
+    if not aguja:
+        return 0
+    i = 0
+    for j, palabra in enumerate(pajar):
+        if _mismo_token(aguja[i], palabra):
+            i += 1
+            if i == len(aguja):
+                return j + 1
+    return None
 
 
 class TranscriptorStreaming:
-    """Transcripción incremental LocalAgreement-2 sobre un buffer creciente."""
+    """LocalAgreement-2 con una frontera committed explícita y append-only.
+
+    ``palabras_confirmadas`` representa texto ya emitido respaldado por el
+    buffer actual. Nunca se usa su longitud sobre una hipótesis nueva sin
+    demostrar primero que esa hipótesis conserva el mismo prefijo lexical.
+    """
 
     def __init__(self, motor: MotorWhisper, sample_rate: int = 16000,
                  interval_s: float = 1.0, trim_s: float = 12.0):
@@ -121,12 +167,14 @@ class TranscriptorStreaming:
         self.sr = sample_rate
         self.interval_s = interval_s
         self.trim_s = trim_s
+        self.divergencias = 0
         self.reiniciar()
 
     def reiniciar(self):
         self.buffer = np.zeros(0, dtype=np.float32)
         self.palabras_prev: List[_Palabra] = []
-        self.n_confirmadas = 0
+        self.palabras_confirmadas: List[_Palabra] = []
+        self._hipotesis_alineada = True
         self._ultimo_len_decodificado = 0
 
     def aceptar_audio(self, trozo: np.ndarray):
@@ -137,7 +185,11 @@ class TranscriptorStreaming:
         palabras: List[_Palabra] = []
         for seg in segments:
             for w in (seg.words or []):
-                palabras.append(_Palabra(texto=w.word, fin=w.end))
+                palabras.append(_Palabra(
+                    texto=w.word,
+                    fin=w.end,
+                    inicio=getattr(w, "start", None),
+                ))
         return palabras
 
     def procesar(self) -> str:
@@ -150,34 +202,71 @@ class TranscriptorStreaming:
 
         palabras = self._decodificar_palabras(self.buffer)
 
-        # prefijo común más largo entre hipótesis consecutivas
-        k = 0
-        while (k < len(palabras) and k < len(self.palabras_prev)
-               and _norm(palabras[k].texto) == _norm(self.palabras_prev[k].texto)):
-            k += 1
-        self.palabras_prev = palabras
+        actual_alineada = _es_prefijo(self.palabras_confirmadas, palabras)
+        previa_alineada = _es_prefijo(
+            self.palabras_confirmadas, self.palabras_prev)
+        nuevas = []
+        if actual_alineada and previa_alineada:
+            k = _largo_prefijo_comun(palabras, self.palabras_prev)
+            frontera = len(self.palabras_confirmadas)
+            if k > frontera:
+                nuevas = palabras[frontera:k]
+                self.palabras_confirmadas.extend(nuevas)
+        elif not actual_alineada:
+            # Contador operativo únicamente; no incluye texto ni genera spam.
+            self.divergencias += 1
 
-        nuevas = palabras[self.n_confirmadas:k] if k > self.n_confirmadas else []
-        if k > self.n_confirmadas:
-            self.n_confirmadas = k
+        self.palabras_prev = palabras
+        self._hipotesis_alineada = actual_alineada
         salida = "".join(p.texto for p in nuevas)
 
-        # recorta audio confirmado para acotar el costo en sesiones largas
-        if self.buffer.size > int(self.trim_s * self.sr) and self.n_confirmadas > 0:
-            t_corte = palabras[self.n_confirmadas - 1].fin
-            corte = min(int(t_corte * self.sr), self.buffer.size)
-            if corte > 0:
-                self.buffer = self.buffer[corte:]
-                self._ultimo_len_decodificado = self.buffer.size
-                self.palabras_prev = []
-                self.n_confirmadas = 0
+        self._recortar_si_seguro(palabras, actual_alineada)
 
         return salida
+
+    def _recortar_si_seguro(self, palabras: List[_Palabra], alineada: bool):
+        """Recorta sólo hasta un timestamp actualmente alineado y válido."""
+        if (self.buffer.size <= int(self.trim_s * self.sr)
+                or not alineada or not self.palabras_confirmadas):
+            return
+        n = len(self.palabras_confirmadas)
+        if len(palabras) < n:
+            return
+        try:
+            fines = [float(p.fin) for p in palabras[:n]]
+        except (TypeError, ValueError):
+            return
+        if (any(not np.isfinite(fin) or fin <= 0 for fin in fines)
+                or any(a > b for a, b in zip(fines, fines[1:]))):
+            return
+        corte = int(fines[-1] * self.sr)
+        if corte <= 0 or corte > self.buffer.size:
+            return
+        if len(palabras) > n:
+            inicio_pendiente = palabras[n].inicio
+            try:
+                inicio_pendiente = float(inicio_pendiente)
+            except (TypeError, ValueError):
+                return
+            if (not np.isfinite(inicio_pendiente)
+                    or inicio_pendiente < fines[-1]):
+                return
+
+        # El audio posterior al fin de la última palabra committed queda
+        # intacto. Al cambiar el origen temporal se exige agreement fresco.
+        self.buffer = self.buffer[corte:]
+        self._ultimo_len_decodificado = self.buffer.size
+        self.palabras_prev = []
+        self.palabras_confirmadas = []
+        self._hipotesis_alineada = True
 
     def hipotesis_pendiente(self) -> str:
         """Texto decodificado pero aún no confirmado por LocalAgreement.
         Solo lectura; útil como vista previa (p. ej. teleprompter)."""
-        return "".join(p.texto for p in self.palabras_prev[self.n_confirmadas:]).strip()
+        if not self._hipotesis_alineada:
+            return ""
+        frontera = len(self.palabras_confirmadas)
+        return "".join(p.texto for p in self.palabras_prev[frontera:]).strip()
 
     def finalizar(self) -> str:
         """Vaciado: decodifica lo que queda y devuelve el texto más allá de
@@ -187,10 +276,30 @@ class TranscriptorStreaming:
             return ""
         try:
             palabras = self._decodificar_palabras(self.buffer)
-            cola = palabras[self.n_confirmadas:]
+            cola = self._resto_final(palabras)
             salida = "".join(p.texto for p in cola)
-        except Exception as e:
-            print(f"[stt] finalizar falló: {e}", file=sys.stderr)
+        except Exception as exc:
+            print(f"[stt] finalizar falló: {type(exc).__name__}", file=sys.stderr)
             salida = ""
         self.reiniciar()
         return salida
+
+    def _resto_final(self, palabras: List[_Palabra]) -> List[_Palabra]:
+        """Obtiene sólo el sufijo que todavía puede agregarse sin retractar.
+
+        Si el committed ya no es prefijo, busca primero todo el committed y
+        luego sus sufijos, siempre en orden. Lo anterior al ancla no puede
+        insertarse en un sink append-only y se congela deliberadamente.
+        """
+        if not self.palabras_confirmadas:
+            return palabras
+        if _es_prefijo(self.palabras_confirmadas, palabras):
+            return palabras[len(self.palabras_confirmadas):]
+
+        self.divergencias += 1
+        for inicio in range(len(self.palabras_confirmadas)):
+            fin = _fin_subsecuencia(
+                self.palabras_confirmadas[inicio:], palabras)
+            if fin is not None:
+                return palabras[fin:]
+        return []
