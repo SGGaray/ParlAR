@@ -41,18 +41,17 @@ _PATRONES_CMD = [
 ]
 
 _FIN_ORACION = re.compile(r"([.!?])\s+([¿¡]?)(\w)")
-_TOKEN_NO_ESPACIO = re.compile(r"\S+")
 _MARCADOR_ESTRUCTURA = re.compile(r"\ue000PARLARX*\d+\ue001")
 _ESTRUCTURA_NUMERICA = re.compile(
-    r"^[+-]?[€$£¥]?\d+(?:[.,:]\d+)+(?:%|[a-zA-Z]+)?$|"
-    r"^[+-]?[€$£¥]?\d+(?:%|[a-zA-Z]+)$|^\d{2,4}(?:-\d{1,2}){1,2}$"
+    r"^(?:(?:[€$£¥][+\-−]?)|(?:[+\-−][€$£¥]?))?"
+    r"(?:\d+(?:[.,:]\d+)+|\.\d+|\d+)(?:%|[a-zA-Z]+)?$|"
+    r"^\d{2,4}(?:-\d{1,2}){1,2}$"
 )
-_LINEA_ESTRUCTURADA = re.compile(
-    r"(?:^|\s)[A-Za-z_]\w*\s*=|^[\[{].*[\]}]$", re.DOTALL
-)
+_DOTFILE = re.compile(r"^\.[A-Za-z_][\w.-]*$", re.UNICODE)
 _PARES_CITAS = {
     '"': '"', "'": "'", "“": "”", "‘": "’", "«": "»",
 }
+_PARES_DELIMITADORES = {"(": ")", "[": "]", "{": "}"}
 
 
 @dataclass
@@ -60,6 +59,14 @@ class Procesado:
     texto: str = ""
     comando: Optional[str] = None   # nueva_linea | borrar_ultima | detener | enviar
     carga: Optional[str] = None     # ej. "\n" para comandos de nueva línea
+
+
+@dataclass
+class _EstadoLiteral:
+    """Contexto acotado entre fragmentos de una misma unidad streaming."""
+
+    cierre: Optional[str] = None
+    escapado: bool = False
 
 
 def _normalizar_espaciado(texto: str) -> str:
@@ -73,22 +80,16 @@ def _normalizar_espaciado(texto: str) -> str:
     return texto
 
 
-def _es_token_estructurado(token: str) -> bool:
-    """Reconoce sintaxis donde puntuación/caso son datos, no prosa.
-
-    La regla es deliberadamente amplia: ante un token ambiguo como
-    ``test.it`` se prioriza fidelidad y se deja intacto.
-    """
-    if not token:
-        return False
-    nucleo = token.rstrip(",.;:!?") or token
-    if _ESTRUCTURA_NUMERICA.fullmatch(nucleo):
+def _es_nucleo_estructurado(token: str) -> bool:
+    if _ESTRUCTURA_NUMERICA.fullmatch(token) or _DOTFILE.fullmatch(token):
         return True
     if token.isupper() and any(caracter.isalpha() for caracter in token):
         return True
     if any(marca in token for marca in ("://", "@", "/", "_", "+", "#")):
         return True
     if any(marca in token for marca in ("[", "]", "{", "}", "=", "\\")):
+        return True
+    if "::" in token or re.search(r"\w:\w", token, re.UNICODE):
         return True
     if re.search(r"\w\.\w", token, re.UNICODE):
         return True
@@ -97,58 +98,144 @@ def _es_token_estructurado(token: str) -> bool:
     return bool(re.search(r"\w\([^\s)]*\)", token, re.UNICODE))
 
 
-def _proteger_regiones_citadas(texto: str, guardar) -> str:
-    """Protege pares de citas en una pasada, tolerando escapes con barra."""
-    def esta_escapada(posicion: int) -> bool:
-        barras = 0
-        posicion -= 1
-        while posicion >= 0 and texto[posicion] == "\\":
-            barras += 1
-            posicion -= 1
-        return barras % 2 == 1
+def _es_token_estructurado(token: str) -> bool:
+    """Reconoce sintaxis donde puntuación/caso son datos, no prosa.
 
+    La regla es deliberadamente amplia: ante un token ambiguo como
+    ``test.it`` se prioriza fidelidad y se deja intacto.
+    """
+    if not token:
+        return False
+    if _es_nucleo_estructurado(token):
+        return True
+    exterior = token.rstrip(",;:!?")
+    if exterior != token and _es_nucleo_estructurado(exterior):
+        return True
+    if token.endswith(".") and _es_nucleo_estructurado(token[:-1]):
+        return True
+    return False
+
+
+def _proteger_regiones_citadas(
+        texto: str, guardar, estado: Optional[_EstadoLiteral] = None) -> str:
+    """Protege citas cerradas o abiertas en O(n), con contexto opcional."""
+    cierre = estado.cierre if estado is not None else None
+    escapado = estado.escapado if estado is not None else False
     salida = []
     inicio_copia = 0
+    inicio_literal = 0 if cierre is not None else None
     indice = 0
-    largo = len(texto)
-    while indice < largo:
-        apertura = texto[indice]
-        cierre = _PARES_CITAS.get(apertura)
-        if cierre is None:
-            indice += 1
-            continue
-        if apertura in "\"'" and esta_escapada(indice):
-            indice += 1
-            continue
-        if (apertura == "'" and indice > 0
-                and (texto[indice - 1].isalnum() or texto[indice - 1] == "_")):
-            indice += 1
-            continue
-        final = indice + 1
-        while final < largo:
-            if apertura in "\"'" and texto[final] == "\\":
-                final += 2
-                continue
-            if texto[final] == cierre:
-                if (cierre == "'" and final + 1 < largo
-                        and (texto[final + 1].isalnum()
-                             or texto[final + 1] == "_")):
-                    final += 1
+    barras_fuera = 0
+    while indice < len(texto):
+        caracter = texto[indice]
+        if cierre is not None:
+            if escapado:
+                escapado = False
+            elif cierre in "\"'" and caracter == "\\":
+                escapado = True
+            elif caracter == cierre:
+                if (cierre == "'" and indice + 1 < len(texto)
+                        and (texto[indice + 1].isalnum()
+                             or texto[indice + 1] == "_")):
+                    indice += 1
                     continue
-                break
-            final += 1
-        if final >= largo:
+                salida.append(guardar(texto[inicio_literal:indice + 1]))
+                inicio_copia = indice + 1
+                inicio_literal = None
+                cierre = None
             indice += 1
             continue
-        salida.append(texto[inicio_copia:indice])
-        salida.append(guardar(texto[indice:final + 1]))
-        indice = final + 1
-        inicio_copia = indice
+
+        posible_cierre = _PARES_CITAS.get(caracter)
+        apertura_valida = posible_cierre is not None
+        if caracter in "\"'" and barras_fuera % 2:
+            apertura_valida = False
+        if (caracter == "'" and indice > 0
+                and (texto[indice - 1].isalnum()
+                     or texto[indice - 1] == "_")):
+            apertura_valida = False
+        if apertura_valida:
+            salida.append(texto[inicio_copia:indice])
+            inicio_literal = indice
+            cierre = posible_cierre
+            escapado = False
+            barras_fuera = 0
+            indice += 1
+            continue
+        barras_fuera = barras_fuera + 1 if caracter == "\\" else 0
+        indice += 1
+
+    if inicio_literal is not None:
+        salida.append(guardar(texto[inicio_literal:]))
+        inicio_copia = len(texto)
     salida.append(texto[inicio_copia:])
+    if estado is not None:
+        estado.cierre = cierre
+        estado.escapado = escapado
     return "".join(salida)
 
 
-def _proteger_estructura(texto: str):
+def _fin_region_balanceada(texto: str, apertura: int) -> int:
+    """Devuelve el final exclusivo sin reexaminar el contenido recorrido."""
+    pila = [_PARES_DELIMITADORES[texto[apertura]]]
+    indice = apertura + 1
+    while indice < len(texto) and pila:
+        caracter = texto[indice]
+        if caracter in _PARES_DELIMITADORES:
+            pila.append(_PARES_DELIMITADORES[caracter])
+        elif caracter == pila[-1]:
+            pila.pop()
+        indice += 1
+    return indice
+
+
+def _proteger_tokens_lineal(texto: str, guardar) -> str:
+    """Embalsama tokens y expresiones balanceadas en una pasada lineal."""
+    salida = []
+    indice = 0
+    while indice < len(texto):
+        if texto[indice].isspace():
+            salida.append(texto[indice])
+            indice += 1
+            continue
+
+        inicio = indice
+        if texto[indice] in _PARES_DELIMITADORES:
+            indice = _fin_region_balanceada(texto, indice)
+            while indice < len(texto) and not texto[indice].isspace():
+                indice += 1
+            salida.append(guardar(texto[inicio:indice]))
+            continue
+
+        if texto[indice].isalnum() or texto[indice] == "_":
+            while (indice < len(texto)
+                   and (texto[indice].isalnum()
+                        or texto[indice] in "_.:+#/-")):
+                indice += 1
+            sonda = indice
+            while sonda < len(texto) and texto[sonda] in " \t":
+                sonda += 1
+            if sonda < len(texto) and texto[sonda] == "=":
+                final = texto.find("\n", sonda)
+                indice = len(texto) if final < 0 else final
+                salida.append(guardar(texto[inicio:indice]))
+                continue
+            if indice < len(texto) and texto[indice] in "([":
+                indice = _fin_region_balanceada(texto, indice)
+                while indice < len(texto) and not texto[indice].isspace():
+                    indice += 1
+                salida.append(guardar(texto[inicio:indice]))
+                continue
+
+        while indice < len(texto) and not texto[indice].isspace():
+            indice += 1
+        token = texto[inicio:indice]
+        salida.append(guardar(token) if _es_token_estructurado(token) else token)
+    return "".join(salida)
+
+
+def _proteger_estructura(
+        texto: str, estado: Optional[_EstadoLiteral] = None):
     """Protege regiones literales y tokens estructurados sin colisiones.
 
     La detección es deliberadamente conservadora: las citas completas y las
@@ -165,16 +252,8 @@ def _proteger_estructura(texto: str):
         reemplazos[marcador] = original
         return marcador
 
-    if _LINEA_ESTRUCTURADA.search(texto):
-        return guardar(texto), reemplazos
-
-    texto = _proteger_regiones_citadas(texto, guardar)
-
-    def proteger_token(match):
-        token = match.group(0)
-        return guardar(token) if _es_token_estructurado(token) else token
-
-    return _TOKEN_NO_ESPACIO.sub(proteger_token, texto), reemplazos
+    texto = _proteger_regiones_citadas(texto, guardar, estado)
+    return _proteger_tokens_lineal(texto, guardar), reemplazos
 
 
 def _restaurar_estructura(texto: str, reemplazos) -> str:
@@ -190,17 +269,16 @@ def _restaurar_estructura(texto: str, reemplazos) -> str:
 
 
 def _quitar_muletillas(texto: str):
-    """Quita muletillas sin confundir acrónimos en mayúsculas."""
+    """Quita sólo muletillas al inicio real, no coincidencias interiores."""
     eliminadas = 0
-
-    def quitar(match):
-        nonlocal eliminadas
-        if match.group(1).isupper():
-            return match.group(0)
+    while True:
+        inicio = len(texto) - len(texto.lstrip())
+        match = MULETILLAS.match(texto, inicio)
+        if match is None or match.group(1).isupper():
+            break
+        texto = texto[match.end():]
         eliminadas += 1
-        return ""
-
-    return MULETILLAS.sub(quitar, texto), eliminadas
+    return texto, eliminadas
 
 
 def _capitalizar_oraciones(texto: str, *, inicio: bool = False) -> str:
@@ -228,6 +306,8 @@ class ProcesadorTexto:
         self.rewrite_mode = rewrite_mode
         self.ollama_model = ollama_model
         self.ollama_url = ollama_url.rstrip("/")
+        self._estado_literal = _EstadoLiteral()
+        self._fragmento_al_inicio = True
 
     # ---------------------------------------------------------------- público
 
@@ -263,11 +343,27 @@ class ProcesadorTexto:
     def procesar_fragmento(self, crudo: str) -> str:
         """Limpieza liviana para palabras incrementales (ya confirmadas). Sin
         reescritura a nivel oración porque la oración puede estar incompleta."""
-        texto, estructura = _proteger_estructura(crudo)
-        if self.remove_fillers:
+        texto, estructura = _proteger_estructura(
+            crudo, self._estado_literal)
+        if self.remove_fillers and self._fragmento_al_inicio:
             texto, _eliminadas = _quitar_muletillas(texto)
         texto = re.sub(r" {2,}", " ", texto)
+        if crudo.strip():
+            self._fragmento_al_inicio = False
         return _restaurar_estructura(texto, estructura)
+
+    def iniciar_unidad(self):
+        self._reiniciar_contexto_incremental()
+
+    def finalizar_unidad(self):
+        self._reiniciar_contexto_incremental()
+
+    def cancelar_unidad(self):
+        self._reiniciar_contexto_incremental()
+
+    def _reiniciar_contexto_incremental(self):
+        self._estado_literal = _EstadoLiteral()
+        self._fragmento_al_inicio = True
 
     # ---------------------------------------------------------------- interno
 
@@ -282,13 +378,31 @@ class ProcesadorTexto:
 
     @staticmethod
     def _frase_completamente_citada(crudo: str) -> bool:
-        """Acepta puntuación de oración después de la comilla de cierre."""
+        """Reconoce una única región citada más puntuación exterior inocua."""
+        crudo = crudo.strip()
         if len(crudo) < 2 or crudo[0] not in _PARES_CITAS:
             return False
-        final = len(crudo)
-        while final > 0 and crudo[final - 1] in ".?!":
-            final -= 1
-        return final > 1 and crudo[final - 1] == _PARES_CITAS[crudo[0]]
+        cierre = _PARES_CITAS[crudo[0]]
+        escapado = False
+        for indice in range(1, len(crudo)):
+            caracter = crudo[indice]
+            if escapado:
+                escapado = False
+                continue
+            if cierre in "\"'" and caracter == "\\":
+                escapado = True
+                continue
+            if caracter != cierre:
+                continue
+            if (cierre == "'" and indice + 1 < len(crudo)
+                    and (crudo[indice + 1].isalnum()
+                         or crudo[indice + 1] == "_")):
+                continue
+            return all(
+                restante.isspace() or restante in ".,;:!?…"
+                for restante in crudo[indice + 1:]
+            )
+        return False
 
     def _reescribir(self, texto: str) -> str:
         if self.ollama_model:
@@ -309,24 +423,10 @@ class ProcesadorTexto:
         protegido, estructura = _proteger_estructura(texto)
         modo = self.rewrite_mode
         if modo == "concise":
-            # muletillas discursivas: español primero, inglés de respaldo
-            protegido, n_general = re.subn(
-                r"\b(b[aá]sicamente|literalmente|o sea|digamos|basically|"
-                r"actually|literally|you know|i mean|kind of|sort of)\b[,]?\s*",
-                "", protegido, flags=re.IGNORECASE)
-            # "viste" es ambiguo como verbo: solo se quita cuando una coma lo
-            # separa inequívocamente como marcador discursivo.
-            protegido, n_viste_inicio = re.subn(
-                r"^\s*viste\s*,\s*", "", protegido,
-                flags=re.IGNORECASE)
-            protegido, n_viste_final = re.subn(
-                r"\s*,\s*viste([.!?]?)\s*$", r"\1", protegido,
-                flags=re.IGNORECASE)
-            if not (n_general or n_viste_inicio or n_viste_final):
-                return texto
-            protegido = _normalizar_espaciado(protegido)
-            protegido = _capitalizar_oraciones(protegido, inicio=True)
-            return _restaurar_estructura(protegido, estructura)
+            # Sin parser lingüístico no hay una forma local segura de probar
+            # que calificadores como "literalmente" o "kind of" sean ruido.
+            # La limpieza acústica inequívoca ya ocurrió antes de esta etapa.
+            return texto
         if modo in ("formal", "email"):
             # español
             subs_es = {

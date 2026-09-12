@@ -136,20 +136,21 @@ class PruebasConciseAdversariales(unittest.TestCase):
             ("¿viste el resultado?", "¿Viste el resultado?"),
             ("viste el auto", "viste el auto"),
             ("lo viste ayer", "lo viste ayer"),
-            ("básicamente esto funciona viste", "Esto funciona viste"),
+            ("básicamente esto funciona viste",
+             "básicamente esto funciona viste"),
         )
         for entrada, esperado in casos:
             with self.subTest(entrada=entrada):
                 self.assertEqual(
                     procesador.procesar_frase(entrada).texto, esperado)
 
-    def test_viste_delimitado_por_coma_es_discursivo(self):
+    def test_coma_no_basta_para_eliminar_viste(self):
         procesador = ProcesadorTexto(
             rewrite_mode="concise", voice_commands=False)
         casos = (
-            ("viste, esto funciona", "Esto funciona"),
-            ("esto funciona, viste", "Esto funciona"),
-            ("esto funciona, viste.", "Esto funciona."),
+            ("viste, esto funciona", "viste, esto funciona"),
+            ("esto funciona, viste", "esto funciona, viste"),
+            ("esto funciona, viste.", "esto funciona, viste."),
         )
         for entrada, esperado in casos:
             with self.subTest(entrada=entrada):

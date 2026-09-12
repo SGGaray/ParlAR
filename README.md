@@ -141,14 +141,20 @@ Sin reescritura (el valor por defecto), la limpieza es conservadora: preserva
 decimales con signo, horarios, URLs, correos, dominios, versiones,
 identificadores, strings y regiones de código tal como los entregó Whisper.
 Ante ambigüedad prioriza preservación. Solo corrige espaciado inequívoco,
-muletillas aisladas fuera de regiones literales y signos de apertura españoles.
-Una frase que coincide con un comando pero está entre comillas se conserva como
-texto literal, incluso con puntuación de oración exterior.
+muletillas acústicas al inicio real fuera de regiones literales y signos de
+apertura españoles. Un scanner lineal protege citas —también si quedan
+abiertas— y estructura reconocible sin pretender parsear lenguajes completos.
+En streaming conserva cita y escape entre fragmentos y los reinicia en cada
+frontera de unidad. Una frase que coincide con un comando pero está enteramente
+entre comillas se conserva como texto literal incluso con whitespace o
+`.,;:!?…` exterior.
 
 `--reescritura formal|conciso|correo` activa transformaciones explícitas. Las
 reglas locales se limitan a equivalencias seguras (ok → de acuerdo, porfa → por
-favor, finde → fin de semana; en conciso solo se limpian marcadores discursivos
-inequívocos y se conservan usos verbales ambiguos). Las regiones estructuradas
+favor, finde → fin de semana). El fallback local conciso no elimina
+calificadores léxicos ambiguos como `literalmente`, `básicamente`, `actually`,
+`kind of` o `viste`; es aceptable que haga menos antes que cambiar una
+proposición. Las regiones estructuradas
 reconocidas se protegen durante la reescritura; si un modelo pierde un marcador,
 se usa el fallback local conservador. Si corrés
 [Ollama](https://ollama.com) local, poné `ollama_model` en la config (ej.

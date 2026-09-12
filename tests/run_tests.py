@@ -103,7 +103,8 @@ def test_procesador_texto():
     pc = ProcesadorTexto(rewrite_mode="concise")
     r = pc.procesar_frase("basically this is actually the result you know")
     t = r.texto.lower()
-    check("reescritura concisa (en)", "basically" not in t and "actually" not in t,
+    check("reescritura concisa conservadora (en)",
+          "basically" in t and "actually" in t and "you know" in t,
           repr(r.texto))
 
     check("entrada vacía segura", p.procesar_frase("   ").texto == "")
@@ -150,8 +151,8 @@ def test_espanol():
     pc = ProcesadorTexto(rewrite_mode="concise")
     r = pc.procesar_frase("básicamente o sea esto funciona viste")
     t = r.texto.lower()
-    check("conciso es: sin muletillas discursivas",
-          "básicamente" not in t and "o sea" not in t and "viste" in t, repr(r.texto))
+    check("conciso es: conserva calificadores ambiguos",
+          "básicamente" in t and "o sea" in t and "viste" in t, repr(r.texto))
 
     # alias de comandos de control
     check("alias control: toggle->alternar", normalizar_comando("toggle")[0] == "alternar")

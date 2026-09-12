@@ -225,13 +225,13 @@ class PruebasRewrite(unittest.TestCase):
                     "De acuerdo user@example.com cuesta $100",
                 )
 
-    def test_concise_elimina_discursivos_sin_borrar_negacion(self):
+    def test_concise_preserva_calificadores_y_negacion(self):
         procesador = ProcesadorTexto(
             rewrite_mode="concise", voice_commands=False)
         self.assertEqual(
             procesador.procesar_frase(
                 "básicamente o sea esto funciona viste").texto,
-            "Esto funciona viste",
+            "básicamente o sea esto funciona viste",
         )
         self.assertEqual(
             procesador.procesar_frase("no viste el error").texto,

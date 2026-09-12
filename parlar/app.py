@@ -383,6 +383,29 @@ class App:
             self._bucle_trabajador()
         except Exception as exc:
             self._registrar_fallo_worker(exc)
+        finally:
+            self._cancelar_contexto_texto()
+
+    def _iniciar_contexto_texto(self):
+        iniciar = getattr(getattr(self, "proc", None), "iniciar_unidad", None)
+        if iniciar:
+            iniciar()
+
+    def _finalizar_contexto_texto(self):
+        finalizar = getattr(
+            getattr(self, "proc", None), "finalizar_unidad", None)
+        if finalizar:
+            finalizar()
+
+    def _cancelar_contexto_texto(self):
+        cancelar = getattr(
+            getattr(self, "proc", None), "cancelar_unidad", None)
+        if cancelar:
+            cancelar()
+
+    def _reiniciar_streaming(self):
+        self.streaming.reiniciar()
+        self._cancelar_contexto_texto()
 
     def _bucle_trabajador(self):
         generacion = None
@@ -394,7 +417,7 @@ class App:
 
         while not self.saliendo.is_set():
             if generacion is not None and not self._sesion_procesable(generacion):
-                self.streaming.reiniciar()
+                self._reiniciar_streaming()
                 self._descartar_stop(generacion)
                 generacion = segmentador = modo_unidad = modo_entre_unidades = None
                 secuencia_esperada = None
@@ -405,7 +428,7 @@ class App:
                 if not self._esperar_sesion_lista(item.generacion):
                     continue
                 if generacion != item.generacion:
-                    self.streaming.reiniciar()
+                    self._reiniciar_streaming()
                     generacion = item.generacion
                     segmentador = self._crear_segmentador()
                     modo_entre_unidades = self._modo_de(generacion)
@@ -426,11 +449,12 @@ class App:
                 if not segmentador.en_voz:
                     nuevo = self._modo_de(generacion)
                     if nuevo != modo_entre_unidades:
-                        self.streaming.reiniciar()
+                        self._reiniciar_streaming()
                         modo_entre_unidades = nuevo
                 for evento in segmentador.procesar(item.audio):
                     if evento.tipo == "inicio_voz":
                         modo_unidad = modo_entre_unidades
+                        self._iniciar_contexto_texto()
                         iniciar_unidad = getattr(self.inyector, "iniciar_unidad", None)
                         if iniciar_unidad:
                             iniciar_unidad(generacion)
@@ -453,7 +477,7 @@ class App:
                         self._evento_vad(False, generacion)
                         self._cerrar_unidad(evento.audio, modo_unidad, generacion)
                 self._completar_stop(generacion)
-                self.streaming.reiniciar()
+                self._reiniciar_streaming()
                 generacion = segmentador = modo_unidad = modo_entre_unidades = None
                 secuencia_esperada = None
                 vad_fallos_vistos = 0
@@ -474,7 +498,7 @@ class App:
                     evento.audio, modo_unidad, generacion)
         # ``finalizar`` reinicia streaming cuando había una unidad abierta.
         # Este reinicio adicional cubre gaps fuera de voz y fakes parciales.
-        self.streaming.reiniciar()
+        self._reiniciar_streaming()
         with self._salida_lock:
             if self._puede_emit(generacion):
                 self.guionar.enviar_parcial("")
@@ -490,9 +514,12 @@ class App:
             else:
                 self._atender_frase(audio, generacion)
         finally:
-            finalizar = getattr(self.inyector, "finalizar_unidad", None)
-            if finalizar:
-                finalizar()
+            try:
+                self._finalizar_contexto_texto()
+            finally:
+                finalizar = getattr(self.inyector, "finalizar_unidad", None)
+                if finalizar:
+                    finalizar()
 
     def _atender_frase(self, audio, generacion: int):
         self._estado_visual_si_vigente("transcribing", generacion)
