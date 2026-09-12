@@ -14,9 +14,22 @@ import re
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from typing import List, Optional
 
 from .entrega import EstadoEntrega, ResultadoSink
+
+
+@dataclass(frozen=True)
+class EstadoRecuperacionUnidad:
+    """Snapshot acotado de la unidad streaming todavía activa."""
+
+    generacion: Optional[int]
+    texto_logico: str
+    prefijo_insertado: str
+    texto_recuperacion: str
+    degradada: bool
+    recuperacion_disponible: bool
 
 
 def _cual(nombre: str) -> Optional[str]:
@@ -43,6 +56,9 @@ class Inyector:
         self._clipboard_unidad_activa = False
         self._clipboard_generacion = None
         self._texto_unidad = ""
+        self._prefijo_insertado = ""
+        self._unidad_degradada = False
+        self._recuperacion_disponible = False
         self._clipboard_forzado_por_salto = False
         print(f"[inyector] backend: {self.backend}")
 
@@ -72,44 +88,73 @@ class Inyector:
             return ResultadoSink(EstadoEntrega.SKIPPED)
         if self._clipboard_unidad_activa:
             self._texto_unidad += texto
+            if self._unidad_degradada:
+                self._clipboard_unidad += texto
+                return self._copiar_recuperacion()
         salto_bloqueado = self._contiene_salto(texto) and not self.permitir_return
         if salto_bloqueado:
-            self._clipboard_forzado_por_salto = self._clipboard_unidad_activa
-        if salto_bloqueado or self._clipboard_forzado_por_salto:
-            contenido = (self._texto_unidad if self._clipboard_unidad_activa
-                         else texto)
-            if self._portapapeles(contenido):
+            if self._clipboard_unidad_activa:
+                self._degradar_unidad(texto, forzada_por_salto=True)
+                return self._copiar_recuperacion()
+            if self._portapapeles(texto):
                 return ResultadoSink(EstadoEntrega.COPIED)
             return ResultadoSink(EstadoEntrega.FAILED)
         ok = self._tipear(texto)
         if ok:
+            if self._clipboard_unidad_activa:
+                self._prefijo_insertado += texto
             if registrar:
                 self._registrar(texto)
             return ResultadoSink(EstadoEntrega.INSERTED)
         contenido = texto
         if self._clipboard_unidad_activa:
-            self._clipboard_unidad += texto
-            contenido = self._clipboard_unidad
+            self._degradar_unidad(texto)
+            return self._copiar_recuperacion()
         if self._portapapeles(contenido):
             return ResultadoSink(EstadoEntrega.COPIED)
         return ResultadoSink(EstadoEntrega.FAILED)
 
+    def _degradar_unidad(self, texto: str, *, forzada_por_salto=False):
+        self._unidad_degradada = True
+        self._clipboard_forzado_por_salto = forzada_por_salto
+        self._clipboard_unidad = texto
+        self._recuperacion_disponible = False
+
+    def _copiar_recuperacion(self) -> ResultadoSink:
+        ok = self._portapapeles(self._clipboard_unidad)
+        self._recuperacion_disponible = ok
+        return ResultadoSink(
+            EstadoEntrega.COPIED if ok else EstadoEntrega.FAILED)
+
+    def estado_recuperacion_unidad(self) -> EstadoRecuperacionUnidad:
+        return EstadoRecuperacionUnidad(
+            generacion=self._clipboard_generacion,
+            texto_logico=self._texto_unidad,
+            prefijo_insertado=self._prefijo_insertado,
+            texto_recuperacion=self._clipboard_unidad,
+            degradada=self._unidad_degradada,
+            recuperacion_disponible=self._recuperacion_disponible,
+        )
+
     def iniciar_unidad(self, generacion=None):
         self._clipboard_unidad = ""
         self._texto_unidad = ""
+        self._prefijo_insertado = ""
+        self._unidad_degradada = False
+        self._recuperacion_disponible = False
         self._clipboard_forzado_por_salto = False
         self._clipboard_unidad_activa = True
         self._clipboard_generacion = generacion
 
     def finalizar_unidad(self):
-        self._clipboard_unidad_activa = False
-        self._clipboard_generacion = None
-        self._texto_unidad = ""
-        self._clipboard_forzado_por_salto = False
+        self.cancelar_unidad()
 
     def cancelar_unidad(self):
         self._clipboard_unidad = ""
         self._texto_unidad = ""
+        self._prefijo_insertado = ""
+        self._unidad_degradada = False
+        self._recuperacion_disponible = False
         self._clipboard_forzado_por_salto = False
         self._clipboard_unidad_activa = False
         self._clipboard_generacion = None
@@ -207,8 +252,11 @@ class Inyector:
     def borrar_ultima_oracion(self) -> bool:
         if not self._registro_oraciones:
             return False
-        ultima = self._registro_oraciones.pop()
-        return self.retroceso(len(ultima))
+        ultima = self._registro_oraciones[-1]
+        if not self.retroceso(len(ultima)):
+            return False
+        self._registro_oraciones.pop()
+        return True
 
     def _registrar(self, texto: str):
         self._registro_oraciones.append(texto)

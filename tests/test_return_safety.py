@@ -138,7 +138,7 @@ class PruebasReturnFisico(unittest.TestCase):
             [EstadoEntrega.INSERTED, EstadoEntrega.COPIED, EstadoEntrega.COPIED],
         )
         self.assertEqual(llamadas, [["wtype", "--", "hola"]])
-        self.assertEqual(copias, ["hola\nmundo", "hola\nmundo final"])
+        self.assertEqual(copias, ["\nmundo", "\nmundo final"])
         self.assertEqual(self.llamadas_return(llamadas), [])
 
     def test_streaming_autorizado_inserta_y_representa_el_salto(self):

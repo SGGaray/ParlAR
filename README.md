@@ -92,7 +92,10 @@ Es opcional y best-effort: si GuionAR no está corriendo, el dictado continúa.
 Al reconectar se envía un snapshot del VAD y parcial actuales, pero no se
 reproduce texto final histórico y no existe ACK del consumidor. El receptor
 limita cada `text` a 2.000 caracteres. ParlAR no controla los permisos del
-socket receptor; GuionAR documenta `0600` para su endpoint.
+socket receptor; GuionAR documenta `0600` para su endpoint. Antes de deduplicar
+un VAD o parcial repetido, ParlAR comprueba sin bloquear si la conexión actual
+terminó; un EOF/reset habilita la reconexión y el snapshot, mientras que una
+conexión viva no duplica el estado.
 
 ## Comandos de voz (modo frase)
 
@@ -110,14 +113,25 @@ después de la comilla de cierre.
 
 Insertar, copiar, espejar en GuionAR y persistir el transcript son resultados
 independientes. Un fallo no cancela los otros sinks. El fallback de clipboard
-acumula la unidad streaming completa para que pueda pegarse manualmente, pero
-copiar no equivale a insertar y no entra al historial de undo. Undo solo opera
-sobre inserciones reconocidas y sigue dependiendo del foco/editor externo.
+acumula la unidad streaming completa mientras nada fue insertado. En una
+entrega mixta, el primer fallo congela el prefijo confirmado y copia como
+recovery el sufijo continuo desde ese fragmento; el resto de la unidad ya no
+se tipea para no crear huecos ni hacer retries ciegos. Ese sufijo no representa
+la unidad completa y pegarlo junto al prefijo es una recuperación manual.
+Copiar no equivale a insertar y no entra al historial de undo. Undo solo opera
+sobre inserciones reconocidas: un fallo del backend conserva el elemento al
+tope para reintentarlo, y solo un éxito avanza el historial. El editor externo
+no ofrece una transacción: un fallo puede haber escrito o borrado parcialmente.
 
-El control usa un socket Unix `0600`, una operación UTF-8 por conexión,
-terminada por newline (EOF se acepta para clientes antiguos), con máximo 4 KiB.
-Una segunda instancia no reemplaza un listener activo ni archivos ajenos; un
-socket stale verificado sí se recupera. En `/tmp` la ruta incluye el UID.
+El control reserva la instancia con un lock `0600` antes de `bind` y usa un
+socket Unix `0600` para transportar una operación UTF-8 por conexión, terminada
+por newline (EOF se acepta para clientes antiguos), con máximo 4 KiB. Cada
+cliente tiene timeout de recepción de 350 ms y deadline total de 1 segundo;
+como máximo ocho handlers/sockets quedan activos. `detener()` cierra el listener
+y los clientes parciales, espera los handlers ya admitidos y limpia socket y
+lock solo si conserva sus identidades. Una segunda instancia no reemplaza una
+reserva activa ni archivos ajenos; socket y lock stale sí se recuperan. En
+`/tmp` la ruta incluye el UID.
 
 ## Modos de reescritura
 

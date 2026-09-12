@@ -5,8 +5,9 @@ Diseño:
   conexión en el próximo envío. Nunca propaga excepciones al pipeline.
 - Opcional: se activa con `guionar: true` en la config o el flag --guionar.
   Si está desactivado, crear_cliente() devuelve un ClienteNulo (no-ops).
-- Deduplicación local: VAD solo se envía cuando cambia; los parciales solo
-  cuando difieren del último enviado. Evita spam por el socket.
+- Deduplicación por conexión viva: VAD solo se envía cuando cambia; los
+  parciales solo cuando difieren del último enviado. Un probe no bloqueante
+  detecta EOF/reset antes de deduplicar y permite reponer el snapshot.
 
 Protocolo (JSON por líneas, ver GuionAR/INTEGRATION.md):
     {"type": "text",    "data": "hola mundo"}
@@ -43,20 +44,24 @@ class ClienteGuionAR:
         self._parcial_deseado = None
         self._vad_enviado = None
         self._parcial_enviado = None
+        self._epoca_conexion = 0
         self._cerrado = False
         self._lock = threading.RLock()
 
     # ---------------------------------------------------------- transporte
-    def _conectar(self) -> bool:
+    def _conectar(self, *, snapshot_parcial=True) -> bool:
         if self._cerrado:
             return False
         if self._sock is not None:
-            return True
+            if self._conexion_viva():
+                return True
+            self._desconectar()
         try:
             s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             s.settimeout(0.05)
             s.connect(self.ruta)
             self._sock = s
+            self._epoca_conexion += 1
             self._vad_enviado = None
             self._parcial_enviado = None
             if self._vad_deseado is not None:
@@ -64,7 +69,7 @@ class ClienteGuionAR:
                         {"type": "vad", "data": self._vad_deseado}):
                     return False
                 self._vad_enviado = self._vad_deseado
-            if self._parcial_deseado is not None:
+            if snapshot_parcial and self._parcial_deseado is not None:
                 if not self._enviar_conectado(
                         {"type": "partial", "data": self._parcial_deseado}):
                     return False
@@ -76,6 +81,17 @@ class ClienteGuionAR:
             except (OSError, UnboundLocalError):
                 pass
             self._sock = None
+            return False
+
+    def _conexion_viva(self) -> bool:
+        """Detecta EOF/reset sin consumir datos ni esperar al receptor."""
+        try:
+            datos = self._sock.recv(
+                1, socket.MSG_PEEK | socket.MSG_DONTWAIT)
+            return datos != b""
+        except (BlockingIOError, socket.timeout):
+            return True
+        except OSError:
             return False
 
     def _desconectar(self):
@@ -110,8 +126,8 @@ class ClienteGuionAR:
         with self._lock:
             if self._cerrado:
                 return False
-            conectado = self._conectar()
             self._parcial_deseado = ""
+            conectado = self._conectar(snapshot_parcial=False)
             ok = conectado and self._enviar_conectado(
                 {"type": "text", "data": limitado})
             if ok:
