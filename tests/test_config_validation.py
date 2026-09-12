@@ -132,6 +132,17 @@ class ConfigTemporal(unittest.TestCase):
         with self.assertRaisesRegex(ErrorConfiguracion, "no se pudo leer"):
             Config.load()
 
+    def test_utf8_invalido_es_error_de_configuracion_sin_filtrar_contenido(self):
+        self.ruta.parent.mkdir(parents=True)
+        self.ruta.write_bytes(b"prefijo-secreto-\xff-sufijo")
+        with self.assertRaises(ErrorConfiguracion) as contexto:
+            Config.load()
+        mensaje = str(contexto.exception)
+        self.assertIn(str(self.ruta), mensaje)
+        self.assertIn("UTF-8", mensaje)
+        self.assertIn("byte 16", mensaje)
+        self.assertNotIn("secreto", mensaje)
+
     def test_validate_cubre_mutaciones_en_memoria(self):
         cfg = Config()
         cfg.overlay = "sí"
@@ -148,6 +159,12 @@ class ConfigTemporal(unittest.TestCase):
         Config(preroll_ms=100, max_utterance_s=0.2,
                min_speech_ms=100).validate()
         Config().validate()
+
+    def test_max_utterance_debe_admitir_al_menos_un_frame(self):
+        with self.assertRaisesRegex(
+                ErrorConfiguracion, "max_utterance_s.*frame_ms"):
+            Config(frame_ms=20, preroll_ms=10, min_speech_ms=10,
+                   max_utterance_s=0.015).validate()
 
     def test_matriz_ollama_url(self):
         validas = (
@@ -246,6 +263,27 @@ class ConfigTemporal(unittest.TestCase):
 
 
 class InicioSeguro(unittest.TestCase):
+    def test_help_no_carga_config_ni_importa_app(self):
+        import parlar.__main__ as entrada
+
+        previo = sys.modules.pop("parlar.app", None)
+        salida = io.StringIO()
+        try:
+            with (mock.patch.object(
+                    entrada.Config, "load",
+                    side_effect=AssertionError("no cargar config")) as carga,
+                  mock.patch.object(sys, "argv", ["parlar", "--help"]),
+                  contextlib.redirect_stdout(salida),
+                  self.assertRaises(SystemExit) as salida_cli):
+                entrada.main()
+            self.assertEqual(salida_cli.exception.code, 0)
+            carga.assert_not_called()
+            self.assertNotIn("parlar.app", sys.modules)
+            self.assertIn("usage: parlar", salida.getvalue())
+        finally:
+            if previo is not None:
+                sys.modules["parlar.app"] = previo
+
     def test_config_invalida_sale_antes_de_importar_app(self):
         import parlar.__main__ as entrada
 

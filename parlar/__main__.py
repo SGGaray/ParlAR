@@ -13,12 +13,7 @@ _ALIAS_MODO = {"frase": "utterance"}
 _ALIAS_REESCRITURA = {"ninguna": "none", "conciso": "concise", "correo": "email"}
 
 
-def main():
-    try:
-        cfg = Config.load()
-    except ErrorConfiguracion as e:
-        print(f"[config] configuración inválida: {e}", file=sys.stderr)
-        raise SystemExit(2)
+def _crear_parser(cfg: Config) -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="parlar",
         description="ParlAR: dictado local a nivel sistema para Linux. "
@@ -57,6 +52,19 @@ def main():
     ap.add_argument("--guardar-config", "--save-config", dest="guardar_config",
                     action="store_true",
                     help="persiste los flags actuales en ~/.config/parlar/config.json")
+    return ap
+
+
+def main():
+    if any(argumento in {"-h", "--help"} for argumento in sys.argv[1:]):
+        _crear_parser(Config()).parse_args()
+
+    try:
+        cfg = Config.load()
+    except ErrorConfiguracion as e:
+        print(f"[config] configuración inválida: {e}", file=sys.stderr)
+        raise SystemExit(2)
+    ap = _crear_parser(cfg)
     args = ap.parse_args()
 
     cfg.model_size = args.modelo

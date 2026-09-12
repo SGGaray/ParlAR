@@ -106,6 +106,11 @@ class Config:
         if CONFIG_FILE.exists():
             try:
                 data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+            except UnicodeDecodeError as e:
+                raise ErrorConfiguracion(
+                    f"no se pudo leer {CONFIG_FILE}: codificación UTF-8 "
+                    f"inválida en el byte {e.start}"
+                ) from e
             except (json.JSONDecodeError, OSError) as e:
                 raise ErrorConfiguracion(
                     f"no se pudo leer {CONFIG_FILE}: {e}"
@@ -250,6 +255,12 @@ class Config:
                 errores.append(
                     f"'{nombre}'={valor!r}: debe ser finito y mayor que 0"
                 )
+        if (math.isfinite(self.max_utterance_s)
+                and self.max_utterance_s * 1000 < self.frame_ms):
+            errores.append(
+                f"'max_utterance_s'={self.max_utterance_s}: debe admitir al "
+                f"menos un 'frame_ms'={self.frame_ms}"
+            )
         if self.min_speech_ms > self.max_utterance_s * 1000:
             errores.append(
                 f"'min_speech_ms'={self.min_speech_ms}: no puede superar "

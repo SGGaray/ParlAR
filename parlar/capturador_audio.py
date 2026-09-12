@@ -72,6 +72,7 @@ class EstadoCaptura:
     frames_capturados: int
     frames_entregados: int
     frames_descartados: int
+    muestras_parciales_descartadas: int
     device_overflows: int
     discontinuidades: int
     queue_depth: int
@@ -137,6 +138,11 @@ class Segmentador:
                         "frame_voz",
                         audio=self._a_float32(b"".join(self.frames)),
                     )
+                    if len(self.frames) >= self.max_frames:
+                        audio = self._a_float32(b"".join(self.frames))
+                        self._reiniciar()
+                        self.preroll.clear()
+                        yield EventoSegmento("frase", audio=audio)
             else:
                 self.racha_voz = 0
             return
@@ -204,6 +210,7 @@ class CapturadorMic:
         self._frames_capturados = 0
         self._frames_entregados = 0
         self._frames_descartados = 0
+        self._muestras_parciales_descartadas = 0
         self._device_overflows = 0
         self._discontinuidades = 0
         self._max_queue_depth = 0
@@ -222,6 +229,7 @@ class CapturadorMic:
         self._frames_capturados = 0
         self._frames_entregados = 0
         self._frames_descartados = 0
+        self._muestras_parciales_descartadas = 0
         self._device_overflows = 0
         self._discontinuidades = 0
         self._max_queue_depth = 0
@@ -355,6 +363,7 @@ class CapturadorMic:
                     error = exc
 
         with self._callback_lock:
+            self._muestras_parciales_descartadas += len(self._resto) // 2
             self._resto = b""
             if vaciar:
                 self._vaciar_cola()
@@ -419,6 +428,8 @@ class CapturadorMic:
                 frames_capturados=self._frames_capturados,
                 frames_entregados=self._frames_entregados,
                 frames_descartados=self._frames_descartados,
+                muestras_parciales_descartadas=(
+                    self._muestras_parciales_descartadas),
                 device_overflows=self._device_overflows,
                 discontinuidades=self._discontinuidades,
                 queue_depth=profundidad,
