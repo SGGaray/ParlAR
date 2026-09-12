@@ -101,15 +101,15 @@ viva no duplica el estado. Un envío real a un peer lento sí conserva su timeou
 
 ## Comandos de voz (modo frase)
 
-Decilos exactos, como frase aislada: "nuevo párrafo", "punto y aparte", "nueva línea", "borra la última oración", "enviar", "detener dictado". Los equivalentes en inglés ("new paragraph", "delete last sentence", "send", "stop dictation") siguen funcionando.
+Decilos exactos, como frase aislada: "nuevo párrafo", "punto y aparte", "nueva línea", "borra la última oración", "enviar", "detener dictado". Los equivalentes en inglés ("new paragraph", "delete last sentence", "send", "stop dictation") siguen funcionando. Solo una orden desnuda e inequívoca produce una acción: puede tener whitespace exterior y un único `.`, `!`, `?` o `…` terminal. Citas, backticks, paréntesis, corchetes, delimitadores Markdown, regiones múltiples o literales abiertos se entregan como texto.
 
 `comando_enviar=false` —el default— bloquea **toda** acción que genere
 Enter/Return, incluyendo comandos, texto multilínea, fragmentos streaming y
 resultados de reescritura. En ese caso, el texto multilínea se copia intacto al
 portapapeles y se informa como copiado, no insertado; tampoco entra al historial
 de undo. Activarlo autoriza esas acciones sobre cualquier ventana enfocada. Las
-frases completamente citadas no se ejecutan, aun si llevan `.`, `?` o `!`
-después de la comilla de cierre.
+regiones literales o estructurales no se ejecutan aunque su contenido coincida
+con una orden.
 
 ## Semántica de salida
 
@@ -147,10 +147,12 @@ Ante ambigüedad prioriza preservación. Solo corrige espaciado inequívoco,
 muletillas acústicas al inicio real fuera de regiones literales y signos de
 apertura españoles. Un scanner lineal protege citas —también si quedan
 abiertas— y estructura reconocible sin pretender parsear lenguajes completos.
-En streaming conserva cita y escape entre fragmentos y los reinicia en cada
-frontera de unidad. Una frase que coincide con un comando pero está enteramente
-entre comillas se conserva como texto literal incluso con whitespace o
-`.,;:!?…` exterior.
+Una unidad con `LF`, `CRLF` o `CR` conserva exactamente saltos, tabs, líneas en
+blanco e indentación; esto también evita que los modos de reescritura conviertan
+accidentalmente un bloque técnico en una línea. En streaming, cada fragmento
+confirmado se entrega sin limpieza destructiva: el borde de LocalAgreement no
+se interpreta como fin de token, filler, cita o escape. No se mantiene una cola
+léxica pendiente y las fronteras de unidad conservan sus resets de lifecycle.
 
 `--reescritura formal|conciso|correo` activa transformaciones explícitas. Las
 reglas locales se limitan a equivalencias seguras (ok → de acuerdo, porfa → por

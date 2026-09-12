@@ -162,11 +162,11 @@ class PruebasIncrementales(unittest.TestCase):
         self.assertEqual(procesador.procesar_fragmento('"em'), '"em')
         procesador.finalizar_unidad()
 
-    def test_muletilla_solo_se_limpia_al_inicio_real(self):
+    def test_fragmentos_no_hacen_limpieza_sin_lookahead(self):
         procesador = ProcesadorTexto(voice_commands=False)
         procesador.iniciar_unidad()
         self.assertEqual(procesador.procesar_fragmento("  em probamos "),
-                         "probamos ")
+                         "  em probamos ")
         self.assertEqual(procesador.procesar_fragmento("echo em"), "echo em")
 
     def test_final_cancel_y_nueva_unidad_resetean_estado(self):
@@ -178,7 +178,7 @@ class PruebasIncrementales(unittest.TestCase):
                 getattr(procesador, frontera)()
                 procesador.iniciar_unidad()
                 self.assertEqual(
-                    procesador.procesar_fragmento("em normal"), "normal")
+                    procesador.procesar_fragmento("em normal"), "em normal")
 
     def test_app_wiring_resetea_en_restart_gap_cancelacion(self):
         eventos = []

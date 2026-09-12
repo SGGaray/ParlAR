@@ -39,6 +39,7 @@ _PATRONES_CMD = [
      ("detener", None)),
     (re.compile(r"^(enviar|send message|send)$", re.I), ("enviar", None)),
 ]
+_PUNTUACION_TERMINAL_COMANDO = frozenset(".!?…")
 
 _FIN_ORACION = re.compile(r"([.!?])\s+([¿¡]?)(\w)")
 _MARCADOR_ESTRUCTURA = re.compile(r"\ue000PARLARX*\d+\ue001")
@@ -312,6 +313,17 @@ class ProcesadorTexto:
     # ---------------------------------------------------------------- público
 
     def procesar_frase(self, crudo: str) -> Procesado:
+        if self.voice_commands:
+            cmd = self._buscar_comando(crudo)
+            if cmd is not None:
+                return cmd
+
+        # Una unidad con estructura de líneas o tabs no es prosa plana ni una
+        # orden desnuda. Se conserva carácter por carácter para
+        # que la frontera de Return de la salida pueda aplicar su política.
+        if any(marca in crudo for marca in ("\n", "\r", "\t")):
+            return Procesado(texto=crudo)
+
         crudo = crudo.strip()
         if not crudo:
             return Procesado()
@@ -320,11 +332,6 @@ class ProcesadorTexto:
             solo_muletilla = _SOLO_MULETILLA.match(crudo)
             if solo_muletilla and not solo_muletilla.group(1).isupper():
                 return Procesado()
-
-        if self.voice_commands:
-            cmd = self._buscar_comando(crudo)
-            if cmd is not None:
-                return cmd
 
         texto, estructura = _proteger_estructura(crudo)
         muletillas_eliminadas = 0
@@ -341,16 +348,13 @@ class ProcesadorTexto:
         return Procesado(texto=texto)
 
     def procesar_fragmento(self, crudo: str) -> str:
-        """Limpieza liviana para palabras incrementales (ya confirmadas). Sin
-        reescritura a nivel oración porque la oración puede estar incompleta."""
-        texto, estructura = _proteger_estructura(
-            crudo, self._estado_literal)
-        if self.remove_fillers and self._fragmento_al_inicio:
-            texto, _eliminadas = _quitar_muletillas(texto)
-        texto = re.sub(r" {2,}", " ", texto)
-        if crudo.strip():
-            self._fragmento_al_inicio = False
-        return _restaurar_estructura(texto, estructura)
+        """Devuelve texto confirmado sin tratar el borde como frontera léxica.
+
+        LocalAgreement es append-only: un fragmento no ofrece lookahead para
+        decidir fillers, citas, escapes ni tokens incompletos. Toda decisión
+        destructiva queda reservada a frases completas.
+        """
+        return crudo
 
     def iniciar_unidad(self):
         self._reiniciar_contexto_incremental()
@@ -368,41 +372,16 @@ class ProcesadorTexto:
     # ---------------------------------------------------------------- interno
 
     def _buscar_comando(self, crudo: str) -> Optional[Procesado]:
-        if self._frase_completamente_citada(crudo):
-            return None
-        norm = re.sub(r"[^\w\sáéíóúñü]", "", crudo).strip().lower()
+        # Gramática positiva: whitespace exterior, una frase exacta y, como
+        # máximo, un signo terminal inequívoco. Ningún otro delimitador se
+        # elimina para intentar fabricar una orden.
+        norm = crudo.strip()
+        if norm and norm[-1] in _PUNTUACION_TERMINAL_COMANDO:
+            norm = norm[:-1].rstrip()
         for pat, (cmd, carga) in _PATRONES_CMD:
-            if pat.match(norm):
+            if pat.fullmatch(norm):
                 return Procesado(comando=cmd, carga=carga)
         return None
-
-    @staticmethod
-    def _frase_completamente_citada(crudo: str) -> bool:
-        """Reconoce una única región citada más puntuación exterior inocua."""
-        crudo = crudo.strip()
-        if len(crudo) < 2 or crudo[0] not in _PARES_CITAS:
-            return False
-        cierre = _PARES_CITAS[crudo[0]]
-        escapado = False
-        for indice in range(1, len(crudo)):
-            caracter = crudo[indice]
-            if escapado:
-                escapado = False
-                continue
-            if cierre in "\"'" and caracter == "\\":
-                escapado = True
-                continue
-            if caracter != cierre:
-                continue
-            if (cierre == "'" and indice + 1 < len(crudo)
-                    and (crudo[indice + 1].isalnum()
-                         or crudo[indice + 1] == "_")):
-                continue
-            return all(
-                restante.isspace() or restante in ".,;:!?…"
-                for restante in crudo[indice + 1:]
-            )
-        return False
 
     def _reescribir(self, texto: str) -> str:
         if self.ollama_model:
