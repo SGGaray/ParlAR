@@ -164,8 +164,8 @@ class PruebasRestartGuionAR(unittest.TestCase):
         listener[1] = listener[0].aceptar()
         listener[0].recibir(listener[1], 1)
 
-        # El peer no responde: MSG_PEEK no bloqueante obtiene EAGAIN y la
-        # conexión viva conserva dedup sin polling ni conexión adicional.
+        # El peer no responde: el readiness con espera cero conserva dedup
+        # sin pagar el timeout, polling ni una conexión adicional.
         for _ in range(20):
             self.assertTrue(cliente.evento_vad(True))
         listener[1].settimeout(0.05)

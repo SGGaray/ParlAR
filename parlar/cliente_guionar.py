@@ -18,6 +18,7 @@ Protocolo (JSON por líneas, ver GuionAR/INTEGRATION.md):
 
 import json
 import os
+import select
 import socket
 import sys
 import threading
@@ -86,12 +87,18 @@ class ClienteGuionAR:
     def _conexion_viva(self) -> bool:
         """Detecta EOF/reset sin consumir datos ni esperar al receptor."""
         try:
+            legibles, _, excepcionales = select.select(
+                [self._sock], [], [self._sock], 0)
+            if excepcionales:
+                return False
+            if not legibles:
+                return True
             datos = self._sock.recv(
                 1, socket.MSG_PEEK | socket.MSG_DONTWAIT)
             return datos != b""
         except (BlockingIOError, socket.timeout):
             return True
-        except OSError:
+        except (OSError, ValueError):
             return False
 
     def _desconectar(self):

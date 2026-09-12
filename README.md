@@ -94,8 +94,10 @@ reproduce texto final histórico y no existe ACK del consumidor. El receptor
 limita cada `text` a 2.000 caracteres. ParlAR no controla los permisos del
 socket receptor; GuionAR documenta `0600` para su endpoint. Antes de deduplicar
 un VAD o parcial repetido, ParlAR comprueba sin bloquear si la conexión actual
-terminó; un EOF/reset habilita la reconexión y el snapshot, mientras que una
-conexión viva no duplica el estado.
+terminó: consulta disponibilidad con espera cero y solo hace `peek` si el
+socket está legible, sin pagar el timeout normal en cada estado deduplicado.
+Un EOF/reset habilita la reconexión y el snapshot, mientras que una conexión
+viva no duplica el estado. Un envío real a un peer lento sí conserva su timeout.
 
 ## Comandos de voz (modo frase)
 
