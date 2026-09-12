@@ -285,7 +285,7 @@ class App:
                 self._estado_cv.notify_all()
         return True
 
-    def salir(self):
+    def salir(self, *, esperar: bool = True):
         propietario = False
         with self._transicion_lock:
             with self._estado_cv:
@@ -316,13 +316,15 @@ class App:
                     self._registrar_error_shutdown("mic", exc)
 
         if not propietario:
-            espera.wait()
+            if esperar:
+                espera.wait()
             return
 
         hilo = self._trabajador_hilo
-        if hilo is threading.current_thread():
+        if hilo is threading.current_thread() or not esperar:
             # Si una acción del propio pipeline pide salir, otro hilo espera
-            # su retorno antes de cerrar los recursos que todavía posee.
+            # su retorno antes de cerrar los recursos que todavía posee. El
+            # control usa la misma reserva sin bloquear su handler.
             threading.Thread(
                 target=self._finalizar_shutdown, args=(hilo,),
                 name="shutdown-finalizer", daemon=True).start()
@@ -899,7 +901,7 @@ class App:
             self.proc.rewrite_mode = partes[1]
             return f"OK reescritura={partes[1]}"
         if op == "salir":
-            threading.Thread(target=self.salir, name="shutdown", daemon=True).start()
+            self.salir(esperar=False)
             return "OK chau"
         return "ERR comando desconocido"
 

@@ -130,10 +130,13 @@ socket Unix `0600` para transportar una operación UTF-8 por conexión, terminad
 por newline (EOF se acepta para clientes antiguos), con máximo 4 KiB. Cada
 cliente tiene timeout de recepción de 350 ms y deadline total de 1 segundo;
 como máximo ocho handlers/sockets quedan activos. `detener()` cierra el listener
-y los clientes parciales, espera los handlers ya admitidos y limpia socket y
-lock solo si conserva sus identidades. Una segunda instancia no reemplaza una
-reserva activa ni archivos ajenos; socket y lock stale sí se recuperan. En
-`/tmp` la ruta incluye el UID.
+y los clientes parciales, espera los handlers ya admitidos y limpia el socket
+solo si conserva su identidad. El lockfile persiste entre ejecuciones para que
+todos los aspirantes serialicen sobre el mismo inode; su presencia no indica
+una instancia activa: el ownership lo representa exclusivamente el `flock`
+retenido. Una segunda instancia no reemplaza una reserva activa ni archivos
+ajenos; un socket stale se recupera después de adquirir el lock. En `/tmp` la
+ruta incluye el UID.
 
 ## Modos de reescritura
 
@@ -272,6 +275,9 @@ el proceso principal, no sustituye el estado de health interno del worker.
 El shutdown invalida primero la generación y termina el worker antes de cerrar
 las salidas. Cada recurso recibe su intento de cleanup aunque otro falle; el
 estado alcanza `closed` y conserva los tipos de error de cierre para diagnóstico.
+Las solicitudes concurrentes de `salir` son idempotentes y comparten una única
+tarea de finalización; el handler de control responde sin esperar la inferencia
+en curso.
 
 ## Validación
 

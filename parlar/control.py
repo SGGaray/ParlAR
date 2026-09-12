@@ -85,12 +85,21 @@ class ServidorControl:
                 self._hilo = threading.Thread(
                     target=self._bucle, name="control", daemon=True)
                 self._hilo.start()
-            except BaseException:
+            except BaseException as error_inicio:
                 with self._hilos_lock:
                     self._corriendo = False
                 self._cerrar_listener()
-                self._limpiar_endpoint_propio()
-                self._liberar_lock_instancia()
+                try:
+                    self._limpiar_recursos_instancia()
+                except BaseException as error_cleanup:
+                    detalle = (
+                        "el rollback de control también falló: "
+                        f"{type(error_cleanup).__name__}: {error_cleanup}"
+                    )
+                    anotar = getattr(error_inicio, "add_note", None)
+                    if anotar is not None:
+                        anotar(detalle)
+                    print(f"[control] {detalle}", file=sys.stderr)
                 self._hilo = None
                 raise
         print(f"[control] escuchando en {self.ruta}")
@@ -128,21 +137,37 @@ class ServidorControl:
 
     def _liberar_lock_instancia(self):
         fd, self._lock_fd = self._lock_fd, None
-        identidad, self._lock_identidad = self._lock_identidad, None
+        self._lock_identidad = None
         if fd is None:
             return
         try:
-            info = os.lstat(self._ruta_lock)
-            actual = (info.st_dev, info.st_ino)
-            if (stat.S_ISREG(info.st_mode) and actual == identidad):
-                os.unlink(self._ruta_lock)
-        except FileNotFoundError:
-            pass
+            fcntl.flock(fd, fcntl.LOCK_UN)
         finally:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_UN)
-            finally:
-                os.close(fd)
+            os.close(fd)
+
+    def _limpiar_recursos_instancia(self):
+        """Intenta endpoint y flock completos, preservando el primer error."""
+        primer_error = None
+        try:
+            self._limpiar_endpoint_propio()
+        except BaseException as exc:
+            primer_error = exc
+        try:
+            self._liberar_lock_instancia()
+        except BaseException as exc:
+            if primer_error is None:
+                primer_error = exc
+            else:
+                detalle = (
+                    "la liberación del lock también falló: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                anotar = getattr(primer_error, "add_note", None)
+                if anotar is not None:
+                    anotar(detalle)
+                print(f"[control] {detalle}", file=sys.stderr)
+        if primer_error is not None:
+            raise primer_error
 
     def _preparar_ruta(self):
         try:
@@ -282,8 +307,7 @@ class ServidorControl:
                 hilo.join()
         with self._detener_lock:
             self._hilo = None
-            self._limpiar_endpoint_propio()
-            self._liberar_lock_instancia()
+            self._limpiar_recursos_instancia()
 
     def _cerrar_listener(self):
         sock, self._sock = self._sock, None
@@ -294,14 +318,16 @@ class ServidorControl:
                 pass
 
     def _limpiar_endpoint_propio(self):
+        identidad_propia, self._identidad = self._identidad, None
+        if identidad_propia is None:
+            return
         try:
             info = os.lstat(self.ruta)
             identidad = (info.st_dev, info.st_ino)
-            if stat.S_ISSOCK(info.st_mode) and identidad == self._identidad:
+            if stat.S_ISSOCK(info.st_mode) and identidad == identidad_propia:
                 os.unlink(self.ruta)
         except FileNotFoundError:
             pass
-        self._identidad = None
 
 
 def enviar_comando(cmd: str) -> str:

@@ -336,7 +336,8 @@ class PruebasControlReaudit(unittest.TestCase):
         primero.detener()
         self.servidores.remove(primero)
         self.assertFalse(self.ruta.exists())
-        self.assertFalse(lock.exists())
+        self.assertTrue(lock.exists())
+        self.assertEqual(stat.S_IMODE(os.stat(lock).st_mode), 0o600)
 
         segundo = self.registrar(ServidorControl(lambda cmd: "OK2", self.ruta))
         segundo.iniciar()
