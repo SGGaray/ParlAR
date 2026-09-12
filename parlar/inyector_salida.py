@@ -5,7 +5,7 @@ Backends, auto-seleccionados según tipo de sesión y disponibilidad:
   Wayland: wtype (protocolo virtual-keyboard), luego ydotool (daemon uinput)
   Respaldo: portapapeles (wl-copy / xclip) + notificación de escritorio
 
-Registra las últimas oraciones inyectadas para poder honrar
+Registra las últimas unidades insertadas para poder honrar
 "borra la última oración" con retrocesos sintéticos.
 """
 
@@ -60,6 +60,8 @@ class Inyector:
         self._unidad_degradada = False
         self._recuperacion_disponible = False
         self._clipboard_forzado_por_salto = False
+        self._undo_unidad_diferido = False
+        self._efecto_fisico_incierto = False
         print(f"[inyector] backend: {self.backend}")
 
     # ---------------------------------------------------------------- setup
@@ -88,6 +90,8 @@ class Inyector:
             return ResultadoSink(EstadoEntrega.SKIPPED)
         if self._clipboard_unidad_activa:
             self._texto_unidad += texto
+            if not registrar:
+                self._undo_unidad_diferido = True
             if self._unidad_degradada:
                 self._clipboard_unidad += texto
                 return self._copiar_recuperacion()
@@ -106,6 +110,11 @@ class Inyector:
             if registrar:
                 self._registrar(texto)
             return ResultadoSink(EstadoEntrega.INSERTED)
+        if (self._clipboard_unidad_activa and not registrar
+                and self.backend != "clipboard"):
+            # Un subproceso puede fallar después de haber tipeado un prefijo.
+            # No hay transacción del editor que permita conocer o revertirlo.
+            self._efecto_fisico_incierto = True
         contenido = texto
         if self._clipboard_unidad_activa:
             self._degradar_unidad(texto)
@@ -137,25 +146,44 @@ class Inyector:
         )
 
     def iniciar_unidad(self, generacion=None):
-        self._clipboard_unidad = ""
-        self._texto_unidad = ""
-        self._prefijo_insertado = ""
-        self._unidad_degradada = False
-        self._recuperacion_disponible = False
-        self._clipboard_forzado_por_salto = False
+        # Si el llamador abre otra unidad sin resolver la anterior, la frontera
+        # es una cancelación, no una finalización implícita.
+        self.cancelar_unidad()
         self._clipboard_unidad_activa = True
         self._clipboard_generacion = generacion
 
     def finalizar_unidad(self):
-        self.cancelar_unidad()
+        if self._clipboard_unidad_activa and self._undo_unidad_diferido:
+            completamente_insertada = (
+                bool(self._texto_unidad)
+                and not self._unidad_degradada
+                and not self._efecto_fisico_incierto
+                and self._prefijo_insertado == self._texto_unidad
+            )
+            if completamente_insertada:
+                self._registrar(self._prefijo_insertado)
+            elif self._prefijo_insertado or self._efecto_fisico_incierto:
+                self._registro_oraciones.clear()
+        self._limpiar_unidad()
 
     def cancelar_unidad(self):
+        if (self._clipboard_unidad_activa and self._undo_unidad_diferido
+                and (self._prefijo_insertado
+                     or self._efecto_fisico_incierto)):
+            # Hubo (o pudo haber) texto físico que no constituye una unidad
+            # lógica finalizada. Ningún undo futuro puede atravesar esa marca.
+            self._registro_oraciones.clear()
+        self._limpiar_unidad()
+
+    def _limpiar_unidad(self):
         self._clipboard_unidad = ""
         self._texto_unidad = ""
         self._prefijo_insertado = ""
         self._unidad_degradada = False
         self._recuperacion_disponible = False
         self._clipboard_forzado_por_salto = False
+        self._undo_unidad_diferido = False
+        self._efecto_fisico_incierto = False
         self._clipboard_unidad_activa = False
         self._clipboard_generacion = None
 
@@ -293,19 +321,29 @@ class Inyector:
             return False
         try:
             subprocess.run(herramienta, input=texto.encode(), check=True, timeout=5)
-            self._notificar("ParlAR",
-                            "Herramienta de tipeo no disponible. Texto copiado al "
-                            "portapapeles, presioná Ctrl+V.")
-            return True
         except Exception as e:
             print(f"[inyector] portapapeles falló: {type(e).__name__}",
                   file=sys.stderr)
             return False
+        self._notificar("ParlAR",
+                        "Herramienta de tipeo no disponible. Texto copiado al "
+                        "portapapeles, presioná Ctrl+V.")
+        return True
 
     def _notificar(self, titulo: str, cuerpo: str):
         if self.notify and _cual("notify-send"):
-            subprocess.run(["notify-send", "-a", "ParlAR", titulo, cuerpo],
-                           check=False, timeout=5)
+            try:
+                resultado = subprocess.run(
+                    ["notify-send", "-a", "ParlAR", titulo, cuerpo],
+                    check=False, timeout=5)
+                if resultado.returncode != 0:
+                    print("[inyector] notificación falló: "
+                          f"rc={resultado.returncode}", file=sys.stderr)
+            except Exception as e:
+                # El feedback visual es best-effort: nunca cambia el resultado
+                # de una copia ya confirmada ni registra el texto sensible.
+                print(f"[inyector] notificación falló: {type(e).__name__}",
+                      file=sys.stderr)
 
     @staticmethod
     def _correr(cmd: List[str]) -> bool:

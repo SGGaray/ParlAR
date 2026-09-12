@@ -1,7 +1,10 @@
 """Regresiones de recovery mixto y undo conservador."""
 
-import unittest
+import contextlib
+import io
+import subprocess
 import threading
+import unittest
 from types import SimpleNamespace
 from unittest import mock
 
@@ -188,6 +191,106 @@ class PruebasUndoConservador(unittest.TestCase):
                 inyector.escribir_texto("solo copiado").estado,
                 EstadoEntrega.COPIED)
         self.assertEqual(inyector._registro_oraciones, [])
+
+
+class PruebasClipboardNotificacion(unittest.TestCase):
+    def copiar(self, efecto_notificacion="ok", *, copia="ok", notify=True):
+        inyector = Inyector(backend="clipboard", notify=notify)
+        llamadas = []
+
+        def ejecutar(argv, **kwargs):
+            llamadas.append((argv, kwargs))
+            if argv[0] == "wl-copy":
+                if copia == "timeout":
+                    raise subprocess.TimeoutExpired(argv, 5)
+                if copia == "error":
+                    raise subprocess.CalledProcessError(1, argv)
+                return subprocess.CompletedProcess(argv, 0)
+            if efecto_notificacion == "timeout":
+                raise subprocess.TimeoutExpired(argv, 5)
+            if efecto_notificacion == "oserror":
+                raise OSError("notify indisponible")
+            return subprocess.CompletedProcess(argv, 0)
+
+        def resolver(nombre):
+            if nombre == "wl-copy":
+                return "/usr/bin/wl-copy"
+            if nombre == "notify-send" and efecto_notificacion != "ausente":
+                return "/usr/bin/notify-send"
+            return None
+
+        with (
+            mock.patch(
+                "parlar.inyector_salida.detectar_sesion",
+                return_value="wayland",
+            ),
+            mock.patch("parlar.inyector_salida._cual", side_effect=resolver),
+            mock.patch(
+                "parlar.inyector_salida.subprocess.run",
+                side_effect=ejecutar,
+            ),
+        ):
+            resultado = inyector.escribir_texto("á🙂 secreto")
+        return inyector, resultado, llamadas
+
+    def test_copy_exitoso_no_depende_de_notify(self):
+        for efecto in ("ok", "timeout", "oserror", "ausente"):
+            with self.subTest(efecto=efecto):
+                inyector, resultado, llamadas = self.copiar(efecto)
+                self.assertEqual(resultado.estado, EstadoEntrega.COPIED)
+                self.assertEqual(
+                    llamadas[0][1]["input"], "á🙂 secreto".encode())
+                self.assertEqual(inyector._registro_oraciones, [])
+
+    def test_copy_fallido_o_timeout_sigue_failed_y_no_notifica(self):
+        for copia in ("error", "timeout"):
+            with self.subTest(copia=copia):
+                _, resultado, llamadas = self.copiar(copia=copia)
+                self.assertEqual(resultado.estado, EstadoEntrega.FAILED)
+                self.assertEqual(len(llamadas), 1)
+
+    def test_fallo_de_notify_no_filtra_el_texto(self):
+        salida = io.StringIO()
+        with contextlib.redirect_stderr(salida):
+            _, resultado, _ = self.copiar("timeout")
+        self.assertEqual(resultado.estado, EstadoEntrega.COPIED)
+        self.assertNotIn("á🙂 secreto", salida.getvalue())
+        self.assertIn("TimeoutExpired", salida.getvalue())
+
+    def test_recovery_disponible_aunque_notify_falle(self):
+        inyector = Inyector(backend="xdotool", notify=True)
+
+        def ejecutar(argv, **kwargs):
+            if argv[0] == "wl-copy":
+                return subprocess.CompletedProcess(argv, 0)
+            raise subprocess.TimeoutExpired(argv, 5)
+
+        with (
+            mock.patch.object(inyector, "_tipear", side_effect=[True, False]),
+            mock.patch(
+                "parlar.inyector_salida.detectar_sesion",
+                return_value="wayland",
+            ),
+            mock.patch(
+                "parlar.inyector_salida._cual", return_value="/usr/bin/tool"
+            ),
+            mock.patch(
+                "parlar.inyector_salida.subprocess.run",
+                side_effect=ejecutar,
+            ),
+        ):
+            inyector.iniciar_unidad(1)
+            self.assertEqual(
+                inyector.escribir_texto("hola", registrar=False).estado,
+                EstadoEntrega.INSERTED,
+            )
+            self.assertEqual(
+                inyector.escribir_texto(" mundo", registrar=False).estado,
+                EstadoEntrega.COPIED,
+            )
+        estado = inyector.estado_recuperacion_unidad()
+        self.assertEqual(estado.texto_recuperacion, " mundo")
+        self.assertTrue(estado.recuperacion_disponible)
 
 
 if __name__ == "__main__":
