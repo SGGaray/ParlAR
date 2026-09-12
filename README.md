@@ -183,12 +183,18 @@ python -m parlar --modelo small --idioma es --guardar-config
 La configuración se valida completa antes de cargar el modelo o abrir el
 micrófono. Los tipos JSON son estrictos (`false` no equivale a `"false"`), los
 valores fuera de dominio impiden arrancar y el error se informa sin traceback.
+El archivo debe ser UTF-8: una codificación inválida se informa como error de
+configuración con ruta y posición, sin mostrar su contenido. `--help` sigue
+disponible aun cuando ese archivo está corrupto y no carga recursos de runtime.
 La captura tiene un contrato fijo de 16 kHz; WebRTC VAD admite frames de 10,
 20 o 30 ms. `preroll_ms` debe ser al menos `min_speech_ms` y no puede superar
 `max_utterance_s × 1000`; una combinación incompatible se rechaza en vez de
-recortar audio silenciosamente. En ejecución solo `mode` y `rewrite_mode`
-cambian dinámicamente; el resto requiere reiniciar. Las claves desconocidas se
-conservan en `extras` sin poder reemplazar métodos internos.
+recortar audio silenciosamente. El máximo admite al menos un frame completo y
+la cota efectiva se redondea hacia abajo al último frame entero, por lo que una
+frase nunca supera `max_utterance_s`, incluso si el pre-roll llena esa cota.
+En ejecución solo `mode` y `rewrite_mode` cambian dinámicamente; el resto
+requiere reiniciar. Las claves desconocidas se conservan en `extras` sin poder
+reemplazar métodos internos.
 
 `--guardar-config` reemplaza el JSON de forma atómica. Si ParlAR crea el
 directorio usa permisos `0700`, y el archivo queda `0600` aun con una umask
@@ -235,9 +241,15 @@ presentarlas como una frase continua. Un `input_overflow` informado por
 PortAudio crea la misma frontera, invalida cualquier frame parcial previo y se
 cuenta por separado en `device_overflows`, sin inventar una cantidad de frames
 perdidos. `parlarctl estado` expone salud de captura, drops de cola,
-overflows de dispositivo, discontinuidades, profundidad y backlog estimado;
-después de procesar la frontera puede indicar `recuperado-con-perdida`,
-conservando visible que la sesión no quedó completa.
+overflows de dispositivo, `partial_samples_discarded`, discontinuidades,
+profundidad y backlog estimado. Al detener, los frames completos ya aceptados
+siguen la política normal de drenaje y el remanente menor a un frame se descarta
+de forma explícita en ese contador; no se rellena ni se entrega al VAD. Un
+overflow invalida por separado el resto anterior, y un start fallido invalida
+toda su generación. El contador se reinicia con cada apertura y, por sí solo,
+no degrada la salud de captura. Después de procesar una frontera de pérdida
+real puede indicar `recuperado-con-perdida`, conservando visible que la sesión
+no quedó completa.
 
 Durante la apertura, el callback puede aceptar audio apenas el backend está
 activo, pero el worker espera a que el inicio termine antes de procesarlo. Si
@@ -263,9 +275,11 @@ systemctl --user enable --now parlar
 El setup genera la unit con la ruta absoluta del checkout y el Python de su
 `.venv`; no presupone `%h/parlar`. Renderiza `WorkingDirectory` y `ExecStart`
 con sus gramáticas systemd respectivas, incluyendo paths con espacios, Unicode,
-`$` o `%`. Conserva `UMask=0077`, no reemplaza una unit ajena y no elimina
-temporales que no reservó. Una repetición con el mismo checkout no produce
-cambios.
+`$` o `%`. Comillas simples, comillas dobles y barras invertidas quedan fuera
+del dominio soportado porque el parser real de systemd rechaza el ejecutable
+resultante; el renderer falla antes de publicar o reemplazar una unit. Conserva
+`UMask=0077`, no reemplaza una unit ajena y no elimina temporales que no reservó.
+Una repetición con el mismo checkout no produce cambios.
 
 Un servicio de usuario necesita heredar una sesión gráfica utilizable y acceso
 al audio. Las variables y permisos de display, PipeWire/PulseAudio, X11,

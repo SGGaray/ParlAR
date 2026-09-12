@@ -864,6 +864,8 @@ class App:
             return respuesta
         captura = obtener_estado()
         device_overflows = getattr(captura, "device_overflows", 0)
+        parciales_descartadas = getattr(
+            captura, "muestras_parciales_descartadas", 0)
         if captura.degradada:
             salud = "degradado"
         elif captura.frames_descartados or device_overflows:
@@ -872,6 +874,7 @@ class App:
             salud = "saludable"
         return (respuesta + f" audio={salud} drops={captura.frames_descartados} "
                 f"device_overflows={device_overflows} "
+                f"partial_samples_discarded={parciales_descartadas} "
                 f"discontinuidades={captura.discontinuidades} "
                 f"cola={captura.queue_depth}/{self.mic.capacidad} "
                 f"backlog_ms={captura.backlog_ms:.1f}")
