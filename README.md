@@ -151,9 +151,11 @@ reconocidas se protegen durante la reescritura; si un modelo pierde un marcador,
 se usa el fallback local conservador. Si corrés
 [Ollama](https://ollama.com) local, poné `ollama_model` en la config (ej.
 `"llama3.2:3b"`) y la reescritura pasa por ahí. `ollama_url` apunta a
-`127.0.0.1` por defecto, pero es configurable: una URL remota envía allí el
-texto a reescribir. Como toda reescritura generativa, esa opción puede cambiar
-la formulación del dictado.
+`127.0.0.1` por defecto, pero acepta URLs `http` o `https` con hostname válido:
+una URL remota envía allí el texto a reescribir. Una URL inválida se rechaza
+antes de abrir recursos; un error posterior al construir, enviar o interpretar
+la petición conserva el fallback local. Como toda reescritura generativa, esa
+opción puede cambiar la formulación del dictado.
 
 En modo frase, los patrones conocidos de alucinación se descartan únicamente
 cuando el mismo segmento también tiene baja confianza acústica y textual. Un
@@ -171,9 +173,11 @@ La configuración se valida completa antes de cargar el modelo o abrir el
 micrófono. Los tipos JSON son estrictos (`false` no equivale a `"false"`), los
 valores fuera de dominio impiden arrancar y el error se informa sin traceback.
 La captura tiene un contrato fijo de 16 kHz; WebRTC VAD admite frames de 10,
-20 o 30 ms. En ejecución solo `mode` y `rewrite_mode` cambian dinámicamente;
-el resto requiere reiniciar. Las claves desconocidas se conservan en `extras`
-sin poder reemplazar métodos internos.
+20 o 30 ms. `preroll_ms` debe ser al menos `min_speech_ms` y no puede superar
+`max_utterance_s × 1000`; una combinación incompatible se rechaza en vez de
+recortar audio silenciosamente. En ejecución solo `mode` y `rewrite_mode`
+cambian dinámicamente; el resto requiere reiniciar. Las claves desconocidas se
+conservan en `extras` sin poder reemplazar métodos internos.
 
 `--guardar-config` reemplaza el JSON de forma atómica. Si ParlAR crea el
 directorio usa permisos `0700`, y el archivo queda `0600` aun con una umask
@@ -246,8 +250,11 @@ systemctl --user enable --now parlar
 ```
 
 El setup genera la unit con la ruta absoluta del checkout y el Python de su
-`.venv`; no presupone `%h/parlar`. Conserva `UMask=0077` y no reemplaza una
-unit ajena. Una repetición con el mismo checkout no produce cambios.
+`.venv`; no presupone `%h/parlar`. Renderiza `WorkingDirectory` y `ExecStart`
+con sus gramáticas systemd respectivas, incluyendo paths con espacios, Unicode,
+`$` o `%`. Conserva `UMask=0077`, no reemplaza una unit ajena y no elimina
+temporales que no reservó. Una repetición con el mismo checkout no produce
+cambios.
 
 Un servicio de usuario necesita heredar una sesión gráfica utilizable y acceso
 al audio. Las variables y permisos de display, PipeWire/PulseAudio, X11,
@@ -265,10 +272,16 @@ source .venv/bin/activate
 ./scripts/check.sh
 ```
 
+`PARLAR_PYTHON` puede ser un nombre resoluble por `PATH` (`python`, `python3`)
+o una ruta ejecutable absoluta/relativa. Un override inválido falla antes del
+gate y nunca se interpreta mediante `eval`.
+
 Ese comando es la misma puerta usada por CI: sintaxis shell, compilación
 Python, smokes de CLI, los 58 checks legacy, todas las suites unittest, IPC y
-`git diff --check`. No necesita micrófono, display, modelo descargado, Ollama,
-GuionAR, clipboard ni systemd reales.
+`git diff --check`. Si `systemd-analyze` existe, las pruebas verifican units
+temporales con su parser real; si no, ese caso se informa como skip. No instala
+ni inicia servicios y tampoco necesita micrófono, display, modelo descargado,
+Ollama, GuionAR o clipboard reales.
 
 Para una validación manual posterior con hardware: confirmar apertura del
 micrófono, dictado por frase, streaming, stop, restart, GuionAR opcional,

@@ -5,20 +5,45 @@ set -euo pipefail
 REPO_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$REPO_DIR"
 
+resolver_python() {
+    local candidato="$1"
+    local resuelto=""
+    if [[ "$candidato" == */* ]]; then
+        resuelto="$candidato"
+    else
+        resuelto="$(command -v -- "$candidato" 2>/dev/null || true)"
+    fi
+    if [[ -n "$resuelto" && -x "$resuelto" ]]; then
+        printf '%s\n' "$resuelto"
+        return 0
+    fi
+    return 1
+}
+
 if [[ -n "${PARLAR_PYTHON:-}" ]]; then
-    PYTHON="$PARLAR_PYTHON"
+    if ! PYTHON="$(resolver_python "$PARLAR_PYTHON")"; then
+        echo "!! PARLAR_PYTHON no se pudo resolver o no es ejecutable: $PARLAR_PYTHON" >&2
+        exit 1
+    fi
 elif [[ -n "${VIRTUAL_ENV:-}" ]]; then
     PYTHON="$VIRTUAL_ENV/bin/python"
 elif [[ -x .venv/bin/python ]]; then
     PYTHON="$REPO_DIR/.venv/bin/python"
+elif PYTHON="$(resolver_python python3)"; then
+    :
+elif PYTHON="$(resolver_python python)"; then
+    :
 else
-    PYTHON="$(command -v python3)"
+    echo "!! no se encontró un Python ejecutable (.venv, python3 o python)" >&2
+    exit 1
 fi
 
 if [[ ! -x "$PYTHON" ]]; then
     echo "!! Python no ejecutable: $PYTHON" >&2
     exit 1
 fi
+
+echo "==> Python: $PYTHON"
 
 TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/parlar-check.XXXXXX")"
 trap 'rm -rf -- "$TEMP_DIR"' EXIT

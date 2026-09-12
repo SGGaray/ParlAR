@@ -2,8 +2,8 @@
 
 Whisper ya emite puntuación y mayúsculas; esta capa normaliza los bordes
 (espaciado, mayúsculas de oración, muletillas), interpreta comandos de voz y
-opcionalmente reescribe vía reglas o un modelo local de Ollama (solo
-127.0.0.1, así la garantía de privacidad se mantiene).
+opcionalmente reescribe vía reglas o un endpoint HTTP(S) de Ollama. El default
+es local; elegir una URL remota envía allí el texto a reescribir.
 
 Adaptado al español: maneja signos de apertura ¿ ¡ (espaciado y mayúsculas)
 y trae reglas de reescritura para español además de inglés. Los comandos de
@@ -12,6 +12,7 @@ voz son español-primero, con equivalentes en inglés como respaldo.
 
 import json
 import re
+import sys
 import urllib.request
 from dataclasses import dataclass
 from typing import Optional
@@ -381,13 +382,18 @@ class ProcesadorTexto:
             "stream": False,
             "options": {"temperature": 0.2},
         }).encode()
-        req = urllib.request.Request(
-            f"{self.ollama_url}/api/generate", data=cuerpo,
-            headers={"Content-Type": "application/json"},
-        )
         try:
+            req = urllib.request.Request(
+                f"{self.ollama_url}/api/generate", data=cuerpo,
+                headers={"Content-Type": "application/json"},
+            )
             with urllib.request.urlopen(req, timeout=20) as resp:
                 data = json.loads(resp.read())
             return data.get("response", "").strip() or None
-        except Exception:
-            return None  # Ollama caído: cae silenciosamente a reglas
+        except Exception as exc:
+            print(
+                f"[procesador] Ollama no disponible ({type(exc).__name__}); "
+                "se usa fallback local",
+                file=sys.stderr,
+            )
+            return None

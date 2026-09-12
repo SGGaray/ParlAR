@@ -1,5 +1,7 @@
 """Contrato estricto y persistencia segura de la configuración."""
 
+import contextlib
+import io
 import json
 import os
 import sys
@@ -10,6 +12,7 @@ from unittest import mock
 
 import parlar.config as config_mod
 from parlar.config import Config, ErrorConfiguracion
+from parlar.procesador_texto import ProcesadorTexto
 
 
 class ConfigTemporal(unittest.TestCase):
@@ -134,6 +137,74 @@ class ConfigTemporal(unittest.TestCase):
         cfg.overlay = "sí"
         with self.assertRaisesRegex(ErrorConfiguracion, "overlay"):
             cfg.validate()
+
+    def test_preroll_no_supera_max_utterance(self):
+        with self.assertRaisesRegex(
+                ErrorConfiguracion, "preroll_ms.*max_utterance_s"):
+            Config(preroll_ms=300, max_utterance_s=0.2,
+                   min_speech_ms=200).validate()
+        Config(preroll_ms=200, max_utterance_s=0.2,
+               min_speech_ms=200).validate()
+        Config(preroll_ms=100, max_utterance_s=0.2,
+               min_speech_ms=100).validate()
+        Config().validate()
+
+    def test_matriz_ollama_url(self):
+        validas = (
+            "http://127.0.0.1:11434",
+            "http://localhost:11434",
+            "https://example.com",
+            "http://192.168.1.10:11434",
+        )
+        invalidas = (
+            ":", "foo", "localhost:11434", "://bad",
+            "file:///tmp/x", "http://", "https://",
+        )
+        for url in validas:
+            with self.subTest(url=url):
+                Config(ollama_url=url).validate()
+        for url in invalidas:
+            with self.subTest(url=url):
+                with self.assertRaisesRegex(ErrorConfiguracion, "ollama_url"):
+                    Config(ollama_url=url).validate()
+
+    def test_fallback_ollama_cubre_request_urlopen_y_parseo(self):
+        class RespuestaRota:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return b"{"
+
+        casos = (
+            ("request",
+             mock.patch("urllib.request.Request",
+                        side_effect=ValueError("URL mutada"))),
+            ("urlopen",
+             mock.patch("urllib.request.urlopen",
+                        side_effect=OSError("offline"))),
+            ("parseo",
+             mock.patch("urllib.request.urlopen",
+                        return_value=RespuestaRota())),
+        )
+        for nombre, parche in casos:
+            with self.subTest(nombre=nombre), parche, \
+                    contextlib.redirect_stderr(io.StringIO()) as diagnostico:
+                procesador = ProcesadorTexto(
+                    rewrite_mode="formal", ollama_model="modelo",
+                    ollama_url="http://localhost:11434")
+                self.assertEqual(
+                    procesador.procesar_frase("ok").texto, "De acuerdo")
+                self.assertIn("fallback local", diagnostico.getvalue())
+
+        with contextlib.redirect_stderr(io.StringIO()) as diagnostico:
+            mutado = ProcesadorTexto(
+                rewrite_mode="formal", ollama_model="modelo", ollama_url=":")
+            self.assertEqual(mutado.procesar_frase("ok").texto, "De acuerdo")
+        self.assertIn("ValueError", diagnostico.getvalue())
 
     def test_guardado_atomico_y_permisos_bajo_umask_cero(self):
         reemplazo_real = os.replace

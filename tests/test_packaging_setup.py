@@ -6,8 +6,12 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
+from unittest import mock
+
+import scripts.render_service as render_service
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -185,6 +189,97 @@ class ContratoServicio(unittest.TestCase):
             self.assertNotIn("@PARLAR_", unit)
             self.assertIn("sin cambios", segunda.stdout)
             self.assertEqual(stat.S_IMODE(salida.stat().st_mode), 0o600)
+            self.assertEqual(list(salida.parent.glob(".*.tmp-*")), [])
+
+    @unittest.skipUnless(shutil.which("systemd-analyze"),
+                         "systemd-analyze no está disponible")
+    def test_systemd_analyze_acepta_matriz_de_paths(self):
+        variantes = (
+            ("simple", Path("simple/path")),
+            ("spaces", Path("path with spaces")),
+            ("unicode", Path("path-con-unicode-ñ")),
+            ("long", Path("path-" + "x" * 180)),
+            ("dollar", Path("path$with$dollar")),
+            ("percent", Path("path%with%percent")),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            for indice, (nombre, relativa) in enumerate(variantes):
+                with self.subTest(nombre=nombre):
+                    repo = base / relativa
+                    python = repo / ".venv" / "bin" / "python"
+                    python.parent.mkdir(parents=True)
+                    python.symlink_to(sys.executable)
+                    salida = base / f"parlar-probe-{indice}.service"
+                    resultado = ejecutar(
+                        sys.executable,
+                        str(ROOT / "scripts" / "render_service.py"),
+                        "--repo", str(repo), "--output", str(salida),
+                    )
+                    self.assertEqual(resultado.returncode, 0, resultado.stderr)
+                    unit = salida.read_text(encoding="utf-8")
+                    working = next(linea for linea in unit.splitlines()
+                                   if linea.startswith("WorkingDirectory="))
+                    exec_start = next(linea for linea in unit.splitlines()
+                                      if linea.startswith("ExecStart="))
+                    self.assertFalse(
+                        working.removeprefix("WorkingDirectory=").startswith('"'))
+                    self.assertTrue(
+                        exec_start.removeprefix("ExecStart=").startswith(':"'))
+                    verificacion = ejecutar(
+                        "systemd-analyze", "verify", str(salida))
+                    self.assertEqual(
+                        verificacion.returncode, 0, verificacion.stderr)
+
+    def test_temporal_eexist_no_se_borra_y_se_elige_otro(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            salida = base / "parlar.service"
+            testigo = base / ".parlar.service.tmp-424242-0"
+            testigo.write_text("ajeno", encoding="utf-8")
+            with mock.patch.object(
+                    render_service.os, "getpid", return_value=424242):
+                estado = render_service.instalar("unit válida\n", salida)
+            self.assertEqual(estado, "instalada")
+            self.assertEqual(testigo.read_text(encoding="utf-8"), "ajeno")
+            self.assertEqual(salida.read_text(encoding="utf-8"), "unit válida\n")
+            self.assertEqual(
+                list(base.glob(".parlar.service.tmp-424242-*")), [testigo])
+
+    def test_dos_renders_concurrentes_no_comparten_temporal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            salida = base / "parlar.service"
+            barrera = threading.Barrier(2)
+            replace_real = os.replace
+            resultados = []
+            errores = []
+
+            def replace_sincronizado(origen, destino):
+                barrera.wait(timeout=2)
+                replace_real(origen, destino)
+
+            def render():
+                try:
+                    resultados.append(render_service.instalar(
+                        "unit concurrente\n", salida))
+                except BaseException as exc:
+                    errores.append(exc)
+
+            with mock.patch.object(
+                    render_service.os, "replace",
+                    side_effect=replace_sincronizado):
+                hilos = [threading.Thread(target=render) for _ in range(2)]
+                for hilo in hilos:
+                    hilo.start()
+                for hilo in hilos:
+                    hilo.join(3)
+            self.assertFalse(any(hilo.is_alive() for hilo in hilos))
+            self.assertEqual(errores, [])
+            self.assertEqual(resultados, ["instalada", "instalada"])
+            self.assertEqual(
+                salida.read_text(encoding="utf-8"), "unit concurrente\n")
+            self.assertEqual(list(base.glob(".*.tmp-*")), [])
 
     def test_render_no_reemplaza_unit_ajena(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -202,6 +297,50 @@ class ContratoServicio(unittest.TestCase):
 
 
 class SmokesCheckout(unittest.TestCase):
+    @staticmethod
+    def _python_controlado(base):
+        python = base / "python"
+        python.write_text(
+            "#!/bin/sh\n"
+            "echo RESOLVED_PYTHON=$0 >&2\n"
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        python.chmod(0o755)
+        return python
+
+    def test_gate_resuelve_override_path_y_nombre_sin_eval(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            python = self._python_controlado(base)
+            entorno_base = os.environ.copy()
+            entorno_base["PATH"] = f"{base}:/usr/bin:/bin"
+            casos = (
+                ("nombre", "python", str(python)),
+                ("absoluta", str(python), str(python)),
+                ("relativa", os.path.relpath(python, ROOT),
+                 os.path.relpath(python, ROOT)),
+            )
+            for nombre, override, esperado in casos:
+                with self.subTest(nombre=nombre):
+                    entorno = entorno_base.copy()
+                    entorno["PARLAR_PYTHON"] = override
+                    resultado = ejecutar(
+                        str(ROOT / "scripts" / "check.sh"), env=entorno)
+                    self.assertEqual(resultado.returncode, 0, resultado.stderr)
+                    self.assertIn(f"==> Python: {esperado}", resultado.stdout)
+                    self.assertIn("RESOLVED_PYTHON=", resultado.stderr)
+
+    def test_gate_rechaza_nombre_python_inexistente_antes_del_gate(self):
+        entorno = os.environ.copy()
+        entorno["PATH"] = "/usr/bin:/bin"
+        entorno["PARLAR_PYTHON"] = "python-que-no-existe-parlar"
+        resultado = ejecutar(
+            str(ROOT / "scripts" / "check.sh"), env=entorno)
+        self.assertNotEqual(resultado.returncode, 0)
+        self.assertIn("PARLAR_PYTHON no se pudo resolver", resultado.stderr)
+        self.assertNotIn("Shell y bytecode", resultado.stdout)
+
     def test_help_no_importa_app_ni_crea_config(self):
         with tempfile.TemporaryDirectory() as tmp:
             codigo = r'''

@@ -8,8 +8,11 @@ configuraciones existentes (compatibilidad hacia atrás).
 """
 
 import json
+import ipaddress
 import math
 import os
+import re
+import urllib.parse
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import ClassVar
@@ -252,6 +255,18 @@ class Config:
                 f"'min_speech_ms'={self.min_speech_ms}: no puede superar "
                 f"'max_utterance_s'={self.max_utterance_s}"
             )
+        if (math.isfinite(self.max_utterance_s)
+                and self.preroll_ms > self.max_utterance_s * 1000):
+            errores.append(
+                f"'preroll_ms'={self.preroll_ms}: no puede superar "
+                f"'max_utterance_s'={self.max_utterance_s} (en milisegundos)"
+            )
+
+        if not self._url_ollama_valida(self.ollama_url):
+            errores.append(
+                f"'ollama_url'={self.ollama_url!r}: debe ser una URL HTTP(S) "
+                "con hostname válido"
+            )
 
         if errores:
             raise ErrorConfiguracion("; ".join(errores))
@@ -260,6 +275,32 @@ class Config:
     def _nombre_tipo(tipo) -> str:
         return {str: "texto", int: "entero", float: "número decimal",
                 bool: "booleano"}.get(tipo, tipo.__name__)
+
+    @staticmethod
+    def _url_ollama_valida(valor: str) -> bool:
+        try:
+            url = urllib.parse.urlsplit(valor)
+            hostname = url.hostname
+            _ = url.port  # también valida formato y rango del puerto
+        except (TypeError, ValueError):
+            return False
+        if (url.scheme not in {"http", "https"} or not hostname
+                or url.query or url.fragment
+                or any(caracter.isspace() for caracter in valor)):
+            return False
+        try:
+            ipaddress.ip_address(hostname)
+            return True
+        except ValueError:
+            try:
+                ascii_hostname = hostname.rstrip(".").encode("idna").decode()
+            except UnicodeError:
+                return False
+            etiqueta = re.compile(
+                r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
+            return (bool(ascii_hostname) and len(ascii_hostname) <= 253
+                    and all(etiqueta.fullmatch(parte)
+                            for parte in ascii_hostname.split(".")))
 
     @property
     def frame_samples(self) -> int:
