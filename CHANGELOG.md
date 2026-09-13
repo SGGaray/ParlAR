@@ -1,8 +1,10 @@
 # Changelog: ParlAR
 
-Formato basado en [Keep a Changelog](https://keepachangelog.com/es/1.1.0/). Versionado semántico.
-
-## [Unreleased]
+### Corregido
+- Filtro conservador de alucinaciones conocidas de Whisper: patrones completos
+  como "¡Suscríbete!" o créditos de Amara se descartan cuando las métricas
+  acústicas/modelo indican una unidad dudosa, sin bloquear menciones legítimas.
+- La misma política se aplica a los modos frase y streaming.
 
 ## [0.3.0] - 2026-07
 ### Quitado (breaking change)
@@ -62,6 +64,3 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es/1.1.0/). Vers
 - Modos de reescritura: formal, conciso, correo (reglas u Ollama local)
 - Daemon controlable: atajos globales (X11), parlarctl por socket,
   indicador siempre visible
-- Suite de tests independiente del hardware
-- Nota histórica: el proyecto nació como "FlowDictate" y fue renombrado
-  a ParlAR durante el desarrollo inicial
