@@ -443,6 +443,28 @@ class PruebasComandosReturn(unittest.TestCase):
         self.assertEqual(app.inyector.newlines, [1, 2])
         self.assertEqual(app.inyector.enters, 1)
 
+    def test_aliases_largos_respetan_el_gate_de_return(self):
+        proc = ProcesadorTexto()
+        comandos = (
+            "mandar mensaje",
+            "enviar mensaje",
+            "salto de línea",
+            "salto de párrafo",
+            "¡Nuevo párrafo!",
+            "¿Nueva línea?",
+        )
+        app = app_minima(permitir_enter=False)
+        for texto in comandos:
+            app._emitir(proc.procesar_frase(texto), 1)
+        self.assertEqual(app.inyector.newlines, [])
+        self.assertEqual(app.inyector.enters, 0)
+
+        app = app_minima(permitir_enter=True)
+        for texto in comandos:
+            app._emitir(proc.procesar_frase(texto), 1)
+        self.assertEqual(app.inyector.newlines, [1, 2, 2, 1])
+        self.assertEqual(app.inyector.enters, 2)
+
     def test_texto_normal_y_comandos_citados_no_son_acciones(self):
         proc = ProcesadorTexto()
         app = app_minima()

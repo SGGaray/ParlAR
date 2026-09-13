@@ -124,6 +124,69 @@ class PruebasCitasAdversariales(unittest.TestCase):
                     procesador.procesar_frase(entrada).comando, esperado)
 
 
+class PruebasComandosPHYS003(unittest.TestCase):
+    def test_aliases_largos_y_puntuacion_espanola_emiten_accion_exacta(self):
+        procesador = ProcesadorTexto(comando_enviar=True)
+        casos = (
+            ("mandar mensaje", "enviar", None),
+            ("Mandar mensaje.", "enviar", None),
+            ("enviar mensaje", "enviar", None),
+            ("Enviar mensaje!", "enviar", None),
+            ("salto de línea", "nueva_linea", "\n"),
+            ("Salto de línea.", "nueva_linea", "\n"),
+            ("salto de párrafo", "nueva_linea", "\n\n"),
+            ("Salto de párrafo.", "nueva_linea", "\n\n"),
+            ("¡Nuevo párrafo!", "nueva_linea", "\n\n"),
+            ("¿Nueva línea?", "nueva_linea", "\n"),
+        )
+        for entrada, comando, carga in casos:
+            with self.subTest(entrada=entrada):
+                resultado = procesador.procesar_frase(entrada)
+                self.assertEqual(resultado.comando, comando)
+                self.assertEqual(resultado.carga, carga)
+                self.assertEqual(resultado.texto, "")
+
+    def test_errores_acusticos_y_prosa_siguen_siendo_texto(self):
+        procesador = ProcesadorTexto(comando_enviar=True)
+        casos = (
+            ("MBR", "MBR"),
+            ("en mi ar", "en mi ar"),
+            ("barrafo", "barrafo"),
+            ("nuevo parrafó", "nuevo parrafó"),
+            ("hola mandar mensaje", "hola mandar mensaje"),
+            ("escribí enviar mensaje", "escribí enviar mensaje"),
+            ("la frase salto de línea", "la frase salto de línea"),
+            ("¡hola nueva línea!", "¡Hola nueva línea!"),
+            ('dijo "enviar"', 'dijo "enviar"'),
+            ("hola nueva línea", "hola nueva línea"),
+            ("(enviar)", "(enviar)"),
+            ("`enviar`", "`enviar`"),
+            ("**enviar**", "**enviar**"),
+            ('"enviar"', '"enviar"'),
+        )
+        for entrada, texto in casos:
+            with self.subTest(entrada=entrada):
+                resultado = procesador.procesar_frase(entrada)
+                self.assertIsNone(resultado.comando)
+                self.assertEqual(resultado.texto, texto)
+
+    def test_delimitadores_espanoles_solo_aceptan_un_par_completo(self):
+        procesador = ProcesadorTexto(comando_enviar=True)
+        entradas = (
+            "¡nuevo párrafo",
+            "nuevo párrafo¡",
+            "¿nueva línea!",
+            "¡ nuevo párrafo!",
+            "¡nuevo párrafo !",
+            "¡¡nuevo párrafo!!",
+            "¡nuevo párrafo! extra",
+        )
+        for entrada in entradas:
+            with self.subTest(entrada=entrada):
+                self.assertIsNone(
+                    procesador.procesar_frase(entrada).comando)
+
+
 class PruebasConciseAdversariales(unittest.TestCase):
     def test_viste_verbal_o_ambiguo_se_conserva(self):
         procesador = ProcesadorTexto(

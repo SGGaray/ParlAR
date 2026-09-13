@@ -31,15 +31,23 @@ _SOLO_MULETILLA = re.compile(
 # patrones de comandos de voz, comparados contra la frase completa normalizada
 # (español primero, inglés como respaldo)
 _PATRONES_CMD = [
-    (re.compile(r"^(nuevo p[aá]rrafo|punto y aparte|new paragraph)$", re.I), ("nueva_linea", "\n\n")),
-    (re.compile(r"^(nueva l[ií]nea|new line)$", re.I), ("nueva_linea", "\n")),
+    (re.compile(
+        r"^(nuevo p[aá]rrafo|punto y aparte|salto de párrafo|new paragraph)$",
+        re.I,
+    ), ("nueva_linea", "\n\n")),
+    (re.compile(
+        r"^(nueva l[ií]nea|salto de línea|new line)$", re.I,
+    ), ("nueva_linea", "\n")),
     (re.compile(r"^(borra la [uú]ltima oraci[oó]n|borrar( la)? [uú]ltima oraci[oó]n|"
                 r"delete last sentence)$", re.I), ("borrar_ultima", None)),
     (re.compile(r"^(detener dictado|parar dictado|stop dictation|stop listening)$", re.I),
      ("detener", None)),
-    (re.compile(r"^(enviar|send message|send)$", re.I), ("enviar", None)),
+    (re.compile(
+        r"^(enviar|mandar mensaje|enviar mensaje|send message|send)$", re.I,
+    ), ("enviar", None)),
 ]
 _PUNTUACION_TERMINAL_COMANDO = frozenset(".!?…")
+_PARES_PUNTUACION_COMANDO = {"¡": "!", "¿": "?"}
 
 _FIN_ORACION = re.compile(r"([.!?])\s+([¿¡]?)(\w)")
 _MARCADOR_ESTRUCTURA = re.compile(r"\ue000PARLARX*\d+\ue001")
@@ -373,10 +381,18 @@ class ProcesadorTexto:
 
     def _buscar_comando(self, crudo: str) -> Optional[Procesado]:
         # Gramática positiva: whitespace exterior, una frase exacta y, como
-        # máximo, un signo terminal inequívoco. Ningún otro delimitador se
-        # elimina para intentar fabricar una orden.
+        # máximo, un signo terminal inequívoco o un par español completo.
+        # Ningún otro delimitador se elimina para fabricar una orden.
         norm = crudo.strip()
-        if norm and norm[-1] in _PUNTUACION_TERMINAL_COMANDO:
+        if norm and norm[0] in _PARES_PUNTUACION_COMANDO:
+            cierre = _PARES_PUNTUACION_COMANDO[norm[0]]
+            if len(norm) < 3 or norm[-1] != cierre:
+                return None
+            interior = norm[1:-1]
+            if interior != interior.strip():
+                return None
+            norm = interior
+        elif norm and norm[-1] in _PUNTUACION_TERMINAL_COMANDO:
             norm = norm[:-1].rstrip()
         for pat, (cmd, carga) in _PATRONES_CMD:
             if pat.fullmatch(norm):
