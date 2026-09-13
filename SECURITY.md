@@ -30,8 +30,11 @@ ventana enfocada. Las frases completamente citadas se tratan como texto.
 ### Filtro de alucinaciones de Whisper
 
 Whisper puede "alucinar" texto sobre silencio o ruido de fondo. ParlAR descarta
-un segmento únicamente cuando combina baja confianza acústica y textual con
-un patrón conocido. Esto reduce el riesgo pero no lo elimina.
+un segmento únicamente cuando todo el texto normalizado coincide con una de
+las pocas plantillas estrechas y explícitas conocidas, y al menos una métrica
+del modelo o acústica resulta sospechosa (`no_speech_prob`, `avg_logprob` o
+`compression_ratio`). Una mención contextual ordinaria se conserva. Esto
+reduce algunos casos conocidos, pero no promete eliminar toda alucinación.
 
 ### Procesamiento local y límite de red
 

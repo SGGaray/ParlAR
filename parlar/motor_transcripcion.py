@@ -74,7 +74,9 @@ _UMBRAL_COMPRESION = 2.4
 # Frases que Whisper "alucina" típicamente sobre silencio o ruido de fondo
 # (artefacto conocido del entrenamiento en subtítulos de YouTube)
 _ALUCINACIONES_CONOCIDAS = re.compile(
-    r"subt[ií]tulos.*amara\.org|www\.youtube\.com|suscr[ií]bete|"
+    r"subt[ií]tulos realizados por la comunidad de amara\.org|"
+    r"subt[ií]tulos por la comunidad de amara\.org|"
+    r"www\.youtube\.com|suscr[ií]bete|"
     r"subscribe to|like and subscribe|gracias por ver el v[ií]deo",
     re.IGNORECASE,
 )

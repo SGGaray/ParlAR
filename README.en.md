@@ -124,12 +124,12 @@ linguistically ambiguous qualifiers such as `literally`, `basically`,
 `actually`, `kind of`, or `viste`. Recognized structured
 regions are protected during rewriting; if a model drops a marker, ParlAR uses
 the conservative local fallback. Configuring a local Ollama model enables
-generative rewriting and may change the prose wording. In both modes, known
-Whisper hallucination patterns are filtered conservatively only when they fill
-the whole (or nearly whole) segment and at least one acoustic/model signal also
-marks that unit as doubtful. Contextual mentions and literals with strong
-evidence are preserved; the filter reduces known cases but cannot eliminate all
-hallucinations.
+generative rewriting and may change the prose wording. In both modes, ParlAR
+compares against a small explicit set of narrow known Whisper boilerplate
+templates. A segment is dropped only when the entire normalized unit matches a
+template and at least one acoustic/model metric is suspicious. Ordinary
+contextual mentions and templates with healthy metrics are preserved; the
+filter reduces known cases but cannot eliminate all hallucinations.
 
 ## GuionAR integration (teleprompter)
 

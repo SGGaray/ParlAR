@@ -180,11 +180,12 @@ antes de abrir recursos; un error posterior al construir, enviar o interpretar
 la petición conserva el fallback local. Como toda reescritura generativa, esa
 opción puede cambiar la formulación del dictado.
 
-En ambos modos, ParlAR aplica un filtro conservador a patrones conocidos de
-alucinación de Whisper únicamente cuando ocupan el segmento completo (o casi)
-y al menos una señal acústica/modelo también indica una unidad dudosa. Las
-menciones dentro de contexto y los literales con evidencia fuerte se conservan;
-el filtro reduce casos conocidos, pero no promete eliminar toda alucinación.
+En ambos modos, ParlAR compara contra un conjunto pequeño y explícito de
+plantillas estrechas de alucinaciones conocidas de Whisper. Solo descarta si
+toda la unidad normalizada coincide con una plantilla y al menos una métrica
+acústica/modelo también resulta sospechosa. Las menciones ordinarias dentro de
+contexto y las plantillas con métricas sanas se conservan; el filtro reduce
+casos conocidos, pero no promete eliminar toda alucinación.
 
 ## Configuración
 

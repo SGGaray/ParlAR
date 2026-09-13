@@ -7,6 +7,10 @@
   como "¡Suscríbete!" o créditos de Amara se descartan cuando las métricas
   acústicas/modelo indican una unidad dudosa, sin bloquear menciones legítimas.
 - La misma política se aplica a los modos frase y streaming.
+- Los créditos de Amara ahora usan solo dos plantillas explícitas y estrechas;
+  mencionar “subtítulos” y `amara.org` dentro de una frase legítima ya no puede
+  convertirla en descartable. La documentación aclara que basta una métrica
+  acústica/modelo sospechosa cuando la plantilla completa sí coincide.
 - El proceso principal trata `SIGTERM` como un cierre normal y ejecuta el
   cleanup ordenado de recursos, incluido el socket de control propio.
 - El paste Unicode de X11 ya no habilita undo destructivo a partir del éxito de

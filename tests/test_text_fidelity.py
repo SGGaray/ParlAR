@@ -9,7 +9,12 @@ from unittest import mock
 
 import numpy as np
 
-from parlar.motor_transcripcion import TranscriptorFrase, TranscriptorStreaming
+from parlar.app import App
+from parlar.motor_transcripcion import (
+    TranscriptorFrase,
+    TranscriptorStreaming,
+    _clasificar_alucinacion,
+)
 from parlar.procesador_texto import ProcesadorTexto
 
 
@@ -34,7 +39,7 @@ class MotorSegmentos:
     def __init__(self, segmentos):
         self.segmentos = segmentos
 
-    def decodificar(self, audio):
+    def decodificar(self, audio, **_kwargs):
         return [
             (especificacion if hasattr(especificacion, "text")
              else segmento(*especificacion))
@@ -274,6 +279,19 @@ class PruebasRewrite(unittest.TestCase):
 
 
 class PruebasFiltroAlucinaciones(unittest.TestCase):
+    AMARA_CONTEXTO = (
+        "Subtítulos del informe: no los publiques en amara.org.",
+        "Estoy revisando los subtítulos que descargué de amara.org.",
+        "Amara.org es una plataforma de subtítulos.",
+        "Los subtítulos mencionan a amara.org en la bibliografía.",
+        "No uses los subtítulos de amara.org para esta entrega.",
+        "La frase contiene subtítulos y después menciona amara.org.",
+    )
+    AMARA_CONOCIDO = (
+        "Subtítulos realizados por la comunidad de Amara.org",
+        "Subtítulos por la comunidad de Amara.org",
+    )
+
     def test_alta_confianza_url_sospechosa_se_conserva(self):
         self.assertEqual(
             transcribir(("visita www.youtube.com para la clase", 0.01, -0.1)),
@@ -317,6 +335,78 @@ class PruebasFiltroAlucinaciones(unittest.TestCase):
             with self.subTest(texto=texto):
                 self.assertEqual(transcribir((texto, 0.95, -2.0)), texto)
 
+    def test_contexto_amara_sobrevive_cada_metrica_sospechosa(self):
+        texto = "Subtítulos del informe: no los publiques en amara.org"
+        self.assertIsNone(_clasificar_alucinacion(texto))
+        casos = (
+            segmento(texto, 0.95, -0.2, compresion=1.0),
+            segmento(texto, 0.1, -1.2, compresion=1.0),
+            segmento(texto, 0.1, -0.2, compresion=2.5),
+        )
+        for caso in casos:
+            with self.subTest(
+                    no_speech=caso.no_speech_prob,
+                    logprob=caso.avg_logprob,
+                    compresion=caso.compression_ratio):
+                self.assertEqual(transcribir(caso), texto)
+
+    def test_menciones_contextuales_amara_siempre_se_conservan(self):
+        for texto in self.AMARA_CONTEXTO:
+            with self.subTest(texto=texto):
+                self.assertNotEqual(
+                    _clasificar_alucinacion(texto), "exact_or_near_exact")
+                self.assertEqual(
+                    transcribir(segmento(
+                        texto, 0.95, -2.0, compresion=2.5)),
+                    texto,
+                )
+
+    def test_plantillas_amara_explicitas_conservan_clasificacion(self):
+        variantes = self.AMARA_CONOCIDO + (
+            "¡Subtítulos realizados por la comunidad de Amara.org!",
+            "SUBTÍTULOS POR LA COMUNIDAD DE AMARA.ORG.",
+        )
+        for texto in variantes:
+            with self.subTest(texto=texto):
+                self.assertEqual(
+                    _clasificar_alucinacion(texto), "exact_or_near_exact")
+
+    def test_plantilla_amara_requiere_una_metrica_sospechosa(self):
+        for texto in self.AMARA_CONOCIDO:
+            with self.subTest(texto=texto, metricas="sospechosas"):
+                self.assertEqual(
+                    transcribir(segmento(texto, 0.75, -0.2)), "")
+            with self.subTest(texto=texto, metricas="sanas"):
+                self.assertEqual(
+                    transcribir(segmento(texto, 0.02, -0.2)), texto)
+
+    def test_contexto_amara_sobrevive_en_streaming(self):
+        texto = "Subtítulos del informe: no los publiques en amara.org"
+        motor = MotorSegmentos([segmento(texto, 0.95, -2.0)])
+        streaming = TranscriptorStreaming(
+            motor, sample_rate=16000, interval_s=0.1, trim_s=999)
+        audio = np.zeros(16000, dtype=np.float32)
+        streaming.aceptar_audio(audio)
+        self.assertEqual(streaming.procesar(), "")
+        streaming.aceptar_audio(audio)
+        self.assertEqual(streaming.procesar().strip(), texto)
+
+    def test_contexto_amara_llega_al_sink_desde_app(self):
+        texto = "Subtítulos del informe: no los publiques en amara.org"
+        app = App.__new__(App)
+        app.frases = TranscriptorFrase(MotorSegmentos([
+            segmento(texto, 0.95, -2.0),
+        ]))
+        app.proc = ProcesadorTexto(voice_commands=False)
+        app._estado_visual_si_vigente = lambda *_args: None
+        emitidos = []
+        app._emitir = lambda procesado, generacion: emitidos.append(
+            (procesado.texto, generacion))
+
+        app._atender_frase(np.zeros(1600, dtype=np.float32), 7)
+
+        self.assertEqual(emitidos, [(texto, 7)])
+
     def test_literal_completo_con_evidencia_fuerte_se_conserva(self):
         self.assertEqual(
             transcribir(("Suscríbete.", 0.02, -0.2)),
@@ -342,18 +432,22 @@ class PruebasFiltroAlucinaciones(unittest.TestCase):
         self.assertEqual(observado, "contenido real contenido posterior")
 
     def test_diagnostico_no_expone_texto(self):
-        texto = "¡Suscríbete!"
-        diagnostico = io.StringIO()
-        with redirect_stderr(diagnostico):
-            self.assertEqual(transcribir((texto, 0.75, -0.2)), "")
-        log = diagnostico.getvalue()
-        self.assertIn("classification=exact_or_near_exact", log)
-        self.assertIn("decision=drop", log)
-        self.assertIn("duration_ms=1000.000", log)
-        self.assertIn("no_speech_prob=0.750", log)
-        self.assertIn("avg_logprob=-0.200", log)
-        self.assertIn("compression_ratio=1.000", log)
-        self.assertNotIn(texto, log)
+        for texto in (
+            "¡Suscríbete!",
+            "Subtítulos realizados por la comunidad de Amara.org",
+        ):
+            with self.subTest(texto=texto):
+                diagnostico = io.StringIO()
+                with redirect_stderr(diagnostico):
+                    self.assertEqual(transcribir((texto, 0.75, -0.2)), "")
+                log = diagnostico.getvalue()
+                self.assertIn("classification=exact_or_near_exact", log)
+                self.assertIn("decision=drop", log)
+                self.assertIn("duration_ms=1000.000", log)
+                self.assertIn("no_speech_prob=0.750", log)
+                self.assertIn("avg_logprob=-0.200", log)
+                self.assertIn("compression_ratio=1.000", log)
+                self.assertNotIn(texto, log)
 
     def test_streaming_aplica_la_misma_politica_por_segmento(self):
         class MotorStreaming:
