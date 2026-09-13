@@ -630,6 +630,11 @@ class App:
         self.ultima_entrega = resultado
         return resultado
 
+    @staticmethod
+    def _admite_separador_prosa(texto: str) -> bool:
+        """Limita el espacio automático a texto lineal, no estructurado."""
+        return not any(marca in texto for marca in ("\n", "\r", "\t"))
+
     # ------------------------------------------------------------ emisión
 
     def _emitir(self, p, generacion: int):
@@ -661,7 +666,11 @@ class App:
                 self._necesita_espacio = False
                 return
             if p.texto:
-                salida = (" " + p.texto) if self._necesita_espacio else p.texto
+                agregar_espacio = (
+                    self._necesita_espacio
+                    and self._admite_separador_prosa(p.texto)
+                )
+                salida = (" " + p.texto) if agregar_espacio else p.texto
                 resultado = self._distribuir_texto(salida, p.texto)
                 if resultado.inyector == EstadoEntrega.INSERTED:
                     self._necesita_espacio = True

@@ -178,6 +178,72 @@ class PruebasMultilineConservador(unittest.TestCase):
         self.assertEqual(llamadas, [])
         self.assertEqual(copias, [entrada])
 
+    def test_bloques_despues_de_insercion_llegan_exactos_a_clipboard(self):
+        bloques = (
+            "a\nb",
+            "a\r\nb",
+            "a\rb",
+            "a\n\nb",
+            "\tfoo\n\tbar",
+            'print("em")\nprint("uh")',
+            '```python\nprint("em")\nprint("uh")\n```',
+            "    bloque\n    indentado",
+            '{\n  "clave": "valor"\n}',
+        )
+        for entrada in bloques:
+            with self.subTest(entrada=repr(entrada)):
+                procesador = ProcesadorTexto(comando_enviar=False)
+                inyector = Inyector(
+                    backend="wtype", notify=False, permitir_return=False)
+                app = _app(inyector, permitir_return=False)
+                llamadas = []
+                copias = []
+                with (
+                    mock.patch.object(
+                        inyector, "_correr",
+                        side_effect=lambda argv: llamadas.append(argv) or True,
+                    ),
+                    mock.patch.object(
+                        inyector, "_portapapeles",
+                        side_effect=lambda texto: copias.append(texto) or True,
+                    ),
+                ):
+                    app._emitir(Procesado(texto="previo"), 1)
+                    llamadas.clear()
+                    procesado = procesador.procesar_frase(entrada)
+                    resultado = app._emitir(procesado, 1)
+
+                self.assertEqual(procesado.texto, entrada)
+                self.assertEqual(resultado.inyector, EstadoEntrega.COPIED)
+                self.assertEqual(copias, [entrada])
+                self.assertEqual(llamadas, [])
+                self.assertTrue(app._necesita_espacio)
+
+    def test_copy_multiline_no_cambia_estado_de_separacion(self):
+        for copia_ok, estado in (
+                (True, EstadoEntrega.COPIED),
+                (False, EstadoEntrega.FAILED)):
+            with self.subTest(copia_ok=copia_ok):
+                inyector = Inyector(
+                    backend="wtype", notify=False, permitir_return=False)
+                app = _app(inyector, permitir_return=False)
+                tipeados = []
+                with (
+                    mock.patch.object(
+                        inyector, "_correr",
+                        side_effect=lambda argv: tipeados.append(argv[-1]) or True,
+                    ),
+                    mock.patch.object(
+                        inyector, "_portapapeles", return_value=copia_ok),
+                ):
+                    app._emitir(Procesado(texto="previo"), 1)
+                    bloque = app._emitir(Procesado(texto="a\nb"), 1)
+                    app._emitir(Procesado(texto="después"), 1)
+
+                self.assertEqual(bloque.inyector, estado)
+                self.assertEqual(tipeados, ["previo", " después"])
+                self.assertTrue(app._necesita_espacio)
+
 
 def _procesar_partes(texto, cortes):
     partes = [texto[inicio:fin]

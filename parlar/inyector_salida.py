@@ -107,14 +107,11 @@ class Inyector:
         if ok:
             if self._clipboard_unidad_activa:
                 self._prefijo_insertado += texto
-            if registrar:
+            if registrar and not self._efecto_fisico_incierto:
                 self._registrar(texto)
             return ResultadoSink(EstadoEntrega.INSERTED)
-        if (self._clipboard_unidad_activa and not registrar
-                and self.backend != "clipboard"):
-            # Un subproceso puede fallar después de haber tipeado un prefijo.
-            # No hay transacción del editor que permita conocer o revertirlo.
-            self._efecto_fisico_incierto = True
+        if self.backend != "clipboard":
+            self._marcar_efecto_fisico_incierto()
         contenido = texto
         if self._clipboard_unidad_activa:
             self._degradar_unidad(texto)
@@ -128,6 +125,13 @@ class Inyector:
         self._clipboard_forzado_por_salto = forzada_por_salto
         self._clipboard_unidad = texto
         self._recuperacion_disponible = False
+
+    def _marcar_efecto_fisico_incierto(self):
+        # Un subproceso puede fallar después de haber tipeado un prefijo. Como
+        # el editor no ofrece transacciones, ningún historial previo es seguro.
+        self._registro_oraciones.clear()
+        if self._clipboard_unidad_activa:
+            self._efecto_fisico_incierto = True
 
     def _copiar_recuperacion(self) -> ResultadoSink:
         ok = self._portapapeles(self._clipboard_unidad)

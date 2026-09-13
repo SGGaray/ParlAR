@@ -119,8 +119,9 @@ punctuation are normalized. A quoted phrase that resembles a voice command
 remains literal text even when `.`, `?`, or `!` follows the closing quote.
 
 Formal, concise, and email modes are explicit opt-ins. Local rules only apply
-small, context-safe substitutions; concise mode removes `viste` only when a
-comma makes its discourse-marker role unambiguous. Recognized structured
+small, context-safe substitutions; the local concise fallback avoids deleting
+linguistically ambiguous qualifiers such as `literally`, `basically`,
+`actually`, `kind of`, or `viste`. Recognized structured
 regions are protected during rewriting; if a model drops a marker, ParlAR uses
 the conservative local fallback. Configuring a local Ollama model enables
 generative rewriting and may change the prose wording. In utterance mode, known

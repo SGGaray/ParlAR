@@ -47,6 +47,71 @@ def emitir_unidad(inyector, fragmentos, *, resultados=None, finalizar=True):
 
 
 class PruebasUndoStreaming(unittest.TestCase):
+    def test_utterance_incierta_no_atraviesa_historial_con_backspace(self):
+        for fallo in ("false", "exception"):
+            with self.subTest(fallo=fallo):
+                inyector = Inyector(backend="xdotool", notify=False)
+                app = app_minima(inyector)
+                editor = [""]
+                fase = ["primero"]
+                retrocesos = []
+                copias = []
+
+                def correr(argv):
+                    if argv[1] == "type":
+                        texto = argv[-1]
+                        if fase[0] == "primero":
+                            editor[0] += texto
+                            return True
+                        editor[0] += texto[:4]
+                        if fallo == "exception":
+                            raise OSError("fallo físico simulado")
+                        return False
+                    cantidad = int(argv[argv.index("--repeat") + 1])
+                    retrocesos.append(cantidad)
+                    editor[0] = editor[0][:-cantidad]
+                    return True
+
+                with (
+                    mock.patch.object(inyector, "_correr", side_effect=correr),
+                    mock.patch.object(
+                        inyector, "_portapapeles",
+                        side_effect=lambda texto: copias.append(texto) or True,
+                    ),
+                ):
+                    inyector.iniciar_unidad(1)
+                    app._emitir(Procesado(texto="primero"), 1)
+                    inyector.finalizar_unidad()
+                    self.assertEqual(
+                        inyector._registro_oraciones, ["primero"])
+
+                    fase[0] = "incierta"
+                    inyector.iniciar_unidad(1)
+                    resultado = app._emitir(
+                        Procesado(texto="abcdefghijk"), 1)
+                    inyector.finalizar_unidad()
+                    self.assertEqual(
+                        resultado.inyector, EstadoEntrega.COPIED)
+                    self.assertEqual(copias, [" abcdefghijk"])
+                    self.assertEqual(editor[0], "primero abc")
+
+                    app._emitir(app.proc.procesar_frase(
+                        "borra la última oración"), 1)
+
+                self.assertEqual(inyector._registro_oraciones, [])
+                self.assertEqual(retrocesos, [])
+                self.assertEqual(editor[0], "primero abc")
+
+    def test_utterance_clipboard_directo_conserva_historial(self):
+        inyector = Inyector(backend="xdotool", notify=False)
+        with mock.patch.object(inyector, "_tipear", return_value=True):
+            inyector.escribir_texto("primero")
+        inyector.backend = "clipboard"
+        with mock.patch.object(inyector, "_portapapeles", return_value=True):
+            resultado = inyector.escribir_texto("solo copiado")
+        self.assertEqual(resultado.estado, EstadoEntrega.COPIED)
+        self.assertEqual(inyector._registro_oraciones, ["primero"])
+
     def test_utterance_streaming_local_agreement_y_dos_undos(self):
         inyector = Inyector(backend="xdotool", notify=False)
         app = app_minima(inyector)
