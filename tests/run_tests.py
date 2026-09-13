@@ -81,7 +81,7 @@ def test_segmentador():
 def test_procesador_texto():
     p = ProcesadorTexto(remove_fillers=True, voice_commands=True)
 
-    r = p.procesar_frase("um so this is , a test.it works")
+    r = p.procesar_frase("um so this is , a test. it works")
     check("muletillas eliminadas", "um" not in r.texto.lower(), repr(r.texto))
     check("espaciado normalizado", ", a test. It works" in r.texto, repr(r.texto))
     check("oración capitalizada", r.texto.startswith("So"), repr(r.texto))
@@ -103,7 +103,8 @@ def test_procesador_texto():
     pc = ProcesadorTexto(rewrite_mode="concise")
     r = pc.procesar_frase("basically this is actually the result you know")
     t = r.texto.lower()
-    check("reescritura concisa (en)", "basically" not in t and "actually" not in t,
+    check("reescritura concisa conservadora (en)",
+          "basically" in t and "actually" in t and "you know" in t,
           repr(r.texto))
 
     check("entrada vacía segura", p.procesar_frase("   ").texto == "")
@@ -120,7 +121,7 @@ def test_espanol():
 
     # espaciado de aperturas: espacio antes, nunca después
     r = p.procesar_frase("hola¿ qué tal")
-    check("aperturas: 'Hola ¿qué'", "Hola ¿qué" in r.texto, repr(r.texto))
+    check("aperturas: 'hola ¿qué'", "hola ¿qué" in r.texto, repr(r.texto))
 
     # comandos español-primero
     r = p.procesar_frase("punto y aparte")
@@ -128,8 +129,8 @@ def test_espanol():
     r = p.procesar_frase("borra la última oración")
     check("comando: borra la última oración", r.comando == "borrar_ultima")
     r = p.procesar_frase("Enviar")
-    check("comando: enviar (apagado por defecto, no se ejecuta)",
-          r.comando is None and r.texto == "Enviar")
+    check("comando: enviar se reconoce; App aplica el gate de Return",
+          r.comando == "enviar")
     p_enviar_on = ProcesadorTexto(comando_enviar=True)
     r = p_enviar_on.procesar_frase("Enviar")
     check("comando: enviar (activado explícitamente, sí se ejecuta)",
@@ -150,8 +151,8 @@ def test_espanol():
     pc = ProcesadorTexto(rewrite_mode="concise")
     r = pc.procesar_frase("básicamente o sea esto funciona viste")
     t = r.texto.lower()
-    check("conciso es: sin muletillas discursivas",
-          "básicamente" not in t and "o sea" not in t and "viste" not in t, repr(r.texto))
+    check("conciso es: conserva calificadores ambiguos",
+          "básicamente" in t and "o sea" in t and "viste" in t, repr(r.texto))
 
     # alias de comandos de control
     check("alias control: toggle->alternar", normalizar_comando("toggle")[0] == "alternar")
@@ -237,7 +238,7 @@ def test_inyector_nueva_linea():
     from parlar.inyector_salida import Inyector
 
     for backend in ("xdotool", "wtype", "ydotool"):
-        iny = Inyector(backend, notify=False)
+        iny = Inyector(backend, notify=False, permitir_return=True)
         llamadas = []
         iny._correr = staticmethod(lambda cmd, _c=llamadas: (_c.append(cmd), True)[1])
 
@@ -248,9 +249,8 @@ def test_inyector_nueva_linea():
         check(f"{backend}: no se tipea '\\n' como texto",
               "type" not in comandos or "\\n" not in comandos, comandos)
         if backend == "xdotool":
-            check("xdotool: usa key Return con --repeat 2",
-                  "Return" in comandos and "--repeat" in comandos and "2" in comandos,
-                  comandos)
+            check("xdotool: dos key Return",
+                  comandos.count("Return") == 2, comandos)
         elif backend == "wtype":
             check("wtype: dos '-k Return'", comandos.count("Return") == 2, comandos)
         elif backend == "ydotool":
@@ -270,8 +270,11 @@ def test_salida_sesion():
     try:
         sesion = SalidaSesion(directorio=tmp)
         check("crea el directorio de sesiones", tmp.is_dir())
-        check("nombre de archivo con patrón AAAA-MM-DD_HHMM.txt",
-              sesion.ruta.name.endswith(".txt") and len(sesion.ruta.stem) == 15,
+        partes_nombre = sesion.ruta.stem.split("-")
+        check("nombre de archivo exclusivo legible con token",
+              (len(partes_nombre) == 5 and partes_nombre[0] == "parlar" and
+               len(partes_nombre[1]) == 8 and len(partes_nombre[2]) == 6 and
+               len(partes_nombre[3]) == 6 and len(partes_nombre[4]) == 8),
               sesion.ruta.name)
 
         ok1 = sesion.escribir_texto("hola mundo")

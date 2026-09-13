@@ -1,14 +1,21 @@
 # ParlAR
 
-**Local-first, system-wide voice dictation for Linux. Spanish-first. 100% offline.**
+**Local-first, system-wide voice dictation for Linux. Spanish-first.**
 
-Speak into any application. ParlAR captures your voice, transcribes it locally with Whisper, cleans up the text (including proper Spanish punctuation like ¿ and ¡), and types it into whatever window has focus. No cloud, no API keys, no telemetry: nothing ever leaves your machine.
+Speak into any application. ParlAR captures your voice, transcribes it locally
+with Whisper, cleans up the text (including proper Spanish punctuation like ¿
+and ¡), and types it into whatever window has focus. It has no telemetry and
+needs no API keys. Network traffic occurs only if you explicitly configure an
+external service, such as a remote `ollama_url`.
 
 > Versión en español (principal): [README.md](README.md)
 
 ## Why
 
-Cloud dictation tools send every word you speak to someone else's servers. ParlAR is built on a single constraint: **all processing happens on your hardware**. The optional rewrite feature can use a local Ollama model, and even that call never leaves 127.0.0.1.
+Cloud dictation tools send every word you speak to someone else's servers.
+ParlAR performs transcription and its default cleanup on your hardware. The
+optional rewrite feature can call Ollama at loopback by default; changing
+`ollama_url` to a remote endpoint sends rewrite text to that endpoint.
 
 ## Features
 
@@ -37,16 +44,33 @@ Cloud dictation tools send every word you speak to someone else's servers. ParlA
 
 Architecture details, component diagram, and latency strategy: [arquitectura.md](arquitectura.md) (Spanish).
 
-## Installation
+## Requirements and installation
 
-Tested on Fedora; Ubuntu/Debian supported by the installer.
+The checkout installer supports Debian/Ubuntu and Fedora desktop sessions on
+X11 or Wayland. ParlAR requires Python 3.12 or newer; CI validates 3.12 and the
+current local development environment also validates 3.14. PipeWire or
+PulseAudio must expose an input device to PortAudio.
+
+Required system components are Python, venv, and PortAudio. Desktop
+integrations are optional alternatives: tkinter, notifications, X11/Wayland
+typing tools, clipboard tools, and compilation headers. Required Python
+dependencies are faster-whisper, sounddevice, numpy, and pynput. `webrtcvad`
+is optional; a tested adaptive energy VAD is used when it is unavailable.
 
 ```bash
-git clone git@github.com:SGGaray/parlar.git
+git clone https://github.com/SGGaray/parlar.git
 cd parlar
-./setup.sh                 # system deps, venv, Python deps, model download
+./setup.sh                 # system packages, venv, and Python dependencies
 source .venv/bin/activate
+./scripts/check.sh         # complete hardware-free gate
+python -m parlar           # first start; downloads Whisper small if absent
 ```
+
+Setup reuses a valid `.venv` and does not delete configuration, models, or
+transcripts. It refuses to remove an incomplete `.venv`. Use
+`--skip-system-packages` when system dependencies are already installed. Model
+provisioning is separate: first use downloads the configured model, or
+`./setup.sh --skip-system-packages --preload-model` preloads `small` explicitly.
 
 NVIDIA GPU note: if faster-whisper reports `libcublas.so.12 not found`, install the CUDA runtime libraries inside the venv and expose them:
 
@@ -54,10 +78,10 @@ NVIDIA GPU note: if faster-whisper reports `libcublas.so.12 not found`, install 
 pip install nvidia-cublas-cu12 nvidia-cudnn-cu12
 ```
 
-Then append to `.venv/bin/activate` (adjust the Python version to yours):
+Then append to `.venv/bin/activate`:
 
 ```bash
-SITE="$VIRTUAL_ENV/lib64/python3.14/site-packages"
+SITE="$(python -c 'import site; print(site.getsitepackages()[0])')"
 if [ -d "$SITE/nvidia/cublas/lib" ]; then
     export LD_LIBRARY_PATH="$SITE/nvidia/cublas/lib:$SITE/nvidia/cudnn/lib:$LD_LIBRARY_PATH"
 fi
@@ -86,6 +110,24 @@ On Wayland, bind `parlarctl alternar` to a keyboard shortcut in your desktop env
 
 English command aliases (`toggle`, `status`, `mode`, ...) are accepted for compatibility.
 
+With rewriting disabled (the default), cleanup is conservative: decimals
+(including signed values), times, URLs, email addresses, domains, versions,
+identifiers, strings, and code regions are kept exactly as Whisper produced
+them. Preservation wins when the input is ambiguous. Only unambiguous prose
+spacing, isolated fillers outside literal regions, and Spanish opening
+punctuation are normalized. A quoted phrase that resembles a voice command
+remains literal text even when `.`, `?`, or `!` follows the closing quote.
+
+Formal, concise, and email modes are explicit opt-ins. Local rules only apply
+small, context-safe substitutions; the local concise fallback avoids deleting
+linguistically ambiguous qualifiers such as `literally`, `basically`,
+`actually`, `kind of`, or `viste`. Recognized structured
+regions are protected during rewriting; if a model drops a marker, ParlAR uses
+the conservative local fallback. Configuring a local Ollama model enables
+generative rewriting and may change the prose wording. In utterance mode, known
+hallucination phrases are filtered only when that same segment also has low
+acoustic and text confidence, so confident literal speech is preserved.
+
 ## GuionAR integration (teleprompter)
 
 For the full system design (ParlAR + GuionAR, the socket protocol, and why they're two processes), see [GuionAR/ARCHITECTURE.md](https://github.com/SGGaray/GuionAR/blob/main/ARCHITECTURE.md).
@@ -107,19 +149,106 @@ python -m parlar --guionar --modo streaming
 
 It can also be enabled permanently with `"guionar": true` in `~/.config/parlar/config.json`.
 
-The integration is fire-and-forget: if GuionAR is not running, ParlAR works exactly as before (sends are dropped in ~10 µs, no blocking, no errors in the pipeline). If GuionAR dies mid-session, dictation continues and the connection resumes on its own. In streaming mode, committed text appears bright and the still-unconfirmed hypothesis shows as a dim preview; the scroll advances only while the VAD detects speech. Everything stays on a local unix socket with `0600` permissions: the privacy model does not change.
+The integration is best-effort. Reconnection sends the current VAD and partial
+snapshot, but does not replay historical final text and has no application ACK.
+GuionAR limits each final text message to 2,000 characters. Its receiving
+socket permissions are owned by GuionAR, not ParlAR.
+
+Insertion, clipboard copy, GuionAR mirroring, and transcript persistence are
+independent results. Streaming clipboard fallback accumulates a recoverable
+utterance, but does not insert it or add it to undo history. Undo remains
+dependent on the focused external editor. By default `comando_enviar=false`
+blocks every physical Enter/Return action, whether it comes from a command,
+multiline text, streaming, or rewrite output. Multiline content is then copied
+intact and reported as copied rather than inserted, without entering undo
+history.
+
+Control uses a `0600` Unix socket, one newline-terminated UTF-8 operation per
+connection, a 4 KiB limit, verified stale-socket recovery, and UID-qualified
+fallback paths under `/tmp`.
+
+Configuration is validated before the model or microphone is initialized.
+JSON types are strict, capture is fixed at 16 kHz, and WebRTC VAD frame size
+must be 10, 20, or 30 ms. Only `mode` and `rewrite_mode` are runtime-dynamic;
+other changes require a restart. Saved configuration is atomically replaced
+and uses mode `0600` in a newly created `0700` directory.
+
+Session transcripts are disabled by default. `--guardar-sesion` creates one
+exclusive `0600` plaintext file per daemon run in the session directory,
+which is created as `0700`; concurrent runs never append to the same file.
+ParlAR does not delete or encrypt these files. A transcript is an append-only
+history of confirmed emissions, not a reconstruction of Return, undo, editor,
+or clipboard state. Normal logs contain operational metadata, not dictated
+text.
+
+Installation and provisioning may download dependencies and models. At
+runtime, GuionAR uses local Unix IPC. The clipboard and destination application
+are outside the ParlAR process and its storage guarantees.
 
 ## Running the tests
 
 ```bash
-python tests/run_tests.py
+./scripts/check.sh
 ```
 
-The suite covers the VAD segmenter, Spanish text processing, the streaming commit policy (against a scripted fake engine), injection command construction, and the backward-compatibility shim. No audio hardware required.
+This is the same gate CI runs: shell syntax, Python compilation, CLI smokes,
+58 legacy checks, every unittest suite, Unix IPC, and `git diff --check`. It
+does not require audio hardware, a display, a downloaded model, Ollama,
+GuionAR, clipboard, or a real systemd session.
+
+The suites cover session lifecycle, deterministic concurrency, mode
+boundaries, shutdown ordering, worker health, microphone ownership, bounded
+capture backpressure, gap recovery, structured-token fidelity, safe rewrite
+rules, and confidence-gated hallucination filtering. No audio hardware required.
+
+Capture keeps a bounded queue of roughly ten seconds. If the worker falls
+behind, the oldest frames are dropped to preserve recent audio. ParlAR cannot
+reconstruct discarded audio: per-session sequence numbers expose the gap and
+the worker separates audio before and after it instead of presenting a false
+continuous utterance. A PortAudio `input_overflow` creates the same boundary,
+invalidates any preceding partial frame, and is counted separately as
+`device_overflows` without inventing a dropped-frame count. `parlarctl estado`
+reports capture health, queue drops, device overflows, discontinuities, queue
+depth, and estimated backlog. Once the boundary is handled, health becomes
+`recuperado-con-perdida` while the loss remains visible for that session.
+
+The callback may accept audio while backend startup is still completing, but
+the worker waits for startup to resolve before processing it. A failed open
+invalidates that generation and its frames and leaves microphone startup
+retryable. `parlarctl estado` also keeps STT and VAD health separate
+(`healthy`, `degraded`, or `recovered`), with historical counters and the last
+exception type but no audio or transcript content. VAD deliberately fails
+open to avoid losing speech; while degraded it can increase STT work and
+produce false utterances.
+
+Streaming retains its acoustic minimum for an initially short utterance. When
+a valid trim leaves a tail below that minimum, stop performs one final decode
+instead of dropping the tail automatically; append-only agreement still gates
+the result and never retracts emitted text.
+
+## Optional user service
+
+```bash
+./setup.sh --skip-system-packages --install-service
+systemctl --user enable --now parlar
+```
+
+Setup renders the unit with the checkout's real absolute path and venv Python,
+keeps `UMask=0077`, and will not replace an unrelated unit. Repeating it for
+the same checkout is a no-op. A user service still depends on desktop-specific
+audio, display, X11/Wayland, and clipboard access; launch ParlAR from a terminal
+inside that desktop session if those variables are unavailable to systemd.
+Shutdown invalidates the generation and joins the worker before closing output
+sinks. Every resource receives a cleanup attempt even when another closer
+fails; the app reaches `closed` and retains closure error types for diagnosis.
+
+For later manual hardware validation, check microphone open, utterance mode,
+streaming, stop, restart, optional GuionAR, clipboard fallback, and shutdown.
 
 ## Project status
 
-**v0.2.0, functional and validated on real hardware** (Fedora, RTX 2050, X11), but early:
+**v0.2.0, experimental.** It has been exercised on Fedora/X11 hardware, but
+still requires broader fresh-install and desktop validation:
 
 - No graphical UI yet beyond the minimal overlay indicator; configuration is JSON plus CLI flags
 - The output system is not yet fully decoupled (injection is wired directly into the pipeline; the GuionAR client is the first decoupled output)

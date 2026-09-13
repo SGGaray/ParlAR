@@ -5,15 +5,31 @@ Backends, auto-seleccionados según tipo de sesión y disponibilidad:
   Wayland: wtype (protocolo virtual-keyboard), luego ydotool (daemon uinput)
   Respaldo: portapapeles (wl-copy / xclip) + notificación de escritorio
 
-Registra las últimas oraciones inyectadas para poder honrar
+Registra las últimas unidades insertadas para poder honrar
 "borra la última oración" con retrocesos sintéticos.
 """
 
 import os
+import re
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from typing import List, Optional
+
+from .entrega import EstadoEntrega, ResultadoSink
+
+
+@dataclass(frozen=True)
+class EstadoRecuperacionUnidad:
+    """Snapshot acotado de la unidad streaming todavía activa."""
+
+    generacion: Optional[int]
+    texto_logico: str
+    prefijo_insertado: str
+    texto_recuperacion: str
+    degradada: bool
+    recuperacion_disponible: bool
 
 
 def _cual(nombre: str) -> Optional[str]:
@@ -29,11 +45,23 @@ def detectar_sesion() -> str:
 
 
 class Inyector:
-    def __init__(self, backend: str = "auto", type_delay_ms: int = 1, notify: bool = True):
+    def __init__(self, backend: str = "auto", type_delay_ms: int = 1,
+                 notify: bool = True, permitir_return: bool = False):
         self.notify = notify
+        self.permitir_return = permitir_return
         self.type_delay_ms = max(0, type_delay_ms)
         self.backend = self._resolver(backend)
         self._registro_oraciones: List[str] = []  # para borrar_ultima
+        self._clipboard_unidad = ""
+        self._clipboard_unidad_activa = False
+        self._clipboard_generacion = None
+        self._texto_unidad = ""
+        self._prefijo_insertado = ""
+        self._unidad_degradada = False
+        self._recuperacion_disponible = False
+        self._clipboard_forzado_por_salto = False
+        self._undo_unidad_diferido = False
+        self._efecto_fisico_incierto = False
         print(f"[inyector] backend: {self.backend}")
 
     # ---------------------------------------------------------------- setup
@@ -57,37 +85,156 @@ class Inyector:
 
     # ---------------------------------------------------------------- tipeo
 
-    def escribir_texto(self, texto: str, registrar: bool = True) -> bool:
+    def escribir_texto(self, texto: str, registrar: bool = True) -> ResultadoSink:
         if not texto:
-            return True
+            return ResultadoSink(EstadoEntrega.SKIPPED)
+        if self._clipboard_unidad_activa:
+            self._texto_unidad += texto
+            if not registrar:
+                self._undo_unidad_diferido = True
+            if self._unidad_degradada:
+                self._clipboard_unidad += texto
+                return self._copiar_recuperacion()
+        salto_bloqueado = self._contiene_salto(texto) and not self.permitir_return
+        if salto_bloqueado:
+            if self._clipboard_unidad_activa:
+                self._degradar_unidad(texto, forzada_por_salto=True)
+                return self._copiar_recuperacion()
+            if self._portapapeles(texto):
+                return ResultadoSink(EstadoEntrega.COPIED)
+            return ResultadoSink(EstadoEntrega.FAILED)
         ok = self._tipear(texto)
-        if not ok:
-            ok = self._portapapeles(texto)
-        if ok and registrar:
-            self._registrar(texto)
-        return ok
+        if ok:
+            if self._clipboard_unidad_activa:
+                self._prefijo_insertado += texto
+            if registrar and not self._efecto_fisico_incierto:
+                self._registrar(texto)
+            return ResultadoSink(EstadoEntrega.INSERTED)
+        if self.backend != "clipboard":
+            self._marcar_efecto_fisico_incierto()
+        contenido = texto
+        if self._clipboard_unidad_activa:
+            self._degradar_unidad(texto)
+            return self._copiar_recuperacion()
+        if self._portapapeles(contenido):
+            return ResultadoSink(EstadoEntrega.COPIED)
+        return ResultadoSink(EstadoEntrega.FAILED)
+
+    def _degradar_unidad(self, texto: str, *, forzada_por_salto=False):
+        self._unidad_degradada = True
+        self._clipboard_forzado_por_salto = forzada_por_salto
+        self._clipboard_unidad = texto
+        self._recuperacion_disponible = False
+
+    def _marcar_efecto_fisico_incierto(self):
+        # Un subproceso puede fallar después de haber tipeado un prefijo. Como
+        # el editor no ofrece transacciones, ningún historial previo es seguro.
+        self._registro_oraciones.clear()
+        if self._clipboard_unidad_activa:
+            self._efecto_fisico_incierto = True
+
+    def _copiar_recuperacion(self) -> ResultadoSink:
+        ok = self._portapapeles(self._clipboard_unidad)
+        self._recuperacion_disponible = ok
+        return ResultadoSink(
+            EstadoEntrega.COPIED if ok else EstadoEntrega.FAILED)
+
+    def estado_recuperacion_unidad(self) -> EstadoRecuperacionUnidad:
+        return EstadoRecuperacionUnidad(
+            generacion=self._clipboard_generacion,
+            texto_logico=self._texto_unidad,
+            prefijo_insertado=self._prefijo_insertado,
+            texto_recuperacion=self._clipboard_unidad,
+            degradada=self._unidad_degradada,
+            recuperacion_disponible=self._recuperacion_disponible,
+        )
+
+    def iniciar_unidad(self, generacion=None):
+        # Si el llamador abre otra unidad sin resolver la anterior, la frontera
+        # es una cancelación, no una finalización implícita.
+        self.cancelar_unidad()
+        self._clipboard_unidad_activa = True
+        self._clipboard_generacion = generacion
+
+    def finalizar_unidad(self):
+        if self._clipboard_unidad_activa and self._undo_unidad_diferido:
+            completamente_insertada = (
+                bool(self._texto_unidad)
+                and not self._unidad_degradada
+                and not self._efecto_fisico_incierto
+                and self._prefijo_insertado == self._texto_unidad
+            )
+            if completamente_insertada:
+                self._registrar(self._prefijo_insertado)
+            elif self._prefijo_insertado or self._efecto_fisico_incierto:
+                self._registro_oraciones.clear()
+        self._limpiar_unidad()
+
+    def cancelar_unidad(self):
+        if (self._clipboard_unidad_activa and self._undo_unidad_diferido
+                and (self._prefijo_insertado
+                     or self._efecto_fisico_incierto)):
+            # Hubo (o pudo haber) texto físico que no constituye una unidad
+            # lógica finalizada. Ningún undo futuro puede atravesar esa marca.
+            self._registro_oraciones.clear()
+        self._limpiar_unidad()
+
+    def _limpiar_unidad(self):
+        self._clipboard_unidad = ""
+        self._texto_unidad = ""
+        self._prefijo_insertado = ""
+        self._unidad_degradada = False
+        self._recuperacion_disponible = False
+        self._clipboard_forzado_por_salto = False
+        self._undo_unidad_diferido = False
+        self._efecto_fisico_incierto = False
+        self._clipboard_unidad_activa = False
+        self._clipboard_generacion = None
 
     def _tipear(self, texto: str) -> bool:
         try:
-            if self.backend == "xdotool":
-                return self._correr(["xdotool", "type", "--clearmodifiers",
-                                     "--delay", str(self.type_delay_ms), "--", texto])
-            if self.backend == "wtype":
-                # wtype maneja saltos de línea bien partiendo con -k Return
-                partes = texto.split("\n")
-                for i, parte in enumerate(partes):
-                    if parte and not self._correr(["wtype", "--", parte]):
-                        return False
-                    if i < len(partes) - 1 and not self._correr(["wtype", "-k", "Return"]):
-                        return False
-                return True
-            if self.backend == "ydotool":
-                return self._correr(["ydotool", "type", "--key-delay",
-                                     str(self.type_delay_ms), "--", texto])
             if self.backend == "clipboard":
                 return False
+            partes = re.split(r"\r\n|\r|\n", texto)
+            if len(partes) > 1 and not self.permitir_return:
+                return False
+            for indice, parte in enumerate(partes):
+                if parte and not self._tipear_segmento(parte):
+                    return False
+                if indice < len(partes) - 1 and not self._return_fisico():
+                    return False
+            return True
         except Exception as e:
-            print(f"[inyector] {self.backend} falló: {e}", file=sys.stderr)
+            print(f"[inyector] {self.backend} falló: {type(e).__name__}",
+                  file=sys.stderr)
+        return False
+
+    @staticmethod
+    def _contiene_salto(texto: str) -> bool:
+        return "\n" in texto or "\r" in texto
+
+    def _tipear_segmento(self, texto: str) -> bool:
+        if self.backend == "xdotool":
+            return self._correr(["xdotool", "type", "--clearmodifiers",
+                                 "--delay", str(self.type_delay_ms), "--", texto])
+        if self.backend == "wtype":
+            return self._correr(["wtype", "--", texto])
+        if self.backend == "ydotool":
+            return self._correr(["ydotool", "type", "--key-delay",
+                                 str(self.type_delay_ms), "--", texto])
+        return False
+
+    def _return_fisico(self) -> bool:
+        """Única frontera que puede emitir una pulsación física Return."""
+        if not self.permitir_return:
+            return False
+        if self.backend == "xdotool":
+            return self._correr(
+                ["xdotool", "key", "--clearmodifiers", "Return"])
+        if self.backend == "wtype":
+            return self._correr(["wtype", "-k", "Return"])
+        if self.backend == "ydotool":
+            return self._correr(["ydotool", "key", "28:1", "28:0"])
         return False
 
     def retroceso(self, cantidad: int) -> bool:
@@ -113,41 +260,23 @@ class Inyector:
         return False
 
     def presionar_enter(self) -> bool:
-        if self.backend == "xdotool":
-            return self._correr(["xdotool", "key", "--clearmodifiers", "Return"])
-        if self.backend == "wtype":
-            return self._correr(["wtype", "-k", "Return"])
-        if self.backend == "ydotool":
-            return self._correr(["ydotool", "key", "28:1", "28:0"])
+        try:
+            return self._return_fisico()
+        except Exception as exc:
+            print(f"[inyector] Enter falló: {exc}", file=sys.stderr)
         return False
 
     def nueva_linea(self, cantidad: int = 1) -> bool:
-        """Envía `cantidad` pulsaciones reales de Enter.
-
-        Deliberadamente NO se tipea el carácter '\\n' como texto: xdotool
-        type lo descarta en silencio en vez de generar un salto de línea, así
-        que el comando "nuevo párrafo" no hacía nada visible antes de este
-        fix. Enviar la tecla Return explícitamente funciona en los tres
-        backends.
-        """
+        """Envía `cantidad` pulsaciones por la frontera física autorizada."""
         if cantidad <= 0:
             return True
         try:
-            if self.backend == "xdotool":
-                return self._correr(["xdotool", "key", "--clearmodifiers", "--repeat",
-                                     str(cantidad), "--repeat-delay", "2", "Return"])
-            if self.backend == "wtype":
-                args = ["wtype"]
-                for _ in range(cantidad):
-                    args += ["-k", "Return"]
-                return self._correr(args)
-            if self.backend == "ydotool":
-                seq = []
-                for _ in range(cantidad):
-                    seq += ["28:1", "28:0"]
-                return self._correr(["ydotool", "key"] + seq)
+            if all(self._return_fisico() for _ in range(cantidad)):
+                return True
         except Exception as e:
             print(f"[inyector] nueva_linea falló: {e}", file=sys.stderr)
+        if not self.permitir_return:
+            return False
         return self._portapapeles("\n" * cantidad)
 
     # ---------------------------------------------------------------- comandos
@@ -155,8 +284,11 @@ class Inyector:
     def borrar_ultima_oracion(self) -> bool:
         if not self._registro_oraciones:
             return False
-        ultima = self._registro_oraciones.pop()
-        return self.retroceso(len(ultima))
+        ultima = self._registro_oraciones[-1]
+        if not self.retroceso(len(ultima)):
+            return False
+        self._registro_oraciones.pop()
+        return True
 
     def _registrar(self, texto: str):
         self._registro_oraciones.append(texto)
@@ -165,6 +297,7 @@ class Inyector:
 
     def reiniciar_registro(self):
         self._registro_oraciones.clear()
+        self.cancelar_unidad()
 
     # ------------------------------------------------------- interfaz de salida
 
@@ -175,7 +308,7 @@ class Inyector:
 
     def cerrar(self):
         """No-op: el inyector no mantiene recursos que cerrar."""
-        pass
+        self.cancelar_unidad()
 
     # ---------------------------------------------------------------- ayudantes
 
@@ -186,28 +319,42 @@ class Inyector:
         elif _cual("xclip"):
             herramienta = ["xclip", "-selection", "clipboard"]
         if herramienta is None:
-            print(f"[inyector] SIN herramienta de inyección. El texto era:\n{texto}",
+            print(f"[inyector] SIN herramienta de inyección; texto no insertado "
+                  f"({len(texto)} caracteres)",
                   file=sys.stderr)
             return False
         try:
             subprocess.run(herramienta, input=texto.encode(), check=True, timeout=5)
-            self._notificar("ParlAR",
-                            "Herramienta de tipeo no disponible. Texto copiado al "
-                            "portapapeles, presioná Ctrl+V.")
-            return True
         except Exception as e:
-            print(f"[inyector] portapapeles falló: {e}", file=sys.stderr)
+            print(f"[inyector] portapapeles falló: {type(e).__name__}",
+                  file=sys.stderr)
             return False
+        self._notificar("ParlAR",
+                        "Herramienta de tipeo no disponible. Texto copiado al "
+                        "portapapeles, presioná Ctrl+V.")
+        return True
 
     def _notificar(self, titulo: str, cuerpo: str):
         if self.notify and _cual("notify-send"):
-            subprocess.run(["notify-send", "-a", "ParlAR", titulo, cuerpo],
-                           check=False, timeout=5)
+            try:
+                resultado = subprocess.run(
+                    ["notify-send", "-a", "ParlAR", titulo, cuerpo],
+                    check=False, timeout=5)
+                if resultado.returncode != 0:
+                    print("[inyector] notificación falló: "
+                          f"rc={resultado.returncode}", file=sys.stderr)
+            except Exception as e:
+                # El feedback visual es best-effort: nunca cambia el resultado
+                # de una copia ya confirmada ni registra el texto sensible.
+                print(f"[inyector] notificación falló: {type(e).__name__}",
+                      file=sys.stderr)
 
     @staticmethod
     def _correr(cmd: List[str]) -> bool:
-        r = subprocess.run(cmd, capture_output=True, timeout=30)
+        r = subprocess.run(cmd, capture_output=True, check=False, timeout=30)
         if r.returncode != 0:
-            print(f"[inyector] {' '.join(cmd[:2])} rc={r.returncode}: "
-                  f"{r.stderr.decode(errors='replace')[:200]}", file=sys.stderr)
+            # stderr pertenece a una herramienta externa y podría repetir el
+            # argumento dictado. Solo registramos metadatos no sensibles.
+            print(f"[inyector] {' '.join(cmd[:2])} rc={r.returncode}",
+                  file=sys.stderr)
         return r.returncode == 0

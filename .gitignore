@@ -51,3 +51,15 @@ dist/
 .DS_Store
 Thumbs.db
 parlar-guionar.patch
+
+# --- Tooling local y artefactos de auditoría/remediación ---
+.agents/
+.claude/
+skills-lock.json
+astra-audit*/
+audit-*.md
+remediation-*.md
+probe-*.txt
+
+# --- Transcripts locales creados accidentalmente dentro del checkout ---
+parlar-*.txt

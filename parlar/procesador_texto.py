@@ -2,8 +2,8 @@
 
 Whisper ya emite puntuación y mayúsculas; esta capa normaliza los bordes
 (espaciado, mayúsculas de oración, muletillas), interpreta comandos de voz y
-opcionalmente reescribe vía reglas o un modelo local de Ollama (solo
-127.0.0.1, así la garantía de privacidad se mantiene).
+opcionalmente reescribe vía reglas o un endpoint HTTP(S) de Ollama. El default
+es local; elegir una URL remota envía allí el texto a reescribir.
 
 Adaptado al español: maneja signos de apertura ¿ ¡ (espaciado y mayúsculas)
 y trae reglas de reescritura para español además de inglés. Los comandos de
@@ -12,6 +12,7 @@ voz son español-primero, con equivalentes en inglés como respaldo.
 
 import json
 import re
+import sys
 import urllib.request
 from dataclasses import dataclass
 from typing import Optional
@@ -38,8 +39,20 @@ _PATRONES_CMD = [
      ("detener", None)),
     (re.compile(r"^(enviar|send message|send)$", re.I), ("enviar", None)),
 ]
+_PUNTUACION_TERMINAL_COMANDO = frozenset(".!?…")
 
 _FIN_ORACION = re.compile(r"([.!?])\s+([¿¡]?)(\w)")
+_MARCADOR_ESTRUCTURA = re.compile(r"\ue000PARLARX*\d+\ue001")
+_ESTRUCTURA_NUMERICA = re.compile(
+    r"^(?:(?:[€$£¥][+\-−]?)|(?:[+\-−][€$£¥]?))?"
+    r"(?:\d+(?:[.,:]\d+)+|\.\d+|\d+)(?:%|[a-zA-Z]+)?$|"
+    r"^\d{2,4}(?:-\d{1,2}){1,2}$"
+)
+_DOTFILE = re.compile(r"^\.[A-Za-z_][\w.-]*$", re.UNICODE)
+_PARES_CITAS = {
+    '"': '"', "'": "'", "“": "”", "‘": "’", "«": "»",
+}
+_PARES_DELIMITADORES = {"(": ")", "[": "]", "{": "}"}
 
 
 @dataclass
@@ -47,6 +60,14 @@ class Procesado:
     texto: str = ""
     comando: Optional[str] = None   # nueva_linea | borrar_ultima | detener | enviar
     carga: Optional[str] = None     # ej. "\n" para comandos de nueva línea
+
+
+@dataclass
+class _EstadoLiteral:
+    """Contexto acotado entre fragmentos de una misma unidad streaming."""
+
+    cierre: Optional[str] = None
+    escapado: bool = False
 
 
 def _normalizar_espaciado(texto: str) -> str:
@@ -60,14 +81,215 @@ def _normalizar_espaciado(texto: str) -> str:
     return texto
 
 
-def _capitalizar_oraciones(texto: str) -> str:
+def _es_nucleo_estructurado(token: str) -> bool:
+    if _ESTRUCTURA_NUMERICA.fullmatch(token) or _DOTFILE.fullmatch(token):
+        return True
+    if token.isupper() and any(caracter.isalpha() for caracter in token):
+        return True
+    if any(marca in token for marca in ("://", "@", "/", "_", "+", "#")):
+        return True
+    if any(marca in token for marca in ("[", "]", "{", "}", "=", "\\")):
+        return True
+    if "::" in token or re.search(r"\w:\w", token, re.UNICODE):
+        return True
+    if re.search(r"\w\.\w", token, re.UNICODE):
+        return True
+    if re.search(r"\w-\w", token, re.UNICODE):
+        return True
+    return bool(re.search(r"\w\([^\s)]*\)", token, re.UNICODE))
+
+
+def _es_token_estructurado(token: str) -> bool:
+    """Reconoce sintaxis donde puntuación/caso son datos, no prosa.
+
+    La regla es deliberadamente amplia: ante un token ambiguo como
+    ``test.it`` se prioriza fidelidad y se deja intacto.
+    """
+    if not token:
+        return False
+    if _es_nucleo_estructurado(token):
+        return True
+    exterior = token.rstrip(",;:!?")
+    if exterior != token and _es_nucleo_estructurado(exterior):
+        return True
+    if token.endswith(".") and _es_nucleo_estructurado(token[:-1]):
+        return True
+    return False
+
+
+def _proteger_regiones_citadas(
+        texto: str, guardar, estado: Optional[_EstadoLiteral] = None) -> str:
+    """Protege citas cerradas o abiertas en O(n), con contexto opcional."""
+    cierre = estado.cierre if estado is not None else None
+    escapado = estado.escapado if estado is not None else False
+    salida = []
+    inicio_copia = 0
+    inicio_literal = 0 if cierre is not None else None
+    indice = 0
+    barras_fuera = 0
+    while indice < len(texto):
+        caracter = texto[indice]
+        if cierre is not None:
+            if escapado:
+                escapado = False
+            elif cierre in "\"'" and caracter == "\\":
+                escapado = True
+            elif caracter == cierre:
+                if (cierre == "'" and indice + 1 < len(texto)
+                        and (texto[indice + 1].isalnum()
+                             or texto[indice + 1] == "_")):
+                    indice += 1
+                    continue
+                salida.append(guardar(texto[inicio_literal:indice + 1]))
+                inicio_copia = indice + 1
+                inicio_literal = None
+                cierre = None
+            indice += 1
+            continue
+
+        posible_cierre = _PARES_CITAS.get(caracter)
+        apertura_valida = posible_cierre is not None
+        if caracter in "\"'" and barras_fuera % 2:
+            apertura_valida = False
+        if (caracter == "'" and indice > 0
+                and (texto[indice - 1].isalnum()
+                     or texto[indice - 1] == "_")):
+            apertura_valida = False
+        if apertura_valida:
+            salida.append(texto[inicio_copia:indice])
+            inicio_literal = indice
+            cierre = posible_cierre
+            escapado = False
+            barras_fuera = 0
+            indice += 1
+            continue
+        barras_fuera = barras_fuera + 1 if caracter == "\\" else 0
+        indice += 1
+
+    if inicio_literal is not None:
+        salida.append(guardar(texto[inicio_literal:]))
+        inicio_copia = len(texto)
+    salida.append(texto[inicio_copia:])
+    if estado is not None:
+        estado.cierre = cierre
+        estado.escapado = escapado
+    return "".join(salida)
+
+
+def _fin_region_balanceada(texto: str, apertura: int) -> int:
+    """Devuelve el final exclusivo sin reexaminar el contenido recorrido."""
+    pila = [_PARES_DELIMITADORES[texto[apertura]]]
+    indice = apertura + 1
+    while indice < len(texto) and pila:
+        caracter = texto[indice]
+        if caracter in _PARES_DELIMITADORES:
+            pila.append(_PARES_DELIMITADORES[caracter])
+        elif caracter == pila[-1]:
+            pila.pop()
+        indice += 1
+    return indice
+
+
+def _proteger_tokens_lineal(texto: str, guardar) -> str:
+    """Embalsama tokens y expresiones balanceadas en una pasada lineal."""
+    salida = []
+    indice = 0
+    while indice < len(texto):
+        if texto[indice].isspace():
+            salida.append(texto[indice])
+            indice += 1
+            continue
+
+        inicio = indice
+        if texto[indice] in _PARES_DELIMITADORES:
+            indice = _fin_region_balanceada(texto, indice)
+            while indice < len(texto) and not texto[indice].isspace():
+                indice += 1
+            salida.append(guardar(texto[inicio:indice]))
+            continue
+
+        if texto[indice].isalnum() or texto[indice] == "_":
+            while (indice < len(texto)
+                   and (texto[indice].isalnum()
+                        or texto[indice] in "_.:+#/-")):
+                indice += 1
+            sonda = indice
+            while sonda < len(texto) and texto[sonda] in " \t":
+                sonda += 1
+            if sonda < len(texto) and texto[sonda] == "=":
+                final = texto.find("\n", sonda)
+                indice = len(texto) if final < 0 else final
+                salida.append(guardar(texto[inicio:indice]))
+                continue
+            if indice < len(texto) and texto[indice] in "([":
+                indice = _fin_region_balanceada(texto, indice)
+                while indice < len(texto) and not texto[indice].isspace():
+                    indice += 1
+                salida.append(guardar(texto[inicio:indice]))
+                continue
+
+        while indice < len(texto) and not texto[indice].isspace():
+            indice += 1
+        token = texto[inicio:indice]
+        salida.append(guardar(token) if _es_token_estructurado(token) else token)
+    return "".join(salida)
+
+
+def _proteger_estructura(
+        texto: str, estado: Optional[_EstadoLiteral] = None):
+    """Protege regiones literales y tokens estructurados sin colisiones.
+
+    La detección es deliberadamente conservadora: las citas completas y las
+    líneas con forma de asignación/objeto se tratan como datos. Sobre el resto
+    solo se embalsaman tokens inequívocamente técnicos o numéricos.
+    """
+    prefijo = "\ue000PARLAR"
+    while prefijo in texto:
+        prefijo += "X"
+    reemplazos = {}
+
+    def guardar(original):
+        marcador = f"{prefijo}{len(reemplazos)}\ue001"
+        reemplazos[marcador] = original
+        return marcador
+
+    texto = _proteger_regiones_citadas(texto, guardar, estado)
+    return _proteger_tokens_lineal(texto, guardar), reemplazos
+
+
+def _restaurar_estructura(texto: str, reemplazos) -> str:
+    # Una cita puede quedar envuelta por el token de código que la contiene.
+    # Como la profundidad máxima es dos, ambas capas se restauran linealmente.
+    for _ in range(2):
+        restaurado = _MARCADOR_ESTRUCTURA.sub(
+            lambda match: reemplazos.get(match.group(0), match.group(0)), texto)
+        if restaurado == texto:
+            break
+        texto = restaurado
+    return texto
+
+
+def _quitar_muletillas(texto: str):
+    """Quita sólo muletillas al inicio real, no coincidencias interiores."""
+    eliminadas = 0
+    while True:
+        inicio = len(texto) - len(texto.lstrip())
+        match = MULETILLAS.match(texto, inicio)
+        if match is None or match.group(1).isupper():
+            break
+        texto = texto[match.end():]
+        eliminadas += 1
+    return texto, eliminadas
+
+
+def _capitalizar_oraciones(texto: str, *, inicio: bool = False) -> str:
     if not texto:
         return texto
     # inicio del texto, contemplando ¿ o ¡ inicial
     if texto[0] in "¿¡":
         if len(texto) > 1:
             texto = texto[0] + texto[1].upper() + texto[2:]
-    else:
+    elif inicio:
         texto = texto[0].upper() + texto[1:]
     return _FIN_ORACION.sub(
         lambda m: m.group(1) + " " + m.group(2) + m.group(3).upper(), texto
@@ -85,27 +307,40 @@ class ProcesadorTexto:
         self.rewrite_mode = rewrite_mode
         self.ollama_model = ollama_model
         self.ollama_url = ollama_url.rstrip("/")
+        self._estado_literal = _EstadoLiteral()
+        self._fragmento_al_inicio = True
 
     # ---------------------------------------------------------------- público
 
     def procesar_frase(self, crudo: str) -> Procesado:
-        crudo = crudo.strip()
-        if not crudo:
-            return Procesado()
-
-        if self.remove_fillers and _SOLO_MULETILLA.match(crudo):
-            return Procesado()
-
         if self.voice_commands:
             cmd = self._buscar_comando(crudo)
             if cmd is not None:
                 return cmd
 
-        texto = crudo
+        # Una unidad con estructura de líneas o tabs no es prosa plana ni una
+        # orden desnuda. Se conserva carácter por carácter para
+        # que la frontera de Return de la salida pueda aplicar su política.
+        if any(marca in crudo for marca in ("\n", "\r", "\t")):
+            return Procesado(texto=crudo)
+
+        crudo = crudo.strip()
+        if not crudo:
+            return Procesado()
+
         if self.remove_fillers:
-            texto = MULETILLAS.sub("", texto)
+            solo_muletilla = _SOLO_MULETILLA.match(crudo)
+            if solo_muletilla and not solo_muletilla.group(1).isupper():
+                return Procesado()
+
+        texto, estructura = _proteger_estructura(crudo)
+        muletillas_eliminadas = 0
+        if self.remove_fillers:
+            texto, muletillas_eliminadas = _quitar_muletillas(texto)
         texto = _normalizar_espaciado(texto)
-        texto = _capitalizar_oraciones(texto)
+        texto = _capitalizar_oraciones(
+            texto, inicio=bool(muletillas_eliminadas))
+        texto = _restaurar_estructura(texto, estructura)
 
         if self.rewrite_mode != "none" and texto:
             texto = self._reescribir(texto)
@@ -113,48 +348,70 @@ class ProcesadorTexto:
         return Procesado(texto=texto)
 
     def procesar_fragmento(self, crudo: str) -> str:
-        """Limpieza liviana para palabras incrementales (ya confirmadas). Sin
-        reescritura a nivel oración porque la oración puede estar incompleta."""
-        if self.remove_fillers:
-            crudo = MULETILLAS.sub("", crudo)
-        return re.sub(r" {2,}", " ", crudo)
+        """Devuelve texto confirmado sin tratar el borde como frontera léxica.
+
+        LocalAgreement es append-only: un fragmento no ofrece lookahead para
+        decidir fillers, citas, escapes ni tokens incompletos. Toda decisión
+        destructiva queda reservada a frases completas.
+        """
+        return crudo
+
+    def iniciar_unidad(self):
+        self._reiniciar_contexto_incremental()
+
+    def finalizar_unidad(self):
+        self._reiniciar_contexto_incremental()
+
+    def cancelar_unidad(self):
+        self._reiniciar_contexto_incremental()
+
+    def _reiniciar_contexto_incremental(self):
+        self._estado_literal = _EstadoLiteral()
+        self._fragmento_al_inicio = True
 
     # ---------------------------------------------------------------- interno
 
     def _buscar_comando(self, crudo: str) -> Optional[Procesado]:
-        norm = re.sub(r"[^\w\sáéíóúñü]", "", crudo).strip().lower()
+        # Gramática positiva: whitespace exterior, una frase exacta y, como
+        # máximo, un signo terminal inequívoco. Ningún otro delimitador se
+        # elimina para intentar fabricar una orden.
+        norm = crudo.strip()
+        if norm and norm[-1] in _PUNTUACION_TERMINAL_COMANDO:
+            norm = norm[:-1].rstrip()
         for pat, (cmd, carga) in _PATRONES_CMD:
-            if pat.match(norm):
-                if cmd == "enviar" and not self.comando_enviar:
-                    # Apagado por defecto: audio ambiente no puede presionar
-                    # Enter en la ventana enfocada. Ver SECURITY.md.
-                    return None
+            if pat.fullmatch(norm):
                 return Procesado(comando=cmd, carga=carga)
         return None
 
     def _reescribir(self, texto: str) -> str:
         if self.ollama_model:
-            salida = self._reescribir_ollama(texto)
-            if salida:
-                return salida
+            protegido, estructura = _proteger_estructura(texto)
+            salida = self._reescribir_ollama(protegido)
+            marcadores_visibles = [
+                marcador for marcador in estructura if marcador in protegido
+            ]
+            if salida and all(
+                    salida.count(marcador) == protegido.count(marcador)
+                    for marcador in marcadores_visibles):
+                return _restaurar_estructura(salida, estructura)
+            # Respuesta vacía o servicio inaccesible: fallback determinista.
+            # También se usa si el modelo pierde una región protegida.
         return self._reescribir_reglas(texto)
 
     def _reescribir_reglas(self, texto: str) -> str:
+        protegido, estructura = _proteger_estructura(texto)
         modo = self.rewrite_mode
         if modo == "concise":
-            # muletillas discursivas: español primero, inglés de respaldo
-            texto = re.sub(r"\b(b[aá]sicamente|literalmente|o sea|digamos|viste|"
-                           r"basically|actually|literally|you know|i mean|kind of|sort of)\b[,]?\s*",
-                           "", texto, flags=re.I)
-            texto = _normalizar_espaciado(texto)
-            return _capitalizar_oraciones(texto)
+            # Sin parser lingüístico no hay una forma local segura de probar
+            # que calificadores como "literalmente" o "kind of" sean ruido.
+            # La limpieza acústica inequívoca ya ocurrió antes de esta etapa.
+            return texto
         if modo in ("formal", "email"):
             # español
             subs_es = {
                 r"\bok\b|\bokey\b|\bokay\b": "de acuerdo",
                 r"\bporfa\b|\bporfis\b": "por favor",
                 r"\bfinde\b": "fin de semana",
-                r"\bdale\b": "de acuerdo",
                 r"\bpa'\b|\bpa\b(?=\s+\w)": "para",
             }
             # inglés (respaldo, inofensivo sobre texto en español)
@@ -167,11 +424,21 @@ class ProcesadorTexto:
                 r"\bisn't\b": "is not", r"\bI'm\b": "I am",
                 r"\bit's\b": "it is", r"\bthat's\b": "that is",
             }
+            cambios = 0
             for pat, rep in subs_es.items():
-                texto = re.sub(pat, rep, texto, flags=re.I)
+                protegido, n = re.subn(
+                    pat, rep, protegido, flags=re.IGNORECASE)
+                cambios += n
             for pat, rep in subs_en.items():
-                texto = re.sub(pat, rep, texto, flags=re.I if pat not in (r"\bI'm\b",) else 0)
-            return _capitalizar_oraciones(_normalizar_espaciado(texto))
+                protegido, n = re.subn(
+                    pat, rep, protegido,
+                    flags=re.IGNORECASE if pat not in (r"\bI'm\b",) else 0)
+                cambios += n
+            if not cambios:
+                return texto
+            protegido = _capitalizar_oraciones(
+                _normalizar_espaciado(protegido), inicio=True)
+            return _restaurar_estructura(protegido, estructura)
         return texto
 
     def _reescribir_ollama(self, texto: str) -> Optional[str]:
@@ -194,13 +461,18 @@ class ProcesadorTexto:
             "stream": False,
             "options": {"temperature": 0.2},
         }).encode()
-        req = urllib.request.Request(
-            f"{self.ollama_url}/api/generate", data=cuerpo,
-            headers={"Content-Type": "application/json"},
-        )
         try:
+            req = urllib.request.Request(
+                f"{self.ollama_url}/api/generate", data=cuerpo,
+                headers={"Content-Type": "application/json"},
+            )
             with urllib.request.urlopen(req, timeout=20) as resp:
                 data = json.loads(resp.read())
             return data.get("response", "").strip() or None
-        except Exception:
-            return None  # Ollama caído: cae silenciosamente a reglas
+        except Exception as exc:
+            print(
+                f"[procesador] Ollama no disponible ({type(exc).__name__}); "
+                "se usa fallback local",
+                file=sys.stderr,
+            )
+            return None

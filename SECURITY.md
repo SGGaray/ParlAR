@@ -10,29 +10,60 @@ Ejemplos concretos del riesgo:
 
 ## Mitigaciones implementadas
 
-### Comando de voz "enviar" (apagado por defecto)
+### Acciones que generan Enter/Return (apagadas por defecto)
 
-El comando de voz "enviar" hace que ParlAR presione Enter en la ventana con foco. Si estuviera siempre activo, cualquier audio ambiente que Whisper transcriba como "enviar" ejecutaría esa tecla, lo que en una terminal enfocada puede significar ejecutar un comando.
+Los comandos "enviar", "nueva línea" y "nuevo párrafo" generan una o más
+pulsaciones de Enter. En una terminal, chat o formulario cualquiera de ellas
+puede ejecutar o enviar contenido.
 
-Por eso `comando_enviar` está en `false` por defecto. Solo se activa explícitamente:
+Por compatibilidad, `comando_enviar` es el gate único de todas esas acciones y
+está en `false` por defecto. Solo se activa explícitamente:
 
 ```json
 { "comando_enviar": true }
 ```
 
-en `~/.config/parlar/config.json`. Si lo activás, tené presente que cualquier frase que Whisper interprete como "enviar" (dicha por vos, por una radio, por quien sea) va a presionar Enter en lo que tengas enfocado.
+en `~/.config/parlar/config.json`. Si lo activás, cualquier frase completa que
+Whisper interprete como uno de esos comandos puede presionar Enter en la
+ventana enfocada. Las frases completamente citadas se tratan como texto.
 
 ### Filtro de alucinaciones de Whisper
 
-Whisper puede "alucinar" texto sobre silencio o ruido de fondo, típicamente frases como avisos de suscripción o créditos de subtítulos (artefacto conocido de su entrenamiento). ParlAR descarta segmentos con baja confianza (`no_speech_prob` alto y `avg_logprob` muy negativo simultáneamente) y frases que coinciden con un patrón de alucinaciones conocidas. Esto reduce el riesgo pero no lo elimina: un modelo puede alucinar frases no cubiertas por el patrón.
+Whisper puede "alucinar" texto sobre silencio o ruido de fondo. ParlAR descarta
+un segmento únicamente cuando combina baja confianza acústica y textual con
+un patrón conocido. Esto reduce el riesgo pero no lo elimina.
 
-### Nada sale de la máquina
+### Procesamiento local y límite de red
 
-Audio, texto y configuración se procesan y guardan localmente. No hay telemetría, no hay llamadas de red salvo, opcionalmente, a un servidor Ollama que vos mismo corrés en `127.0.0.1` si activás el modo de reescritura por IA. `ollama_url` está fijado a loopback por defecto; si lo cambiás a una IP remota, estás asumiendo ese riesgo vos mismo.
+La captura y transcripción de audio son locales y ParlAR no envía telemetría.
+La reescritura por IA puede llamar a Ollama: `ollama_url` usa loopback por
+defecto, pero es configurable. Si elegís una URL remota, el texto que se
+reescribe sale de la máquina hacia ese servicio. ParlAR no promete privacidad
+ni tratamiento local para un endpoint configurado por el usuario.
+
+La instalación y el provisioning pueden descargar dependencias y modelos.
+GuionAR se comunica por IPC Unix local. El portapapeles y la aplicación destino
+son procesos externos: ParlAR no controla cómo persisten o sincronizan el texto
+que reciben.
+
+Los logs normales no incluyen audio ni texto dictado. Registran metadatos
+operativos como estados, tiempos, backend, conteos y rutas. Tampoco se copia el
+stderr de las herramientas de inyección porque podría repetir sus argumentos.
 
 ### Transcript de sesión (`--guardar-sesion`, apagado por defecto)
 
-Con este flag, cada texto confirmado que dictás se agrega, en texto plano y sin cifrar, a `~/.local/share/parlar/sesiones/AAAA-MM-DD_HHMM.txt` (un archivo por corrida del daemon, ruta real `$XDG_DATA_HOME/parlar/sesiones/` si esa variable está definida). Es un archivo de datos en reposo: cualquier proceso o usuario con acceso a esa carpeta puede leer todo lo que dictaste en esa sesión.
+Con este flag, cada texto confirmado que dictás se agrega a un archivo
+exclusivo por corrida bajo `~/.local/share/parlar/sesiones/` (ruta real
+`$XDG_DATA_HOME/parlar/sesiones/` si esa variable está definida). El nombre
+incluye fecha, microsegundos y un token aleatorio. Se crea con `O_EXCL` para
+que instancias simultáneas nunca compartan archivo. Si ParlAR crea el
+directorio usa `0700`; cada transcript usa `0600`, independientemente de la
+umask. Sigue siendo texto plano sin cifrar: procesos del mismo usuario y quien
+tenga acceso efectivo a su cuenta o disco pueden leerlo.
+
+El transcript es un historial append-only de emisiones confirmadas, no un
+documento final reconstruido. No registra automáticamente Return, undo, estado
+del editor ni estado del portapapeles.
 
 Por eso `guardar_sesion` está en `false` por defecto. Se activa explícitamente:
 
@@ -50,9 +81,20 @@ rm ~/.local/share/parlar/sesiones/*.txt
 
 o el archivo puntual que corresponda. Si activás este flag en una máquina compartida o con disco sin cifrar, tené presente que el transcript queda ahí hasta que lo borres vos.
 
+### Configuración local
+
+El JSON se valida antes de cargar el modelo o abrir micrófono. Tipos incorrectos,
+valores fuera de dominio, sample rates distintos de 16 kHz y frames VAD que no
+sean 10/20/30 ms hacen fallar el inicio de forma explícita. Las claves
+desconocidas se aíslan en `extras` y no pueden sobrescribir métodos. Al guardar,
+el reemplazo es atómico, el archivo queda `0600` y un directorio creado por
+ParlAR queda `0700`.
+
 ## Qué no está mitigado (limitaciones conocidas)
 
-- Otros comandos de voz ("nuevo párrafo", "borrar última oración", "detener dictado") siguen activos por defecto. El impacto de ejecutarlos por accidente es bajo (insertan una línea, borran la última oración inyectada, o detienen la grabación), a diferencia de "enviar".
+- "Borrar última oración" y "detener dictado" siguen activos por defecto. Undo
+  solo usa inserciones que el backend reportó como tipeadas, pero depende del
+  foco y del estado del editor externo y no es transaccional.
 - El filtro de alucinaciones es heurístico, no elimina el riesgo, lo reduce.
 - Si grabás en un ambiente con audio de terceros (oficina, videollamada), ParlAR va a transcribir e inyectar esa voz igual que la tuya. La responsabilidad de cuándo grabar es del usuario.
 
