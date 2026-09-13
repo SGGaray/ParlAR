@@ -17,6 +17,7 @@ whisper.cpp, solo cambia este archivo.
 """
 
 import re
+import sys
 import time
 import unicodedata
 from dataclasses import dataclass
@@ -68,6 +69,7 @@ class MotorWhisper:
 # borrar texto. Se combina con un patrón conocido y se decide por segmento.
 _UMBRAL_NO_SPEECH = 0.6
 _UMBRAL_LOGPROB = -1.0
+_UMBRAL_COMPRESION = 2.4
 
 # Frases que Whisper "alucina" típicamente sobre silencio o ruido de fondo
 # (artefacto conocido del entrenamiento en subtítulos de YouTube)
@@ -76,6 +78,76 @@ _ALUCINACIONES_CONOCIDAS = re.compile(
     r"subscribe to|like and subscribe|gracias por ver el v[ií]deo",
     re.IGNORECASE,
 )
+
+_PUNTUACION_EXTERIOR = " \t\r\n.,;:!?¿¡…\"“”«»'‘’()[]{}"
+
+
+def _metrica_numerica(segmento, nombre: str):
+    """Obtiene una métrica finita sin asumir una versión concreta del motor."""
+    try:
+        valor = float(getattr(segmento, nombre))
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return valor if np.isfinite(valor) else None
+
+
+def _clasificar_alucinacion(texto: str) -> Optional[str]:
+    """Distingue una plantilla completa de una mención dentro de contexto."""
+    normalizado = unicodedata.normalize("NFC", texto).strip().lower()
+    normalizado = normalizado.strip(_PUNTUACION_EXTERIOR)
+    if _ALUCINACIONES_CONOCIDAS.fullmatch(normalizado):
+        return "exact_or_near_exact"
+    if _ALUCINACIONES_CONOCIDAS.search(normalizado):
+        return "contextual"
+    return None
+
+
+def _metricas_segmento(segmento):
+    inicio = _metrica_numerica(segmento, "start")
+    fin = _metrica_numerica(segmento, "end")
+    duracion_ms = None
+    if inicio is not None and fin is not None and fin >= inicio:
+        duracion_ms = (fin - inicio) * 1000
+    return {
+        "duration_ms": duracion_ms,
+        "no_speech_prob": _metrica_numerica(segmento, "no_speech_prob"),
+        "avg_logprob": _metrica_numerica(segmento, "avg_logprob"),
+        "compression_ratio": _metrica_numerica(segmento, "compression_ratio"),
+    }
+
+
+def _registrar_segmento_sospechoso(clasificacion: str, metricas, descartar: bool):
+    campos = [
+        f"classification={clasificacion}",
+        f"decision={'drop' if descartar else 'keep'}",
+    ]
+    for nombre in ("duration_ms", "no_speech_prob", "avg_logprob",
+                   "compression_ratio"):
+        valor = metricas[nombre]
+        if valor is not None:
+            campos.append(f"{nombre}={valor:.3f}")
+    # Deliberadamente no se registran texto, tokens, audio ni excepciones.
+    print("[stt] segmento sospechoso: " + " ".join(campos), file=sys.stderr)
+
+
+def _descartar_segmento_conocido(segmento) -> bool:
+    texto = getattr(segmento, "text", "")
+    clasificacion = _clasificar_alucinacion(texto)
+    if clasificacion is None:
+        return False
+
+    metricas = _metricas_segmento(segmento)
+    evidencia_debil = (
+        (metricas["no_speech_prob"] is not None
+         and metricas["no_speech_prob"] > _UMBRAL_NO_SPEECH)
+        or (metricas["avg_logprob"] is not None
+            and metricas["avg_logprob"] < _UMBRAL_LOGPROB)
+        or (metricas["compression_ratio"] is not None
+            and metricas["compression_ratio"] > _UMBRAL_COMPRESION)
+    )
+    descartar = clasificacion == "exact_or_near_exact" and evidencia_debil
+    _registrar_segmento_sospechoso(clasificacion, metricas, descartar)
+    return descartar
 
 
 class TranscriptorFrase:
@@ -89,12 +161,7 @@ class TranscriptorFrase:
         partes = []
         for s in segments:
             texto_segmento = s.text.strip()
-            baja_confianza = (
-                s.no_speech_prob > _UMBRAL_NO_SPEECH
-                and s.avg_logprob < _UMBRAL_LOGPROB
-            )
-            sospechoso = bool(_ALUCINACIONES_CONOCIDAS.search(texto_segmento))
-            if baja_confianza and sospechoso:
+            if _descartar_segmento_conocido(s):
                 continue
             partes.append(texto_segmento)
         return " ".join(partes).strip()
@@ -190,6 +257,8 @@ class TranscriptorStreaming:
                 audio, word_timestamps=True, beam_size=1)
             palabras: List[_Palabra] = []
             for seg in segments:
+                if _descartar_segmento_conocido(seg):
+                    continue
                 for w in (seg.words or []):
                     palabras.append(_Palabra(
                         texto=w.word,

@@ -1,14 +1,33 @@
 """Regresiones de fidelidad post-Whisper y filtrado conservador."""
 
 import json
+import io
 import unittest
+from contextlib import redirect_stderr
 from types import SimpleNamespace
 from unittest import mock
 
 import numpy as np
 
-from parlar.motor_transcripcion import TranscriptorFrase
+from parlar.motor_transcripcion import TranscriptorFrase, TranscriptorStreaming
 from parlar.procesador_texto import ProcesadorTexto
+
+
+def segmento(texto, no_speech, logprob, *, duracion=1.0, compresion=1.0):
+    palabras = [
+        SimpleNamespace(
+            word=" " + token, start=indice * 0.2, end=(indice + 1) * 0.2)
+        for indice, token in enumerate(texto.split())
+    ]
+    return SimpleNamespace(
+        text=texto,
+        start=0.0,
+        end=duracion,
+        no_speech_prob=no_speech,
+        avg_logprob=logprob,
+        compression_ratio=compresion,
+        words=palabras,
+    )
 
 
 class MotorSegmentos:
@@ -17,12 +36,9 @@ class MotorSegmentos:
 
     def decodificar(self, audio):
         return [
-            SimpleNamespace(
-                text=texto,
-                no_speech_prob=no_speech,
-                avg_logprob=logprob,
-            )
-            for texto, no_speech, logprob in self.segmentos
+            (especificacion if hasattr(especificacion, "text")
+             else segmento(*especificacion))
+            for especificacion in self.segmentos
         ]
 
 
@@ -278,6 +294,35 @@ class PruebasFiltroAlucinaciones(unittest.TestCase):
         self.assertEqual(
             transcribir(("frase incierta", 0.95, -2.0)), "frase incierta")
 
+    def test_segmento_completo_con_una_sola_senal_debil_se_filtra(self):
+        casos = (
+            ("¡Suscríbete!", 0.75, -0.2, 1.0),
+            ("Subtítulos realizados por la comunidad de Amara.org",
+             0.1, -1.2, 1.0),
+            ("¡Suscríbete!", 0.1, -0.2, 2.5),
+        )
+        for texto, no_speech, logprob, compresion in casos:
+            with self.subTest(texto=texto, compresion=compresion):
+                self.assertEqual(
+                    transcribir(segmento(
+                        texto, no_speech, logprob, compresion=compresion)),
+                    "",
+                )
+
+    def test_contexto_legitimo_se_conserva_aun_con_metricas_debiles(self):
+        for texto in (
+            "La palabra del ejemplo es suscríbete",
+            "Amara.org es una plataforma de subtítulos",
+        ):
+            with self.subTest(texto=texto):
+                self.assertEqual(transcribir((texto, 0.95, -2.0)), texto)
+
+    def test_literal_completo_con_evidencia_fuerte_se_conserva(self):
+        self.assertEqual(
+            transcribir(("Suscríbete.", 0.02, -0.2)),
+            "Suscríbete.",
+        )
+
     def test_multiples_segmentos_deciden_individualmente(self):
         observado = transcribir(
             ("contenido válido", 0.01, -0.1),
@@ -286,6 +331,50 @@ class PruebasFiltroAlucinaciones(unittest.TestCase):
         )
         self.assertEqual(
             observado, "contenido válido visita www.youtube.com")
+
+    def test_secuencia_no_arrastra_estado_entre_segmentos(self):
+        observado = transcribir(
+            ("contenido real", 0.01, -0.1),
+            ("¡Suscríbete!", 0.75, -0.2),
+            ("gracias por ver el vídeo", 0.1, -1.2),
+            ("contenido posterior", 0.01, -0.1),
+        )
+        self.assertEqual(observado, "contenido real contenido posterior")
+
+    def test_diagnostico_no_expone_texto(self):
+        texto = "¡Suscríbete!"
+        diagnostico = io.StringIO()
+        with redirect_stderr(diagnostico):
+            self.assertEqual(transcribir((texto, 0.75, -0.2)), "")
+        log = diagnostico.getvalue()
+        self.assertIn("classification=exact_or_near_exact", log)
+        self.assertIn("decision=drop", log)
+        self.assertIn("duration_ms=1000.000", log)
+        self.assertIn("no_speech_prob=0.750", log)
+        self.assertIn("avg_logprob=-0.200", log)
+        self.assertIn("compression_ratio=1.000", log)
+        self.assertNotIn(texto, log)
+
+    def test_streaming_aplica_la_misma_politica_por_segmento(self):
+        class MotorStreaming:
+            def __init__(self, segmentos):
+                self.segmentos = segmentos
+
+            def decodificar(self, audio, word_timestamps=False, beam_size=None):
+                return self.segmentos
+
+        motor = MotorStreaming([
+            segmento("contenido real", 0.01, -0.1),
+            segmento("¡Suscríbete!", 0.75, -0.2),
+        ])
+        streaming = TranscriptorStreaming(
+            motor, sample_rate=16000, interval_s=0.1, trim_s=999)
+        audio = np.zeros(16000, dtype=np.float32)
+        streaming.aceptar_audio(audio)
+        self.assertEqual(streaming.procesar(), "")
+        streaming.aceptar_audio(audio)
+        self.assertEqual(streaming.procesar().strip(), "contenido real")
+        self.assertEqual(streaming.finalizar(), "")
 
 
 if __name__ == "__main__":

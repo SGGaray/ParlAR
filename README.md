@@ -175,9 +175,11 @@ antes de abrir recursos; un error posterior al construir, enviar o interpretar
 la petición conserva el fallback local. Como toda reescritura generativa, esa
 opción puede cambiar la formulación del dictado.
 
-En modo frase, los patrones conocidos de alucinación se descartan únicamente
-cuando el mismo segmento también tiene baja confianza acústica y textual. Un
-URL o una frase como "suscríbete" con buena confianza se conserva.
+En ambos modos, ParlAR aplica un filtro conservador a patrones conocidos de
+alucinación de Whisper únicamente cuando ocupan el segmento completo (o casi)
+y al menos una señal acústica/modelo también indica una unidad dudosa. Las
+menciones dentro de contexto y los literales con evidencia fuerte se conservan;
+el filtro reduce casos conocidos, pero no promete eliminar toda alucinación.
 
 ## Configuración
 
