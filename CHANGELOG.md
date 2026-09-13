@@ -9,6 +9,9 @@
 - La misma política se aplica a los modos frase y streaming.
 - El proceso principal trata `SIGTERM` como un cierre normal y ejecuta el
   cleanup ordenado de recursos, incluido el socket de control propio.
+- El paste Unicode de X11 ya no habilita undo destructivo a partir del éxito de
+  `xdotool`: la ruta no recibe confirmación del destino y ahora establece una
+  barrera que impide borrar contenido previo con Backspace.
 - La inyección de texto en X11 usa el portapapeles como transporte Unicode y
   una acción de pegado sintética, evitando las pérdidas intermitentes de
   caracteres acentuados observadas con `xdotool type`. En esta ruta el

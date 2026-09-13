@@ -93,8 +93,7 @@ class PruebasUndoStreaming(unittest.TestCase):
                     inyector.iniciar_unidad(1)
                     app._emitir(Procesado(texto="primero"), 1)
                     inyector.finalizar_unidad()
-                    self.assertEqual(
-                        inyector._registro_oraciones, ["primero"])
+                    self.assertEqual(inyector._registro_oraciones, [])
 
                     fase[0] = "incierta"
                     inyector.iniciar_unidad(1)
@@ -114,7 +113,7 @@ class PruebasUndoStreaming(unittest.TestCase):
                 self.assertEqual(editor[0], "primero abc")
 
     def test_utterance_clipboard_directo_conserva_historial(self):
-        inyector = Inyector(backend="xdotool", notify=False)
+        inyector = Inyector(backend="wtype", notify=False)
         with mock.patch.object(inyector, "_tipear", return_value=True):
             inyector.escribir_texto("primero")
         inyector.backend = "clipboard"
@@ -124,7 +123,7 @@ class PruebasUndoStreaming(unittest.TestCase):
         self.assertEqual(inyector._registro_oraciones, ["primero"])
 
     def test_utterance_streaming_local_agreement_y_dos_undos(self):
-        inyector = Inyector(backend="xdotool", notify=False)
+        inyector = Inyector(backend="wtype", notify=False)
         app = app_minima(inyector)
         streaming = TranscriptorStreaming(
             MotorGuionado([
@@ -162,7 +161,7 @@ class PruebasUndoStreaming(unittest.TestCase):
         self.assertEqual(inyector._registro_oraciones, [])
 
     def test_multifragmento_es_una_entrada_y_un_intento(self):
-        inyector = Inyector(backend="xdotool", notify=False)
+        inyector = Inyector(backend="wtype", notify=False)
         estados = emitir_unidad(inyector, ["hola", " mundo", "."])
         self.assertEqual(estados, [EstadoEntrega.INSERTED] * 3)
         self.assertEqual(inyector._registro_oraciones, ["hola mundo."])
@@ -171,7 +170,7 @@ class PruebasUndoStreaming(unittest.TestCase):
         borrar.assert_called_once_with(len("hola mundo."))
 
     def test_vacia_y_copy_only_preservan_historial_anterior(self):
-        inyector = Inyector(backend="xdotool", notify=False)
+        inyector = Inyector(backend="wtype", notify=False)
         with mock.patch.object(inyector, "_tipear", return_value=True):
             inyector.escribir_texto("primero")
 
@@ -189,7 +188,7 @@ class PruebasUndoStreaming(unittest.TestCase):
         for copia_ok, esperado in ((True, EstadoEntrega.COPIED),
                                    (False, EstadoEntrega.FAILED)):
             with self.subTest(copia_ok=copia_ok):
-                inyector = Inyector(backend="xdotool", notify=False)
+                inyector = Inyector(backend="wtype", notify=False)
                 with mock.patch.object(inyector, "_tipear", return_value=True):
                     inyector.escribir_texto("primero")
                 inyector.iniciar_unidad(1)
@@ -214,7 +213,7 @@ class PruebasUndoStreaming(unittest.TestCase):
                 self.assertFalse(inyector.borrar_ultima_oracion())
 
     def test_fallo_inicial_fisicamente_incierto_invalida(self):
-        inyector = Inyector(backend="xdotool", notify=False)
+        inyector = Inyector(backend="wtype", notify=False)
         with mock.patch.object(inyector, "_tipear", return_value=True):
             inyector.escribir_texto("primero")
         inyector.iniciar_unidad(1)
@@ -230,7 +229,7 @@ class PruebasUndoStreaming(unittest.TestCase):
         self.assertEqual(inyector._registro_oraciones, [])
 
     def test_gap_finalizado_registra_y_cancel_posterior_no_duplica(self):
-        inyector = Inyector(backend="xdotool", notify=False)
+        inyector = Inyector(backend="wtype", notify=False)
         emitir_unidad(inyector, ["antes", " del gap"])
         inyector.cancelar_unidad()
         self.assertEqual(inyector._registro_oraciones, ["antes del gap"])
@@ -238,7 +237,7 @@ class PruebasUndoStreaming(unittest.TestCase):
     def test_cancel_y_shutdown_no_inventan_unidad(self):
         for cerrar in (False, True):
             with self.subTest(shutdown=cerrar):
-                inyector = Inyector(backend="xdotool", notify=False)
+                inyector = Inyector(backend="wtype", notify=False)
                 with mock.patch.object(inyector, "_tipear", return_value=True):
                     inyector.escribir_texto("anterior")
                 emitir_unidad(
@@ -252,7 +251,7 @@ class PruebasUndoStreaming(unittest.TestCase):
                 self.assertEqual(inyector._registro_oraciones, [])
 
     def test_restart_descarta_bookkeeping_y_final_tardio_no_registra(self):
-        inyector = Inyector(backend="xdotool", notify=False)
+        inyector = Inyector(backend="wtype", notify=False)
         emitir_unidad(
             inyector, ["generación vieja"], resultados=[True],
             finalizar=False,
@@ -262,7 +261,7 @@ class PruebasUndoStreaming(unittest.TestCase):
         self.assertEqual(inyector._registro_oraciones, [])
 
     def test_stop_finaliza_una_vez_y_undo_fallido_conserva_tope(self):
-        inyector = Inyector(backend="xdotool", notify=False)
+        inyector = Inyector(backend="wtype", notify=False)
         emitir_unidad(inyector, ["stop", " válido"])
         inyector.finalizar_unidad()
         self.assertEqual(inyector._registro_oraciones, ["stop válido"])
@@ -274,7 +273,7 @@ class PruebasUndoStreaming(unittest.TestCase):
         self.assertEqual(borrar.call_count, 2)
 
     def test_limite_20_guarda_unidades_completas_unicode(self):
-        inyector = Inyector(backend="xdotool", notify=False)
+        inyector = Inyector(backend="wtype", notify=False)
         unidades = ["á🙂", "mañana", "acción"] + [f"unidad-{i}" for i in range(22)]
         for unidad in unidades:
             emitir_unidad(inyector, [unidad[:1], unidad[1:]])

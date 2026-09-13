@@ -147,13 +147,15 @@ class PruebasClipboardUndo(unittest.TestCase):
         self.assertEqual(self.inyector._registro_oraciones, [])
         self.assertFalse(self.inyector.borrar_ultima_oracion())
 
-        tipeo = Inyector(backend="xdotool", notify=False)
-        with mock.patch.object(tipeo, "_tipear", return_value=True):
-            resultado = tipeo.escribir_texto("á🙂")
-        self.assertEqual(resultado.estado, EstadoEntrega.INSERTED)
-        self.assertEqual(tipeo._registro_oraciones, ["á🙂"])
-        with mock.patch.object(tipeo, "retroceso", return_value=False):
-            self.assertFalse(tipeo.borrar_ultima_oracion())
+        for backend in ("wtype", "ydotool"):
+            with self.subTest(backend=backend):
+                tipeo = Inyector(backend=backend, notify=False)
+                with mock.patch.object(tipeo, "_tipear", return_value=True):
+                    resultado = tipeo.escribir_texto("á🙂")
+                self.assertEqual(resultado.estado, EstadoEntrega.INSERTED)
+                self.assertEqual(tipeo._registro_oraciones, ["á🙂"])
+                with mock.patch.object(tipeo, "retroceso", return_value=False):
+                    self.assertFalse(tipeo.borrar_ultima_oracion())
 
         fallback = Inyector(backend="xdotool", notify=False)
         with (mock.patch.object(fallback, "_tipear", return_value=False),
@@ -210,7 +212,7 @@ class PruebasXdotoolUnicode(unittest.TestCase):
                         esperado,
                     )
 
-    def test_xclip_mas_paste_inserta_y_conserva_undo(self):
+    def test_xclip_mas_paste_reporta_inserted_sin_habilitar_undo(self):
         texto = "¿Cómo están? El pingüino habló con el diseñador."
         inyector = Inyector(backend="xdotool", notify=False)
         with (
@@ -224,7 +226,7 @@ class PruebasXdotoolUnicode(unittest.TestCase):
         ):
             resultado = inyector.escribir_texto(texto)
         self.assertEqual(resultado.estado, EstadoEntrega.INSERTED)
-        self.assertEqual(inyector._registro_oraciones, [texto])
+        self.assertEqual(inyector._registro_oraciones, [])
         self.assertEqual(ejecutar.call_count, 2)
         self.assertEqual(
             ejecutar.call_args_list[0],
@@ -243,8 +245,36 @@ class PruebasXdotoolUnicode(unittest.TestCase):
         self.assertEqual(
             dormir.call_args_list, [mock.call(0.05), mock.call(0.05)])
         with mock.patch.object(inyector, "retroceso", return_value=True) as borrar:
-            self.assertTrue(inyector.borrar_ultima_oracion())
-        borrar.assert_called_once_with(len(texto))
+            self.assertFalse(inyector.borrar_ultima_oracion())
+        borrar.assert_not_called()
+
+    def test_x11_paste_sin_efecto_no_borra_contenido_preexistente(self):
+        texto = "DICTATED"
+        editor = ["PREEXISTING"]
+        inyector = Inyector(backend="xdotool", notify=False)
+        inyector._registro_oraciones[:] = ["entrega elegible anterior"]
+        with (
+            mock.patch(
+                "parlar.inyector_salida._cual", side_effect=self._disponible),
+            mock.patch(
+                "parlar.inyector_salida.subprocess.run",
+                side_effect=self._resultado_ok,
+            ),
+            mock.patch("parlar.inyector_salida.time.sleep"),
+        ):
+            resultado = inyector.escribir_texto(texto)
+        self.assertEqual(resultado.estado, EstadoEntrega.INSERTED)
+        self.assertEqual(inyector._registro_oraciones, [])
+
+        def borrar(cantidad):
+            editor[0] = editor[0][:-cantidad]
+            return True
+
+        with mock.patch.object(
+                inyector, "retroceso", side_effect=borrar) as retroceso:
+            self.assertFalse(inyector.borrar_ultima_oracion())
+        retroceso.assert_not_called()
+        self.assertEqual(editor[0], "PREEXISTING")
 
     def test_corpus_unicode_llega_sin_mutacion(self):
         inyector = Inyector(backend="xdotool", notify=False)
@@ -304,7 +334,7 @@ class PruebasXdotoolUnicode(unittest.TestCase):
             ["xdotool", "key", "--clearmodifiers", "ctrl+v"]
             for llamada in ejecutar.call_args_list[1::2]))
 
-    def test_fragmentos_streaming_conservan_orden_y_contenido(self):
+    def test_fragmentos_streaming_no_promueven_paste_x11_a_undo(self):
         fragmentos = ("¿Cómo", " están?", " Será", " rápido.",
                       " Últimamente", " está", " funcionando.")
         inyector = Inyector(backend="xdotool", notify=False)
@@ -324,6 +354,8 @@ class PruebasXdotoolUnicode(unittest.TestCase):
                         fragmento, registrar=False).estado,
                     EstadoEntrega.INSERTED,
                 )
+            self.assertEqual(
+                inyector._prefijo_insertado, inyector._texto_unidad)
             inyector.finalizar_unidad()
         self.assertEqual(
             [llamada.kwargs["input"].decode()
@@ -331,7 +363,10 @@ class PruebasXdotoolUnicode(unittest.TestCase):
             list(fragmentos),
         )
         self.assertEqual(len(ejecutar.call_args_list[1::2]), len(fragmentos))
-        self.assertEqual(inyector._registro_oraciones, ["".join(fragmentos)])
+        self.assertEqual(inyector._registro_oraciones, [])
+        with mock.patch.object(inyector, "retroceso") as retroceso:
+            self.assertFalse(inyector.borrar_ultima_oracion())
+        retroceso.assert_not_called()
 
     def test_clipboard_explicito_solo_copia(self):
         texto = "á é í ó ú ñ ü ¿ ¡"

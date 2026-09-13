@@ -5,7 +5,7 @@ Backends, auto-seleccionados según tipo de sesión y disponibilidad:
   Wayland: wtype (protocolo virtual-keyboard), luego ydotool (daemon uinput)
   Respaldo: portapapeles (wl-copy / xclip) + notificación de escritorio
 
-Registra las últimas unidades insertadas para poder honrar
+Registra las últimas unidades elegibles para poder honrar
 "borra la última oración" con retrocesos sintéticos.
 """
 
@@ -65,6 +65,7 @@ class Inyector:
         self._recuperacion_disponible = False
         self._clipboard_forzado_por_salto = False
         self._undo_unidad_diferido = False
+        self._undo_unidad_elegible = True
         self._efecto_fisico_incierto = False
         self._x11_copia_preparada = False
         self._x11_copia_fallida = False
@@ -116,9 +117,16 @@ class Inyector:
         self._hubo_intento_fisico = False
         ok = self._tipear(texto)
         if ok:
+            undo_elegible = self._entrega_elegible_para_undo()
             if self._clipboard_unidad_activa:
                 self._prefijo_insertado += texto
-            if registrar and not self._efecto_fisico_incierto:
+                self._undo_unidad_elegible = (
+                    self._undo_unidad_elegible and undo_elegible)
+            if not undo_elegible:
+                # Ctrl+V enviado no prueba que el destino haya pegado. Esta
+                # entrega X11 es una barrera que ningún undo puede atravesar.
+                self._registro_oraciones.clear()
+            elif registrar and not self._efecto_fisico_incierto:
                 self._registrar(texto)
             return ResultadoSink(EstadoEntrega.INSERTED)
         if self._x11_copia_fallida and not self._hubo_intento_fisico:
@@ -184,6 +192,7 @@ class Inyector:
             completamente_insertada = (
                 bool(self._texto_unidad)
                 and not self._unidad_degradada
+                and self._undo_unidad_elegible
                 and not self._efecto_fisico_incierto
                 and self._prefijo_insertado == self._texto_unidad
             )
@@ -210,6 +219,7 @@ class Inyector:
         self._recuperacion_disponible = False
         self._clipboard_forzado_por_salto = False
         self._undo_unidad_diferido = False
+        self._undo_unidad_elegible = True
         self._efecto_fisico_incierto = False
         self._clipboard_unidad_activa = False
         self._clipboard_generacion = None
@@ -231,6 +241,10 @@ class Inyector:
             print(f"[inyector] {self.backend} falló: {type(e).__name__}",
                   file=sys.stderr)
         return False
+
+    def _entrega_elegible_para_undo(self) -> bool:
+        """Indica si el backend aporta una frontera destructiva utilizable."""
+        return self.backend in ("wtype", "ydotool")
 
     @staticmethod
     def _contiene_salto(texto: str) -> bool:

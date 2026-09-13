@@ -46,6 +46,14 @@ GuionAR se comunica por IPC Unix local. El portapapeles y la aplicación destino
 son procesos externos: ParlAR no controla cómo persisten o sincronizan el texto
 que reciben.
 
+En X11, un exit code exitoso de `xclip` y del Ctrl+V sintético de `xdotool` no
+confirma que la aplicación enfocada haya insertado el texto. Esa ruta se trata
+como una frontera no verificable para undo destructivo: no se registra la
+entrega y se descarta cualquier historial anterior, de modo que el comando de
+borrado no pueda enviar Backspace contra contenido ajeno. `wtype` y `ydotool`
+conservan la elegibilidad existente; `clipboard` es copy-only y nunca habilita
+undo.
+
 Los logs normales no incluyen audio ni texto dictado. Registran metadatos
 operativos como estados, tiempos, backend, conteos y rutas. Tampoco se copia el
 stderr de las herramientas de inyección porque podría repetir sus argumentos.

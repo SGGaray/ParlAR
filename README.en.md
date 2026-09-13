@@ -160,7 +160,14 @@ socket permissions are owned by GuionAR, not ParlAR.
 Insertion, clipboard copy, GuionAR mirroring, and transcript persistence are
 independent results. Streaming clipboard fallback accumulates a recoverable
 utterance, but does not insert it or add it to undo history. Undo remains
-dependent on the focused external editor. By default `comando_enviar=false`
+dependent on the focused external editor. On X11, `xclip` plus synthetic
+Ctrl+V has no acknowledgement from that editor: even when `xdotool` succeeds
+and the delivery API reports `inserted`, the attempt is not added to destructive
+undo history and clears any older history boundary. Therefore “delete last
+sentence” emits no Backspace after an unverifiable X11 paste. Existing undo
+eligibility remains unchanged for `wtype` and `ydotool`; the explicit
+`clipboard` backend remains copy-only and never enters undo history. By default
+`comando_enviar=false`
 blocks every physical Enter/Return action, whether it comes from a command,
 multiline text, streaming, or rewrite output. Multiline content is then copied
 intact and reported as copied rather than inserted, without entering undo

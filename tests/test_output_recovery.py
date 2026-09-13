@@ -163,7 +163,7 @@ class PruebasRecoveryUnidad(unittest.TestCase):
 
 class PruebasUndoConservador(unittest.TestCase):
     def test_fallos_preservan_tope_y_exito_avanza(self):
-        inyector = Inyector(backend="xdotool", notify=False)
+        inyector = Inyector(backend="wtype", notify=False)
         inyector._registro_oraciones[:] = ["A", "B"]
         intentos = []
         resultados = iter([False, False, True, True])
@@ -184,7 +184,7 @@ class PruebasUndoConservador(unittest.TestCase):
         self.assertEqual(intentos, [1, 1, 1, 1])
 
     def test_unicode_usa_longitud_python_y_copied_no_entra(self):
-        inyector = Inyector(backend="xdotool", notify=False)
+        inyector = Inyector(backend="wtype", notify=False)
         with mock.patch.object(inyector, "_tipear", return_value=True):
             inyector.escribir_texto("á🙂")
         with mock.patch.object(inyector, "retroceso", return_value=True) as borrar:

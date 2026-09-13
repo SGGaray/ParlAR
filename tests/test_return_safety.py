@@ -109,7 +109,10 @@ class PruebasReturnFisico(unittest.TestCase):
                                      for argumento in argv))
                 self.assertEqual(
                     copias, ["hola", "mundo"] if backend == "xdotool" else [])
-                self.assertEqual(inyector._registro_oraciones, ["hola\nmundo"])
+                esperado_undo = (
+                    [] if backend == "xdotool" else ["hola\nmundo"])
+                self.assertEqual(
+                    inyector._registro_oraciones, esperado_undo)
 
     def test_clipboard_preserva_multilinea_con_ambos_valores_del_flag(self):
         for permitir in (False, True):

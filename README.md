@@ -122,13 +122,18 @@ se tipea para no crear huecos ni hacer retries ciegos. Ese sufijo no representa
 la unidad completa y pegarlo junto al prefijo es una recuperación manual.
 Copiar no equivale a insertar y no entra al historial de undo. La notificación
 de escritorio posterior a una copia es best-effort: si falla, la entrega sigue
-informada como copiada. Undo sigue unidades propias confirmadas como insertadas:
-una unidad streaming completa ocupa una sola entrada, no una por fragmento. Una
-entrega mixta o de efecto físico incierto invalida conservadoramente el historial
-anterior; una unidad exclusivamente copiada no lo modifica. Un fallo del backend
-de borrado conserva el elemento al tope para reintentarlo, y solo un éxito avanza
-el historial. El editor externo no ofrece una transacción: un fallo puede haber
-escrito o borrado parcialmente.
+informada como copiada. Undo sigue únicamente unidades elegibles: una unidad
+streaming completa ocupa una sola entrada, no una por fragmento. En X11,
+`xclip` + Ctrl+V no recibe confirmación de la aplicación enfocada; aunque
+`xdotool` termine con éxito y la API informe `inserted`, esa entrega no entra al
+historial e invalida el historial anterior. Por eso "borra la última oración"
+no emite Backspace después de un paste X11 no verificable. `wtype` y `ydotool`
+conservan su elegibilidad existente; el backend `clipboard` sigue siendo
+copy-only y nunca entra al historial. Una entrega mixta o de efecto físico
+incierto también invalida conservadoramente el historial anterior. Un fallo del
+backend de borrado conserva el elemento al tope para reintentarlo, y solo un
+éxito avanza el historial. El editor externo no ofrece una transacción: un fallo
+puede haber escrito o borrado parcialmente.
 
 El control reserva la instancia con un lock `0600` antes de `bind` y usa un
 socket Unix `0600` para transportar una operación UTF-8 por conexión, terminada
