@@ -160,6 +160,14 @@ assert type(vad).__name__ == "_VADEnergia"
 
 
 class ContratoServicio(unittest.TestCase):
+    @staticmethod
+    def directivas(contenido):
+        return {
+            linea.split("=", 1)[0]: linea.split("=", 1)[1]
+            for linea in contenido.splitlines()
+            if "=" in linea
+        }
+
     def test_template_sin_checkout_fijo_y_con_umask(self):
         plantilla = (ROOT / "scripts" / "parlar.service.in").read_text()
         self.assertNotIn("%h/parlar", plantilla)
@@ -222,6 +230,17 @@ class ContratoServicio(unittest.TestCase):
                                    if linea.startswith("WorkingDirectory="))
                     exec_start = next(linea for linea in unit.splitlines()
                                       if linea.startswith("ExecStart="))
+                    self.assertEqual(
+                        working,
+                        "WorkingDirectory="
+                        + render_service._ruta_working_directory(repo.resolve()),
+                    )
+                    self.assertEqual(
+                        exec_start,
+                        "ExecStart="
+                        + render_service._argumento_execstart(python)
+                        + " -m parlar",
+                    )
                     self.assertFalse(
                         working.removeprefix("WorkingDirectory=").startswith('"'))
                     self.assertTrue(
@@ -230,6 +249,88 @@ class ContratoServicio(unittest.TestCase):
                         "systemd-analyze", "verify", str(salida))
                     self.assertEqual(
                         verificacion.returncode, 0, verificacion.stderr)
+
+    @unittest.skipUnless(shutil.which("systemd-analyze"),
+                         "systemd-analyze no está disponible")
+    def test_placeholders_en_paths_se_insertan_una_sola_vez(self):
+        variantes = (
+            ("python", Path("@PARLAR_PYTHON@")),
+            ("workdir", Path("@PARLAR_WORKDIR@")),
+            ("root-literal", Path("@PARLAR_ROOT@")),
+            ("juntos", Path("@PARLAR_PYTHON@@PARLAR_WORKDIR@")),
+            ("embebido", Path("foo@PARLAR_PYTHON@bar")),
+            ("intermedio", Path("nivel") / "@PARLAR_PYTHON@" / "repo"),
+            ("escaping", Path("proyecto % $ @PARLAR_PYTHON@ ñ")),
+        )
+        plantilla = (ROOT / "scripts" / "parlar.service.in").read_text(
+            encoding="utf-8"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            for indice, (nombre, relativa) in enumerate(variantes):
+                with self.subTest(nombre=nombre):
+                    repo = base / relativa
+                    python = repo / ".venv" / "bin" / "python"
+                    python.parent.mkdir(parents=True)
+                    python.symlink_to(sys.executable)
+                    unit = render_service.renderizar(repo)
+                    directivas = self.directivas(unit)
+                    self.assertEqual(
+                        directivas["WorkingDirectory"],
+                        render_service._ruta_working_directory(repo.resolve()),
+                    )
+                    self.assertEqual(
+                        directivas["ExecStart"],
+                        render_service._argumento_execstart(python)
+                        + " -m parlar",
+                    )
+                    salida = base / f"parlar-placeholder-{indice}.service"
+                    salida.write_text(unit, encoding="utf-8")
+                    verificacion = ejecutar(
+                        "systemd-analyze", "verify", str(salida))
+                    self.assertEqual(
+                        verificacion.returncode, 0, verificacion.stderr)
+
+            repo = base / "checkout"
+            repo.mkdir()
+            python = base / "bin-@PARLAR_ROOT@@PARLAR_WORKDIR@" / "python"
+            python.parent.mkdir()
+            python.symlink_to(sys.executable)
+            unit = render_service._renderizar_plantilla(
+                plantilla, repo.resolve(), python)
+            directivas = self.directivas(unit)
+            self.assertEqual(
+                directivas["WorkingDirectory"],
+                render_service._ruta_working_directory(repo.resolve()),
+            )
+            self.assertEqual(
+                directivas["ExecStart"],
+                render_service._argumento_execstart(python) + " -m parlar",
+            )
+            salida = base / "parlar-python-placeholder.service"
+            salida.write_text(unit, encoding="utf-8")
+            verificacion = ejecutar(
+                "systemd-analyze", "verify", str(salida))
+            self.assertEqual(verificacion.returncode, 0, verificacion.stderr)
+
+    def test_template_faltante_o_desconocido_falla_claro(self):
+        plantilla = (ROOT / "scripts" / "parlar.service.in").read_text(
+            encoding="utf-8"
+        )
+        repo = Path("/tmp/parlar-repo")
+        python = repo / ".venv" / "bin" / "python"
+        for faltante in ("@PARLAR_WORKDIR@", "@PARLAR_PYTHON@"):
+            with self.subTest(faltante=faltante):
+                with self.assertRaisesRegex(
+                        ValueError, "falta placeholder requerido"):
+                    render_service._renderizar_plantilla(
+                        plantilla.replace(faltante, ""), repo, python)
+
+        with self.assertRaisesRegex(ValueError, "placeholder desconocido"):
+            render_service._renderizar_plantilla(
+                plantilla + "\nEnvironment=@PARLAR_DESCONOCIDO@\n",
+                repo, python,
+            )
 
     def test_render_rechaza_paths_fuera_del_dominio_sin_publicar(self):
         variantes = (
