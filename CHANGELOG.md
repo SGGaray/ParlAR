@@ -7,6 +7,8 @@
   como "¡Suscríbete!" o créditos de Amara se descartan cuando las métricas
   acústicas/modelo indican una unidad dudosa, sin bloquear menciones legítimas.
 - La misma política se aplica a los modos frase y streaming.
+- El proceso principal trata `SIGTERM` como un cierre normal y ejecuta el
+  cleanup ordenado de recursos, incluido el socket de control propio.
 - La inyección de texto en X11 usa el portapapeles como transporte Unicode y
   una acción de pegado sintética, evitando las pérdidas intermitentes de
   caracteres acentuados observadas con `xdotool type`. En esta ruta el

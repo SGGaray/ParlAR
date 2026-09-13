@@ -5,12 +5,28 @@ como alias, por si preferís esa nomenclatura.
 """
 
 import argparse
+import signal
 import sys
 
 from .config import Config, ErrorConfiguracion
 
 _ALIAS_MODO = {"frase": "utterance"}
 _ALIAS_REESCRITURA = {"ninguna": "none", "conciso": "concise", "correo": "email"}
+
+
+def _interrumpir_por_sigterm(_numero, _frame):
+    """Convierte SIGTERM en la interrupción ordenada que App ya maneja."""
+    raise KeyboardInterrupt
+
+
+def _ejecutar_con_sigterm(app):
+    """Instala SIGTERM solo durante la ejecución del entry point."""
+    handler_anterior = signal.signal(
+        signal.SIGTERM, _interrumpir_por_sigterm)
+    try:
+        return app.ejecutar()
+    finally:
+        signal.signal(signal.SIGTERM, handler_anterior)
 
 
 def _crear_parser(cfg: Config) -> argparse.ArgumentParser:
@@ -92,7 +108,7 @@ def main():
         print("[config] guardada")
 
     from .app import App  # imports pesados diferidos hasta después del parseo
-    App(cfg).ejecutar()
+    _ejecutar_con_sigterm(App(cfg))
 
 
 if __name__ == "__main__":
