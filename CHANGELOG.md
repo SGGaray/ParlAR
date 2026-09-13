@@ -1,10 +1,19 @@
 # Changelog: ParlAR
 
+## [Unreleased]
+
 ### Corregido
 - Filtro conservador de alucinaciones conocidas de Whisper: patrones completos
   como "¡Suscríbete!" o créditos de Amara se descartan cuando las métricas
   acústicas/modelo indican una unidad dudosa, sin bloquear menciones legítimas.
 - La misma política se aplica a los modos frase y streaming.
+- La inyección de texto en X11 usa el portapapeles como transporte Unicode y
+  una acción de pegado sintética, evitando las pérdidas intermitentes de
+  caracteres acentuados observadas con `xdotool type`. En esta ruta el
+  portapapeles es transitorio: no se garantiza preservar su contenido previo ni
+  que el texto transportado permanezca disponible después del pegado, y no se
+  intenta una restauración MIME parcial. El backend explícito `clipboard`
+  conserva su contrato copy-only para pegado manual.
 
 ## [0.3.0] - 2026-07
 ### Quitado (breaking change)

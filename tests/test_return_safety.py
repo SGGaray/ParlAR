@@ -40,10 +40,18 @@ class PruebasReturnFisico(unittest.TestCase):
         copiar = mock.patch.object(
             inyector, "_portapapeles",
             side_effect=lambda texto: copias.append(texto) or True)
+        copiar_x11 = mock.patch.object(
+            inyector, "_copiar_x11",
+            side_effect=lambda texto: copias.append(texto) or True)
+        dormir = mock.patch("parlar.inyector_salida.time.sleep")
         correr.start()
         copiar.start()
+        copiar_x11.start()
+        dormir.start()
         self.addCleanup(correr.stop)
         self.addCleanup(copiar.stop)
+        self.addCleanup(copiar_x11.stop)
+        self.addCleanup(dormir.stop)
         return inyector, llamadas, copias
 
     @staticmethod
@@ -76,9 +84,9 @@ class PruebasReturnFisico(unittest.TestCase):
     def test_multilinea_autorizada_usa_una_return_en_todos_los_backends(self):
         esperadas = {
             "xdotool": [
-                ["xdotool", "type", "--clearmodifiers", "--delay", "1", "--", "hola"],
+                ["xdotool", "key", "--clearmodifiers", "ctrl+v"],
                 ["xdotool", "key", "--clearmodifiers", "Return"],
-                ["xdotool", "type", "--clearmodifiers", "--delay", "1", "--", "mundo"],
+                ["xdotool", "key", "--clearmodifiers", "ctrl+v"],
             ],
             "wtype": [
                 ["wtype", "--", "hola"], ["wtype", "-k", "Return"],
@@ -99,7 +107,8 @@ class PruebasReturnFisico(unittest.TestCase):
                 self.assertEqual(len(self.llamadas_return(llamadas)), 1)
                 self.assertFalse(any("\n" in argumento for argv in llamadas
                                      for argumento in argv))
-                self.assertEqual(copias, [])
+                self.assertEqual(
+                    copias, ["hola", "mundo"] if backend == "xdotool" else [])
                 self.assertEqual(inyector._registro_oraciones, ["hola\nmundo"])
 
     def test_clipboard_preserva_multilinea_con_ambos_valores_del_flag(self):

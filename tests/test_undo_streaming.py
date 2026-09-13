@@ -56,10 +56,17 @@ class PruebasUndoStreaming(unittest.TestCase):
                 fase = ["primero"]
                 retrocesos = []
                 copias = []
+                transporte_x11 = [""]
+
+                def copiar_x11(texto):
+                    # Modela solo el intervalo entre xclip y Ctrl+V; la ruta
+                    # física no garantiza disponibilidad después del pegado.
+                    transporte_x11[0] = texto
+                    return True
 
                 def correr(argv):
-                    if argv[1] == "type":
-                        texto = argv[-1]
+                    if argv[-1] == "ctrl+v":
+                        texto = transporte_x11[0]
                         if fase[0] == "primero":
                             editor[0] += texto
                             return True
@@ -75,9 +82,13 @@ class PruebasUndoStreaming(unittest.TestCase):
                 with (
                     mock.patch.object(inyector, "_correr", side_effect=correr),
                     mock.patch.object(
+                        inyector, "_copiar_x11", side_effect=copiar_x11,
+                    ),
+                    mock.patch.object(
                         inyector, "_portapapeles",
                         side_effect=lambda texto: copias.append(texto) or True,
                     ),
+                    mock.patch("parlar.inyector_salida.time.sleep"),
                 ):
                     inyector.iniciar_unidad(1)
                     app._emitir(Procesado(texto="primero"), 1)

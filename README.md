@@ -228,7 +228,13 @@ portapapeles.
 La instalación/provisión sí puede descargar dependencias y modelos. En
 ejecución, GuionAR usa IPC Unix local. El portapapeles y la aplicación que
 recibe el tipeo están fuera del proceso y de las garantías de almacenamiento
-de ParlAR.
+de ParlAR. En X11, el backend `xdotool` transporta el texto mediante `xclip` y
+ejecuta un pegado sintético para conservar Unicode. El portapapeles es un
+detalle transitorio de ese transporte: no se garantiza preservar su contenido
+previo ni que el texto transportado siga disponible después del pegado. No se
+intenta restaurarlo porque podría contener múltiples formatos MIME. Esto no
+cambia el backend explícito `--inyector clipboard`: una copia exitosa con ese
+backend sí deja el texto disponible para pegarlo manualmente.
 
 ## Ajuste de rendimiento
 

@@ -186,7 +186,14 @@ text.
 
 Installation and provisioning may download dependencies and models. At
 runtime, GuionAR uses local Unix IPC. The clipboard and destination application
-are outside the ParlAR process and its storage guarantees.
+are outside the ParlAR process and its storage guarantees. On X11, the
+`xdotool` backend transports text through `xclip` and triggers a synthetic paste
+to preserve Unicode. The clipboard is a transient transport detail on this
+path: neither preservation of its previous contents nor availability of the
+transported text after the paste is guaranteed. ParlAR does not attempt to
+restore it because it may contain multiple MIME formats. This does not change
+the explicit `--inyector clipboard` backend: a successful copy through that
+backend does leave the text available for manual pasting.
 
 ## Running the tests
 

@@ -21,9 +21,12 @@ class PruebasRecoveryUnidad(unittest.TestCase):
         resultados_tipeo = iter(tipeos)
         resultados_copia = iter(copias or [])
 
-        def correr(argv):
-            intentos.append(argv[-1])
+        def correr(_argv):
             return next(resultados_tipeo)
+
+        def copiar_x11(texto):
+            intentos.append(texto)
+            return True
 
         def copiar(texto):
             portapapeles.append(texto)
@@ -33,7 +36,10 @@ class PruebasRecoveryUnidad(unittest.TestCase):
                 return True
 
         mock.patch.object(inyector, "_correr", side_effect=correr).start()
+        mock.patch.object(
+            inyector, "_copiar_x11", side_effect=copiar_x11).start()
         mock.patch.object(inyector, "_portapapeles", side_effect=copiar).start()
+        mock.patch("parlar.inyector_salida.time.sleep").start()
         self.addCleanup(mock.patch.stopall)
         inyector.iniciar_unidad(7)
         return inyector, intentos, portapapeles

@@ -1,5 +1,8 @@
 """Contratos de distribución, clipboard, undo y acciones Return."""
 
+import contextlib
+import io
+import subprocess
 import threading
 import unittest
 from types import SimpleNamespace
@@ -158,6 +161,270 @@ class PruebasClipboardUndo(unittest.TestCase):
             resultado = fallback.escribir_texto("solo copiado")
         self.assertEqual(resultado.estado, EstadoEntrega.COPIED)
         self.assertEqual(fallback._registro_oraciones, [])
+
+
+class PruebasXdotoolUnicode(unittest.TestCase):
+    CORPUS = (
+        "cómo",
+        "están",
+        "podrá",
+        "rápido",
+        "últimamente",
+        "pingüino",
+        "diseñador",
+        "¿Qué?",
+        "á é í ó ú Á É Í Ó Ú ñ Ñ ¿ ¡",
+        "¿Cómo están? ¿Qué podrás hacer? Será rápido. "
+        "Últimamente está funcionando.",
+    )
+
+    @staticmethod
+    def _disponible(nombre):
+        return f"/usr/bin/{nombre}" if nombre == "xclip" else None
+
+    @staticmethod
+    def _resultado_ok(argv, **_kwargs):
+        return subprocess.CompletedProcess(argv, 0)
+
+    def test_auto_x11_exige_xdotool_y_xclip(self):
+        for disponibles, esperado in (
+            ({"xdotool", "xclip"}, "xdotool"),
+            ({"xdotool"}, "clipboard"),
+        ):
+            with self.subTest(disponibles=disponibles):
+                with (
+                    mock.patch(
+                        "parlar.inyector_salida.detectar_sesion",
+                        return_value="x11",
+                    ),
+                    mock.patch(
+                        "parlar.inyector_salida._cual",
+                        side_effect=lambda nombre: (
+                            f"/usr/bin/{nombre}"
+                            if nombre in disponibles else None
+                        ),
+                    ),
+                ):
+                    self.assertEqual(
+                        Inyector(backend="auto", notify=False).backend,
+                        esperado,
+                    )
+
+    def test_xclip_mas_paste_inserta_y_conserva_undo(self):
+        texto = "¿Cómo están? El pingüino habló con el diseñador."
+        inyector = Inyector(backend="xdotool", notify=False)
+        with (
+            mock.patch(
+                "parlar.inyector_salida._cual", side_effect=self._disponible),
+            mock.patch(
+                "parlar.inyector_salida.subprocess.run",
+                side_effect=self._resultado_ok,
+            ) as ejecutar,
+            mock.patch("parlar.inyector_salida.time.sleep") as dormir,
+        ):
+            resultado = inyector.escribir_texto(texto)
+        self.assertEqual(resultado.estado, EstadoEntrega.INSERTED)
+        self.assertEqual(inyector._registro_oraciones, [texto])
+        self.assertEqual(ejecutar.call_count, 2)
+        self.assertEqual(
+            ejecutar.call_args_list[0],
+            mock.call(
+                ["xclip", "-selection", "clipboard"],
+                input=texto.encode(), check=True, timeout=5,
+            ),
+        )
+        self.assertEqual(
+            ejecutar.call_args_list[1],
+            mock.call(
+                ["xdotool", "key", "--clearmodifiers", "ctrl+v"],
+                capture_output=True, check=False, timeout=30,
+            ),
+        )
+        self.assertEqual(
+            dormir.call_args_list, [mock.call(0.05), mock.call(0.05)])
+        with mock.patch.object(inyector, "retroceso", return_value=True) as borrar:
+            self.assertTrue(inyector.borrar_ultima_oracion())
+        borrar.assert_called_once_with(len(texto))
+
+    def test_corpus_unicode_llega_sin_mutacion(self):
+        inyector = Inyector(backend="xdotool", notify=False)
+        with (
+            mock.patch(
+                "parlar.inyector_salida._cual", side_effect=self._disponible),
+            mock.patch(
+                "parlar.inyector_salida.subprocess.run",
+                side_effect=self._resultado_ok,
+            ) as ejecutar,
+            mock.patch("parlar.inyector_salida.time.sleep"),
+        ):
+            estados = [inyector.escribir_texto(texto).estado
+                       for texto in self.CORPUS]
+        self.assertEqual(estados, [EstadoEntrega.INSERTED] * len(self.CORPUS))
+        copias = [llamada for llamada in ejecutar.call_args_list
+                  if llamada.args[0][0] == "xclip"]
+        pegados = [llamada for llamada in ejecutar.call_args_list
+                   if llamada.args[0][0] == "xdotool"]
+        self.assertEqual(
+            [llamada.kwargs["input"].decode() for llamada in copias],
+            list(self.CORPUS),
+        )
+        self.assertEqual(len(pegados), len(self.CORPUS))
+        self.assertTrue(all(
+            llamada.args[0] ==
+            ["xdotool", "key", "--clearmodifiers", "ctrl+v"]
+            for llamada in pegados))
+
+    def test_rafaga_de_quince_invocaciones_conserva_orden_y_contenido(self):
+        base = ("¿Cómo están? ¿Qué podrás hacer? Será rápido. "
+                "Últimamente está funcionando. ")
+        entradas = [f"[{indice}] {base}" for indice in range(1, 16)]
+        inyector = Inyector(backend="xdotool", notify=False)
+        with (
+            mock.patch(
+                "parlar.inyector_salida._cual", side_effect=self._disponible),
+            mock.patch(
+                "parlar.inyector_salida.subprocess.run",
+                side_effect=self._resultado_ok,
+            ) as ejecutar,
+            mock.patch("parlar.inyector_salida.time.sleep"),
+        ):
+            for entrada in entradas:
+                self.assertEqual(
+                    inyector.escribir_texto(entrada).estado,
+                    EstadoEntrega.INSERTED,
+                )
+        self.assertEqual(len(ejecutar.call_args_list), 30)
+        self.assertEqual(
+            [llamada.kwargs["input"].decode()
+             for llamada in ejecutar.call_args_list[::2]],
+            entradas,
+        )
+        self.assertTrue(all(
+            llamada.args[0] ==
+            ["xdotool", "key", "--clearmodifiers", "ctrl+v"]
+            for llamada in ejecutar.call_args_list[1::2]))
+
+    def test_fragmentos_streaming_conservan_orden_y_contenido(self):
+        fragmentos = ("¿Cómo", " están?", " Será", " rápido.",
+                      " Últimamente", " está", " funcionando.")
+        inyector = Inyector(backend="xdotool", notify=False)
+        with (
+            mock.patch(
+                "parlar.inyector_salida._cual", side_effect=self._disponible),
+            mock.patch(
+                "parlar.inyector_salida.subprocess.run",
+                side_effect=self._resultado_ok,
+            ) as ejecutar,
+            mock.patch("parlar.inyector_salida.time.sleep"),
+        ):
+            inyector.iniciar_unidad(1)
+            for fragmento in fragmentos:
+                self.assertEqual(
+                    inyector.escribir_texto(
+                        fragmento, registrar=False).estado,
+                    EstadoEntrega.INSERTED,
+                )
+            inyector.finalizar_unidad()
+        self.assertEqual(
+            [llamada.kwargs["input"].decode()
+             for llamada in ejecutar.call_args_list[::2]],
+            list(fragmentos),
+        )
+        self.assertEqual(len(ejecutar.call_args_list[1::2]), len(fragmentos))
+        self.assertEqual(inyector._registro_oraciones, ["".join(fragmentos)])
+
+    def test_clipboard_explicito_solo_copia(self):
+        texto = "á é í ó ú ñ ü ¿ ¡"
+        inyector = Inyector(backend="clipboard", notify=False)
+        with (
+            mock.patch(
+                "parlar.inyector_salida.detectar_sesion", return_value="x11"),
+            mock.patch(
+                "parlar.inyector_salida._cual", side_effect=self._disponible),
+            mock.patch(
+                "parlar.inyector_salida.subprocess.run",
+                side_effect=self._resultado_ok,
+            ) as ejecutar,
+        ):
+            resultado = inyector.escribir_texto(texto)
+        self.assertEqual(resultado.estado, EstadoEntrega.COPIED)
+        ejecutar.assert_called_once_with(
+            ["xclip", "-selection", "clipboard"],
+            input=texto.encode(), check=True, timeout=5,
+        )
+        self.assertEqual(inyector._registro_oraciones, [])
+
+    def test_fallo_de_xclip_no_pega_ni_invalida_historial(self):
+        texto = "¿Qué podrás hacer?"
+        inyector = Inyector(backend="xdotool", notify=False)
+        inyector._registro_oraciones[:] = ["anterior"]
+        with (
+            mock.patch(
+                "parlar.inyector_salida._cual", side_effect=self._disponible),
+            mock.patch(
+                "parlar.inyector_salida.subprocess.run",
+                side_effect=subprocess.CalledProcessError(1, ["xclip"]),
+            ) as ejecutar,
+            mock.patch("parlar.inyector_salida.time.sleep") as dormir,
+        ):
+            resultado = inyector.escribir_texto(texto)
+        self.assertEqual(resultado.estado, EstadoEntrega.FAILED)
+        self.assertEqual(ejecutar.call_count, 1)
+        dormir.assert_not_called()
+        self.assertEqual(inyector._registro_oraciones, ["anterior"])
+
+    def test_fallo_de_paste_reporta_copy_e_invalida_historial(self):
+        texto = "Será rápido."
+        inyector = Inyector(backend="xdotool", notify=False)
+        inyector._registro_oraciones[:] = ["anterior"]
+
+        def ejecutar(argv, **_kwargs):
+            return subprocess.CompletedProcess(
+                argv, 1 if argv[0] == "xdotool" else 0)
+
+        with (
+            mock.patch(
+                "parlar.inyector_salida._cual", side_effect=self._disponible),
+            mock.patch(
+                "parlar.inyector_salida.subprocess.run", side_effect=ejecutar,
+            ) as proceso,
+            mock.patch("parlar.inyector_salida.time.sleep"),
+        ):
+            resultado = inyector.escribir_texto(texto)
+        self.assertEqual(resultado.estado, EstadoEntrega.COPIED)
+        self.assertEqual(proceso.call_count, 2)
+        self.assertEqual(inyector._registro_oraciones, [])
+
+    def test_excepcion_y_notify_no_filtran_ni_cambian_copy(self):
+        texto = "secreto ágil ñandú"
+        inyector = Inyector(backend="xdotool", notify=True)
+
+        def disponible(nombre):
+            if nombre in ("xclip", "notify-send"):
+                return f"/usr/bin/{nombre}"
+            return None
+
+        def ejecutar(argv, **_kwargs):
+            if argv[0] == "xclip":
+                return subprocess.CompletedProcess(argv, 0)
+            if argv[0] == "xdotool":
+                raise subprocess.TimeoutExpired(argv, 30)
+            raise OSError("notify indisponible")
+
+        salida = io.StringIO()
+        with (
+            mock.patch(
+                "parlar.inyector_salida._cual", side_effect=disponible),
+            mock.patch(
+                "parlar.inyector_salida.subprocess.run", side_effect=ejecutar),
+            mock.patch("parlar.inyector_salida.time.sleep"),
+            contextlib.redirect_stderr(salida),
+        ):
+            resultado = inyector.escribir_texto(texto)
+        self.assertEqual(resultado.estado, EstadoEntrega.COPIED)
+        self.assertNotIn(texto, salida.getvalue())
+        self.assertIn("TimeoutExpired", salida.getvalue())
+        self.assertIn("OSError", salida.getvalue())
 
 
 class PruebasComandosReturn(unittest.TestCase):

@@ -14,10 +14,14 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from typing import List, Optional
 
 from .entrega import EstadoEntrega, ResultadoSink
+
+
+_X11_PASTE_SETTLE_S = 0.05
 
 
 @dataclass(frozen=True)
@@ -62,6 +66,9 @@ class Inyector:
         self._clipboard_forzado_por_salto = False
         self._undo_unidad_diferido = False
         self._efecto_fisico_incierto = False
+        self._x11_copia_preparada = False
+        self._x11_copia_fallida = False
+        self._hubo_intento_fisico = False
         print(f"[inyector] backend: {self.backend}")
 
     # ---------------------------------------------------------------- setup
@@ -75,11 +82,12 @@ class Inyector:
                 if _cual(cand):
                     return cand
         else:
-            if _cual("xdotool"):
+            if _cual("xdotool") and _cual("xclip"):
                 return "xdotool"
         # respaldos cruzados
         for cand in ("xdotool", "wtype", "ydotool"):
-            if _cual(cand):
+            if (_cual(cand)
+                    and (cand != "xdotool" or _cual("xclip"))):
                 return cand
         return "clipboard"
 
@@ -103,6 +111,9 @@ class Inyector:
             if self._portapapeles(texto):
                 return ResultadoSink(EstadoEntrega.COPIED)
             return ResultadoSink(EstadoEntrega.FAILED)
+        self._x11_copia_preparada = False
+        self._x11_copia_fallida = False
+        self._hubo_intento_fisico = False
         ok = self._tipear(texto)
         if ok:
             if self._clipboard_unidad_activa:
@@ -110,12 +121,24 @@ class Inyector:
             if registrar and not self._efecto_fisico_incierto:
                 self._registrar(texto)
             return ResultadoSink(EstadoEntrega.INSERTED)
+        if self._x11_copia_fallida and not self._hubo_intento_fisico:
+            if self._clipboard_unidad_activa:
+                self._degradar_unidad(texto)
+            return ResultadoSink(EstadoEntrega.FAILED)
         if self.backend != "clipboard":
             self._marcar_efecto_fisico_incierto()
         contenido = texto
         if self._clipboard_unidad_activa:
             self._degradar_unidad(texto)
             return self._copiar_recuperacion()
+        if (self._x11_copia_preparada
+                and not self._contiene_salto(texto)):
+            self._notificar(
+                "ParlAR",
+                "El pegado X11 no pudo confirmarse. El texto quedó en el "
+                "portapapeles para pegarlo manualmente.",
+            )
+            return ResultadoSink(EstadoEntrega.COPIED)
         if self._portapapeles(contenido):
             return ResultadoSink(EstadoEntrega.COPIED)
         return ResultadoSink(EstadoEntrega.FAILED)
@@ -215,11 +238,24 @@ class Inyector:
 
     def _tipear_segmento(self, texto: str) -> bool:
         if self.backend == "xdotool":
-            return self._correr(["xdotool", "type", "--clearmodifiers",
-                                 "--delay", str(self.type_delay_ms), "--", texto])
+            if not self._copiar_x11(texto):
+                self._x11_copia_fallida = True
+                return False
+            self._x11_copia_preparada = True
+            time.sleep(_X11_PASTE_SETTLE_S)
+            self._hubo_intento_fisico = True
+            try:
+                return self._correr(
+                    ["xdotool", "key", "--clearmodifiers", "ctrl+v"])
+            finally:
+                # El destino puede pedir CLIPBOARD después de recibir Ctrl+V.
+                # No lo sobrescribimos con el fragmento siguiente de inmediato.
+                time.sleep(_X11_PASTE_SETTLE_S)
         if self.backend == "wtype":
+            self._hubo_intento_fisico = True
             return self._correr(["wtype", "--", texto])
         if self.backend == "ydotool":
+            self._hubo_intento_fisico = True
             return self._correr(["ydotool", "type", "--key-delay",
                                  str(self.type_delay_ms), "--", texto])
         return False
@@ -228,6 +264,7 @@ class Inyector:
         """Única frontera que puede emitir una pulsación física Return."""
         if not self.permitir_return:
             return False
+        self._hubo_intento_fisico = True
         if self.backend == "xdotool":
             return self._correr(
                 ["xdotool", "key", "--clearmodifiers", "Return"])
@@ -312,6 +349,25 @@ class Inyector:
 
     # ---------------------------------------------------------------- ayudantes
 
+    def _copiar_x11(self, texto: str) -> bool:
+        if not _cual("xclip"):
+            print("[inyector] xclip no disponible para inyección X11",
+                  file=sys.stderr)
+            return False
+        return self._copiar_con(
+            ["xclip", "-selection", "clipboard"], texto)
+
+    @staticmethod
+    def _copiar_con(herramienta: List[str], texto: str) -> bool:
+        try:
+            subprocess.run(
+                herramienta, input=texto.encode(), check=True, timeout=5)
+        except Exception as e:
+            print(f"[inyector] portapapeles falló: {type(e).__name__}",
+                  file=sys.stderr)
+            return False
+        return True
+
     def _portapapeles(self, texto: str) -> bool:
         herramienta = None
         if detectar_sesion() == "wayland" and _cual("wl-copy"):
@@ -323,11 +379,7 @@ class Inyector:
                   f"({len(texto)} caracteres)",
                   file=sys.stderr)
             return False
-        try:
-            subprocess.run(herramienta, input=texto.encode(), check=True, timeout=5)
-        except Exception as e:
-            print(f"[inyector] portapapeles falló: {type(e).__name__}",
-                  file=sys.stderr)
+        if not self._copiar_con(herramienta, texto):
             return False
         self._notificar("ParlAR",
                         "Herramienta de tipeo no disponible. Texto copiado al "
