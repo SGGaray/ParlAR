@@ -106,7 +106,11 @@ fi
 try:
     import ctranslate2
     cantidad = ctranslate2.get_cuda_device_count()
-    modo = "se usará GPU" if cantidad else "modo CPU int8"
+    modo = (
+        "GPU CUDA visible; ParlAR intentará preparar el runtime al iniciar"
+        if cantidad else
+        "modo CPU int8"
+    )
     print(f"==> Dispositivos CUDA detectados: {cantidad} ({modo})")
 except Exception as exc:
     print(f"==> Chequeo de CUDA omitido: {type(exc).__name__}")

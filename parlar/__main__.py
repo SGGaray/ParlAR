@@ -10,6 +10,7 @@ import sys
 import threading
 
 from .config import Config, ErrorConfiguracion
+from .runtime_nvidia import preparar_runtime_nvidia
 
 _ALIAS_MODO = {"frase": "utterance"}
 _ALIAS_REESCRITURA = {"ninguna": "none", "conciso": "concise", "correo": "email"}
@@ -116,6 +117,9 @@ def main():
     except ErrorConfiguracion as e:
         print(f"[config] configuración inválida: {e}", file=sys.stderr)
         raise SystemExit(2)
+
+    preparar_runtime_nvidia(cfg.device)
+
     if args.guardar_config:
         try:
             cfg.save()

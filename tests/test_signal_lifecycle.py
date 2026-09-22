@@ -181,6 +181,8 @@ class PruebasSenalesEntryPoint(unittest.TestCase):
                 mock.patch.object(
                     entrada.Config, "load", return_value=Config()),
                 mock.patch.object(sys, "argv", ["parlar"]),
+                mock.patch.object(
+                    entrada, "preparar_runtime_nvidia", return_value=False),
                 mock.patch("parlar.app.App", return_value=app),
             ):
                 resultado = entrada.main()
