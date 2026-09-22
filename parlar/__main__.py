@@ -7,6 +7,7 @@ como alias, por si preferís esa nomenclatura.
 import argparse
 import signal
 import sys
+import threading
 
 from .config import Config, ErrorConfiguracion
 
@@ -14,18 +15,34 @@ _ALIAS_MODO = {"frase": "utterance"}
 _ALIAS_REESCRITURA = {"ninguna": "none", "conciso": "concise", "correo": "email"}
 
 
-def _interrumpir_por_sigterm(_numero, _frame):
-    """Convierte SIGTERM en la interrupción ordenada que App ya maneja."""
-    raise KeyboardInterrupt
-
-
 def _ejecutar_con_sigterm(app):
     """Instala SIGTERM solo durante la ejecución del entry point."""
-    handler_anterior = signal.signal(
-        signal.SIGTERM, _interrumpir_por_sigterm)
+    solicitud = threading.Event()
+    ejecucion_activa = threading.Event()
+    ejecucion_activa.set()
+
+    def solicitar_shutdown(_numero, _frame):
+        solicitud.set()
+
+    def vigilar_shutdown():
+        solicitud.wait()
+        if ejecucion_activa.is_set():
+            app.salir(esperar=False)
+
+    watcher = threading.Thread(
+        target=vigilar_shutdown,
+        name="sigterm-watcher",
+        daemon=False,
+    )
+    handler_anterior = signal.signal(signal.SIGTERM, solicitar_shutdown)
     try:
+        watcher.start()
         return app.ejecutar()
     finally:
+        ejecucion_activa.clear()
+        solicitud.set()
+        if watcher.is_alive():
+            watcher.join()
         signal.signal(signal.SIGTERM, handler_anterior)
 
 

@@ -11,8 +11,9 @@
   mencionar “subtítulos” y `amara.org` dentro de una frase legítima ya no puede
   convertirla en descartable. La documentación aclara que basta una métrica
   acústica/modelo sospechosa cuando la plantilla completa sí coincide.
-- El proceso principal trata `SIGTERM` como un cierre normal y ejecuta el
-  cleanup ordenado de recursos, incluido el socket de control propio.
+- El proceso principal convierte `SIGTERM` en una solicitud de cierre normal
+  que no puede perderse dentro de callbacks Tcl/Tk y ejecuta el cleanup
+  ordenado de recursos, incluido el socket de control propio.
 - El paste Unicode de X11 ya no habilita undo destructivo a partir del éxito de
   `xdotool`: la ruta no recibe confirmación del destino y ahora establece una
   barrera que impide borrar contenido previo con Backspace.
