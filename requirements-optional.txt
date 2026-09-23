@@ -1,4 +1,4 @@
 # VAD WebRTC opcional. ParlAR usa su VAD de energía probado si esta
-# dependencia no compila o no está instalada.
-setuptools<81
-webrtcvad>=2.0.10
+# dependencia no compila o no está instalada. Esta distribución mantiene la
+# API ``import webrtcvad`` sin depender de pkg_resources.
+webrtcvad-wheels==2.0.14

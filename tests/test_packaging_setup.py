@@ -73,7 +73,8 @@ class ContratoSetup(unittest.TestCase):
         requeridas = (ROOT / "requirements.txt").read_text()
         opcionales = (ROOT / "requirements-optional.txt").read_text()
         self.assertNotIn("webrtcvad", requeridas.lower())
-        self.assertIn("webrtcvad", opcionales.lower())
+        self.assertIn("webrtcvad-wheels==2.0.14", opcionales.lower())
+        self.assertNotIn("setuptools", opcionales.lower())
 
         codigo = r'''
 import builtins

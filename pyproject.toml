@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-vad = ["webrtcvad>=2.0.10"]
+vad = ["webrtcvad-wheels==2.0.14"]
 
 [project.scripts]
 parlar = "parlar.__main__:main"
