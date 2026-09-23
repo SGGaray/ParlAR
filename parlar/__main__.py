@@ -60,6 +60,22 @@ def _crear_parser(cfg: Config) -> argparse.ArgumentParser:
     ap.add_argument("--idioma", "--language", dest="idioma", default=cfg.language,
                     help="código ISO, ej. es, en. Vacío = autodetectar "
                          "(por defecto: %(default)s)")
+    contexto = ap.add_mutually_exclusive_group()
+    contexto.add_argument(
+        "--termino-contexto", "--context-term",
+        dest="terminos_contexto",
+        action="append",
+        default=None,
+        metavar="TEXTO",
+        help="vocabulario o nombre relevante; repetible. "
+             "Si se usa, reemplaza la lista configurada",
+    )
+    contexto.add_argument(
+        "--sin-contexto", "--no-context",
+        dest="sin_contexto",
+        action="store_true",
+        help="desactiva el vocabulario/contexto personalizado",
+    )
     ap.add_argument("--modo", "--mode", dest="modo", default=cfg.mode,
                     choices=sorted(Config.MODOS | {"frase"}),
                     help="frase (=utterance) o streaming")
@@ -104,6 +120,10 @@ def main():
     cfg.model_size = args.modelo
     cfg.device = args.dispositivo
     cfg.language = args.idioma
+    if args.sin_contexto:
+        cfg.context_terms = []
+    elif args.terminos_contexto is not None:
+        cfg.context_terms = args.terminos_contexto
     cfg.mode = _ALIAS_MODO.get(args.modo, args.modo)
     cfg.rewrite_mode = _ALIAS_REESCRITURA.get(args.reescritura, args.reescritura)
     cfg.injector = args.inyector

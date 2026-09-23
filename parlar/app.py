@@ -85,8 +85,14 @@ class App:
         print("=" * 60)
 
         if motor is None and (frases is None or streaming is None):
-            motor = MotorWhisper(cfg.model_size, cfg.device, cfg.compute_type,
-                                 cfg.language, cfg.beam_size)
+            motor = MotorWhisper(
+                cfg.model_size,
+                cfg.device,
+                cfg.compute_type,
+                cfg.language,
+                cfg.beam_size,
+                initial_prompt=cfg.construir_contexto_stt(),
+            )
         self.motor = motor
         self.frases = frases or TranscriptorFrase(self.motor)
         self.streaming = streaming or TranscriptorStreaming(

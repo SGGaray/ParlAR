@@ -219,6 +219,31 @@ Perillas útiles: `model_size` (tiny/base/small/medium/large-v3), `silence_ms`,
 `vad_aggressiveness` (subilo a 3 en ambientes ruidosos), `hotkey_toggle` y
 `type_delay_ms`. Las claves del JSON se mantienen en inglés por compatibilidad.
 
+Para nombres propios, siglas o vocabulario especializado podés agregar contexto
+local al reconocimiento. Cada término se pasa como vocabulario relevante al
+motor STT; no se envía por red ni habilita telemetría.
+
+```bash
+python -m parlar \
+  --context-term COBIT \
+  --context-term OWASP \
+  --context-term "Acme Corporation"
+```
+
+`--termino-contexto` es el alias en español. Si se especifican términos por CLI,
+reemplazan la lista configurada durante esa ejecución. `--sin-contexto` la
+desactiva y `--guardar-config` persiste el cambio. En JSON, la clave es
+`context_terms`, por ejemplo:
+
+```json
+{
+  "context_terms": ["COBIT", "OWASP", "Acme Corporation"]
+}
+```
+
+Se admiten hasta 50 términos, 80 caracteres por término y 2000 caracteres en
+total. El contexto no cambia dinámicamente: requiere reiniciar ParlAR.
+
 ## Transcript local opcional
 
 `--guardar-sesion` está apagado por defecto. Al activarlo, cada corrida crea

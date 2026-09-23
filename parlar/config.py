@@ -36,6 +36,10 @@ class Config:
     COMPUTE_TYPES: ClassVar[frozenset[str]] = frozenset(
         {"auto", "int8", "float16", "int8_float16"}
     )
+    MAX_CONTEXT_TERMS: ClassVar[int] = 50
+    MAX_CONTEXT_TERM_CHARS: ClassVar[int] = 80
+    MAX_CONTEXT_TOTAL_CHARS: ClassVar[int] = 2000
+
     REESCRITURAS: ClassVar[frozenset[str]] = frozenset(
         {"none", "formal", "concise", "email"}
     )
@@ -52,6 +56,7 @@ class Config:
     compute_type: str = "auto"         # auto | int8 | float16 | int8_float16
     language: str = "es"               # español por defecto; "" = autodetectar
     beam_size: int = 5                 # usado en pasadas finales por frase
+    context_terms: list = field(default_factory=list)  # vocabulario/contexto personalizado
 
     # --- Modo ---
     mode: str = "utterance"            # utterance | streaming
@@ -213,6 +218,49 @@ class Config:
         enum("rewrite_mode", self.REESCRITURAS)
         enum("injector", self.INYECTORES)
 
+        if type(self.context_terms) is list:
+            if len(self.context_terms) > self.MAX_CONTEXT_TERMS:
+                errores.append(
+                    f"'context_terms' admite como máximo "
+                    f"{self.MAX_CONTEXT_TERMS} términos"
+                )
+
+            total_contexto = 0
+            for indice, termino in enumerate(self.context_terms):
+                if type(termino) is not str:
+                    errores.append(
+                        f"'context_terms[{indice}]' debe ser texto, no "
+                        f"{type(termino).__name__}"
+                    )
+                    continue
+
+                limpio = " ".join(termino.split())
+                if not limpio:
+                    errores.append(
+                        f"'context_terms[{indice}]' no puede estar vacío"
+                    )
+                    continue
+
+                if "\n" in termino or "\r" in termino:
+                    errores.append(
+                        f"'context_terms[{indice}]' no puede contener "
+                        "saltos de línea"
+                    )
+
+                if len(limpio) > self.MAX_CONTEXT_TERM_CHARS:
+                    errores.append(
+                        f"'context_terms[{indice}]' supera "
+                        f"{self.MAX_CONTEXT_TERM_CHARS} caracteres"
+                    )
+
+                total_contexto += len(limpio)
+
+            if total_contexto > self.MAX_CONTEXT_TOTAL_CHARS:
+                errores.append(
+                    f"'context_terms' supera "
+                    f"{self.MAX_CONTEXT_TOTAL_CHARS} caracteres totales"
+                )
+
         if not self.model_size.strip():
             errores.append("'model_size' no puede estar vacío")
         if self.sample_rate != 16000:
@@ -281,6 +329,27 @@ class Config:
 
         if errores:
             raise ErrorConfiguracion("; ".join(errores))
+
+    def construir_contexto_stt(self) -> str:
+        """Construye contexto STT estable desde términos del usuario."""
+        normalizados = []
+        vistos = set()
+
+        for termino in self.context_terms:
+            limpio = " ".join(termino.split())
+            clave = limpio.casefold()
+            if limpio and clave not in vistos:
+                vistos.add(clave)
+                normalizados.append(limpio)
+
+        if not normalizados:
+            return ""
+
+        return (
+            "Vocabulario relevante: "
+            + ", ".join(normalizados)
+            + "."
+        )
 
     @staticmethod
     def _nombre_tipo(tipo) -> str:
