@@ -1,6 +1,7 @@
 """Regresiones del contrato de checkout, setup, servicio y gate central."""
 
 import os
+import shlex
 import shutil
 import stat
 import subprocess
@@ -13,6 +14,7 @@ from pathlib import Path
 from unittest import mock
 
 import scripts.render_service as render_service
+import scripts.render_desktop as render_desktop
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -48,11 +50,15 @@ class ContratoSetup(unittest.TestCase):
         return python
 
     def test_setup_y_runner_son_ejecutables_y_shell_valido(self):
-        for ruta in (ROOT / "setup.sh", ROOT / "scripts" / "check.sh"):
+        for ruta in (
+            ROOT / "setup.sh", ROOT / "install.sh", ROOT / "uninstall.sh",
+            ROOT / "scripts" / "check.sh",
+        ):
             with self.subTest(ruta=ruta):
                 self.assertTrue(ruta.stat().st_mode & stat.S_IXUSR)
         resultado = ejecutar(
-            "bash", "-n", "setup.sh", "scripts/check.sh"
+            "bash", "-n", "setup.sh", "install.sh", "uninstall.sh",
+            "scripts/check.sh",
         )
         self.assertEqual(resultado.returncode, 0, resultado.stderr)
 
@@ -177,7 +183,7 @@ class ContratoServicio(unittest.TestCase):
         plantilla = (ROOT / "scripts" / "parlar.service.in").read_text()
         self.assertNotIn("%h/parlar", plantilla)
         self.assertIn("@PARLAR_WORKDIR@", plantilla)
-        self.assertIn("@PARLAR_PYTHON@", plantilla)
+        self.assertIn("@PARLAR_EXECUTABLE@", plantilla)
         self.assertIn("UMask=0077", plantilla)
 
     def test_render_usa_path_real_con_espacios_y_es_idempotente(self):
@@ -198,7 +204,7 @@ class ContratoServicio(unittest.TestCase):
             self.assertEqual(segunda.returncode, 0, segunda.stderr)
             unit = salida.read_text()
             self.assertIn(str(repo.resolve()), unit)
-            self.assertIn(str(repo.resolve() / ".venv/bin/python"), unit)
+            self.assertIn(str(repo.resolve() / ".venv/bin/parlar"), unit)
             self.assertNotIn("@PARLAR_", unit)
             self.assertIn("sin cambios", segunda.stdout)
             self.assertEqual(stat.S_IMODE(salida.stat().st_mode), 0o600)
@@ -220,9 +226,9 @@ class ContratoServicio(unittest.TestCase):
             for indice, (nombre, relativa) in enumerate(variantes):
                 with self.subTest(nombre=nombre):
                     repo = base / relativa
-                    python = repo / ".venv" / "bin" / "python"
-                    python.parent.mkdir(parents=True)
-                    python.symlink_to(sys.executable)
+                    executable = repo / ".venv" / "bin" / "parlar"
+                    executable.parent.mkdir(parents=True)
+                    executable.symlink_to(sys.executable)
                     salida = base / f"parlar-probe-{indice}.service"
                     resultado = ejecutar(
                         sys.executable,
@@ -243,8 +249,7 @@ class ContratoServicio(unittest.TestCase):
                     self.assertEqual(
                         exec_start,
                         "ExecStart="
-                        + render_service._argumento_execstart(python)
-                        + " -m parlar",
+                        + render_service._argumento_execstart(executable),
                     )
                     self.assertFalse(
                         working.removeprefix("WorkingDirectory=").startswith('"'))
@@ -259,13 +264,13 @@ class ContratoServicio(unittest.TestCase):
                          "systemd-analyze no está disponible")
     def test_placeholders_en_paths_se_insertan_una_sola_vez(self):
         variantes = (
-            ("python", Path("@PARLAR_PYTHON@")),
+            ("executable", Path("@PARLAR_EXECUTABLE@")),
             ("workdir", Path("@PARLAR_WORKDIR@")),
             ("root-literal", Path("@PARLAR_ROOT@")),
-            ("juntos", Path("@PARLAR_PYTHON@@PARLAR_WORKDIR@")),
-            ("embebido", Path("foo@PARLAR_PYTHON@bar")),
-            ("intermedio", Path("nivel") / "@PARLAR_PYTHON@" / "repo"),
-            ("escaping", Path("proyecto % $ @PARLAR_PYTHON@ ñ")),
+            ("juntos", Path("@PARLAR_EXECUTABLE@@PARLAR_WORKDIR@")),
+            ("embebido", Path("foo@PARLAR_EXECUTABLE@bar")),
+            ("intermedio", Path("nivel") / "@PARLAR_EXECUTABLE@" / "repo"),
+            ("escaping", Path("proyecto % $ @PARLAR_EXECUTABLE@ ñ")),
         )
         plantilla = (ROOT / "scripts" / "parlar.service.in").read_text(
             encoding="utf-8"
@@ -275,9 +280,9 @@ class ContratoServicio(unittest.TestCase):
             for indice, (nombre, relativa) in enumerate(variantes):
                 with self.subTest(nombre=nombre):
                     repo = base / relativa
-                    python = repo / ".venv" / "bin" / "python"
-                    python.parent.mkdir(parents=True)
-                    python.symlink_to(sys.executable)
+                    executable = repo / ".venv" / "bin" / "parlar"
+                    executable.parent.mkdir(parents=True)
+                    executable.symlink_to(sys.executable)
                     unit = render_service.renderizar(repo)
                     directivas = self.directivas(unit)
                     self.assertEqual(
@@ -286,8 +291,7 @@ class ContratoServicio(unittest.TestCase):
                     )
                     self.assertEqual(
                         directivas["ExecStart"],
-                        render_service._argumento_execstart(python)
-                        + " -m parlar",
+                        render_service._argumento_execstart(executable),
                     )
                     salida = base / f"parlar-placeholder-{indice}.service"
                     salida.write_text(unit, encoding="utf-8")
@@ -298,11 +302,12 @@ class ContratoServicio(unittest.TestCase):
 
             repo = base / "checkout"
             repo.mkdir()
-            python = base / "bin-@PARLAR_ROOT@@PARLAR_WORKDIR@" / "python"
-            python.parent.mkdir()
-            python.symlink_to(sys.executable)
+            executable = (
+                base / "bin-@PARLAR_ROOT@@PARLAR_WORKDIR@" / "parlar")
+            executable.parent.mkdir()
+            executable.symlink_to(sys.executable)
             unit = render_service._renderizar_plantilla(
-                plantilla, repo.resolve(), python)
+                plantilla, repo.resolve(), executable)
             directivas = self.directivas(unit)
             self.assertEqual(
                 directivas["WorkingDirectory"],
@@ -310,7 +315,7 @@ class ContratoServicio(unittest.TestCase):
             )
             self.assertEqual(
                 directivas["ExecStart"],
-                render_service._argumento_execstart(python) + " -m parlar",
+                render_service._argumento_execstart(executable),
             )
             salida = base / "parlar-python-placeholder.service"
             salida.write_text(unit, encoding="utf-8")
@@ -323,18 +328,18 @@ class ContratoServicio(unittest.TestCase):
             encoding="utf-8"
         )
         repo = Path("/tmp/parlar-repo")
-        python = repo / ".venv" / "bin" / "python"
-        for faltante in ("@PARLAR_WORKDIR@", "@PARLAR_PYTHON@"):
+        executable = repo / ".venv" / "bin" / "parlar"
+        for faltante in ("@PARLAR_WORKDIR@", "@PARLAR_EXECUTABLE@"):
             with self.subTest(faltante=faltante):
                 with self.assertRaisesRegex(
                         ValueError, "falta placeholder requerido"):
                     render_service._renderizar_plantilla(
-                        plantilla.replace(faltante, ""), repo, python)
+                        plantilla.replace(faltante, ""), repo, executable)
 
         with self.assertRaisesRegex(ValueError, "placeholder desconocido"):
             render_service._renderizar_plantilla(
                 plantilla + "\nEnvironment=@PARLAR_DESCONOCIDO@\n",
-                repo, python,
+                repo, executable,
             )
 
     def test_render_rechaza_paths_fuera_del_dominio_sin_publicar(self):
@@ -433,6 +438,115 @@ class ContratoServicio(unittest.TestCase):
             )
             self.assertNotEqual(resultado.returncode, 0)
             self.assertEqual(salida.read_text(), "[Unit]\nDescription=personal\n")
+
+
+class ContratoInstalacionUsuario(unittest.TestCase):
+    def test_launcher_es_valido_idempotente_y_no_reemplaza_ajeno(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            ejecutable = base / "ruta con $ y %" / "parlar"
+            ejecutable.parent.mkdir()
+            ejecutable.write_text("#!/bin/sh\n", encoding="utf-8")
+            salida = base / "applications" / "parlar.desktop"
+            contenido = render_desktop.renderizar(ejecutable)
+            self.assertEqual(
+                render_desktop.instalar(contenido, salida), "instalado")
+            self.assertEqual(
+                render_desktop.instalar(contenido, salida), "sin cambios")
+            self.assertNotIn("@PARLAR_", salida.read_text(encoding="utf-8"))
+            if shutil.which("desktop-file-validate"):
+                validacion = ejecutar("desktop-file-validate", str(salida))
+                self.assertEqual(
+                    validacion.returncode, 0, validacion.stderr)
+
+            salida.write_text("[Desktop Entry]\nName=Personal\n")
+            with self.assertRaisesRegex(RuntimeError, "no fue generado"):
+                render_desktop.instalar(contenido, salida)
+            self.assertIn("Name=Personal", salida.read_text())
+
+    def test_instalacion_y_desinstalacion_xdg_simuladas(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            repo = base / "repo"
+            repo.mkdir()
+            for nombre in ("install.sh", "uninstall.sh"):
+                shutil.copy2(ROOT / nombre, repo / nombre)
+            scripts = repo / "scripts"
+            scripts.mkdir()
+            for nombre in (
+                "render_service.py", "render_desktop.py",
+                "parlar.service.in", "parlar.desktop.in",
+            ):
+                shutil.copy2(ROOT / "scripts" / nombre, scripts / nombre)
+
+            home = base / "home"
+            data = home / "share"
+            config = home / "config"
+            install_home = data / "parlar"
+            bin_dir = home / "bin"
+            venv_bin = install_home / "venv" / "bin"
+            venv_bin.mkdir(parents=True)
+            python = venv_bin / "python"
+            python.write_text(
+                "#!/bin/sh\n"
+                "case \"$1\" in\n"
+                "  *render_service.py|*render_desktop.py) "
+                f"exec {shlex.quote(sys.executable)} \"$@\" ;;\n"
+                "esac\n"
+                "exit 0\n",
+                encoding="utf-8",
+            )
+            python.chmod(0o755)
+            for comando in ("parlar", "parlarctl"):
+                ruta = venv_bin / comando
+                ruta.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+                ruta.chmod(0o755)
+
+            tools = base / "tools"
+            tools.mkdir()
+            systemctl = tools / "systemctl"
+            systemctl.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            systemctl.chmod(0o755)
+
+            testigo_config = config / "parlar" / "config.json"
+            testigo_config.parent.mkdir(parents=True)
+            testigo_config.write_text("{}\n", encoding="utf-8")
+            entorno = os.environ.copy()
+            entorno.update({
+                "HOME": str(home),
+                "XDG_DATA_HOME": str(data),
+                "XDG_CONFIG_HOME": str(config),
+                "PARLAR_INSTALL_HOME": str(install_home),
+                "PARLAR_BIN_DIR": str(bin_dir),
+                "PARLAR_BOOTSTRAP_PYTHON": str(python),
+                "PATH": f"{tools}:/usr/bin:/bin",
+            })
+
+            instalado = ejecutar(
+                str(repo / "install.sh"), "--install-service",
+                cwd=repo, env=entorno)
+            self.assertEqual(instalado.returncode, 0, instalado.stderr)
+            for comando in ("parlar", "parlarctl"):
+                enlace = bin_dir / comando
+                self.assertTrue(enlace.is_symlink())
+                self.assertEqual(
+                    enlace.readlink(), venv_bin / comando)
+            unit = config / "systemd" / "user" / "parlar.service"
+            desktop = data / "applications" / "parlar.desktop"
+            self.assertIn(str(venv_bin / "parlar"), unit.read_text())
+            self.assertNotIn(str(repo), unit.read_text())
+            self.assertIn(str(venv_bin / "parlar"), desktop.read_text())
+
+            desinstalado = ejecutar(
+                str(repo / "uninstall.sh"), cwd=repo, env=entorno)
+            self.assertEqual(
+                desinstalado.returncode, 0, desinstalado.stderr)
+            self.assertFalse(install_home.exists())
+            self.assertFalse(unit.exists())
+            self.assertFalse(desktop.exists())
+            self.assertFalse((bin_dir / "parlar").exists())
+            self.assertFalse((bin_dir / "parlarctl").exists())
+            self.assertTrue(testigo_config.exists())
 
 
 class SmokesCheckout(unittest.TestCase):

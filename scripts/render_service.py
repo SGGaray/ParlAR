@@ -11,7 +11,7 @@ _CARACTERES_PATH_NO_SOPORTADOS = frozenset({"'", '"', "\\"})
 _PLACEHOLDER = re.compile(r"@PARLAR_[A-Z0-9_]+@")
 _PLACEHOLDERS_REQUERIDOS = frozenset({
     "@PARLAR_WORKDIR@",
-    "@PARLAR_PYTHON@",
+    "@PARLAR_EXECUTABLE@",
 })
 
 
@@ -52,7 +52,11 @@ def _argumento_execstart(valor: Path) -> str:
     return f':"{texto}"'
 
 
-def _renderizar_plantilla(plantilla: str, repo: Path, python: Path) -> str:
+def _renderizar_plantilla(
+    plantilla: str,
+    workdir: Path,
+    executable: Path,
+) -> str:
     """Inserta valores ya escapados sin reinterpretar su contenido."""
     encontrados = set(_PLACEHOLDER.findall(plantilla))
     desconocidos = encontrados - _PLACEHOLDERS_REQUERIDOS
@@ -65,19 +69,27 @@ def _renderizar_plantilla(plantilla: str, repo: Path, python: Path) -> str:
         raise ValueError(f"falta placeholder requerido en la plantilla: {detalle}")
 
     valores = {
-        "@PARLAR_WORKDIR@": _ruta_working_directory(repo),
-        "@PARLAR_PYTHON@": _argumento_execstart(python),
+        "@PARLAR_WORKDIR@": _ruta_working_directory(workdir),
+        "@PARLAR_EXECUTABLE@": _argumento_execstart(executable),
     }
     return _PLACEHOLDER.sub(lambda match: valores[match.group(0)], plantilla)
 
 
 def renderizar(repo: Path) -> str:
     repo = repo.resolve()
-    python = repo / ".venv" / "bin" / "python"
+    executable = repo / ".venv" / "bin" / "parlar"
+    return renderizar_instalacion(repo, executable)
+
+
+def renderizar_instalacion(workdir: Path, executable: Path) -> str:
+    workdir = workdir.resolve()
+    # El entrypoint suele ser un symlink del venv. systemd debe conservar esa
+    # ruta estable, no resolverla al intérprete subyacente.
+    executable = executable.absolute()
     plantilla = Path(__file__).with_name("parlar.service.in").read_text(
         encoding="utf-8"
     )
-    return _renderizar_plantilla(plantilla, repo, python)
+    return _renderizar_plantilla(plantilla, workdir, executable)
 
 
 def instalar(contenido: str, destino: Path) -> str:
@@ -134,11 +146,23 @@ def instalar(contenido: str, destino: Path) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--repo", required=True, type=Path)
+    origen = parser.add_mutually_exclusive_group(required=True)
+    origen.add_argument("--repo", type=Path)
+    origen.add_argument("--workdir", type=Path)
+    parser.add_argument("--executable", type=Path)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
     try:
-        estado = instalar(renderizar(args.repo), args.output)
+        if args.repo is not None:
+            if args.executable is not None:
+                parser.error("--executable solo se usa con --workdir")
+            contenido = renderizar(args.repo)
+        else:
+            if args.executable is None:
+                parser.error("--workdir requiere --executable")
+            contenido = renderizar_instalacion(
+                args.workdir, args.executable)
+        estado = instalar(contenido, args.output)
     except (OSError, RuntimeError, ValueError) as exc:
         parser.exit(1, f"!! no se pudo instalar la unit: {exc}\n")
     print(f"==> Unit {estado}: {args.output.expanduser()}")

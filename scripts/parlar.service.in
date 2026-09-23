@@ -6,7 +6,7 @@ After=graphical-session.target
 [Service]
 Type=simple
 WorkingDirectory=@PARLAR_WORKDIR@
-ExecStart=@PARLAR_PYTHON@ -m parlar
+ExecStart=@PARLAR_EXECUTABLE@
 Restart=on-failure
 RestartSec=3
 UMask=0077

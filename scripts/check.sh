@@ -56,8 +56,9 @@ if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 fi
 
 echo "==> Shell y bytecode"
-bash -n setup.sh scripts/check.sh
-"$PYTHON" -m py_compile parlar/*.py scripts/render_service.py tests/*.py
+bash -n setup.sh install.sh uninstall.sh scripts/check.sh
+"$PYTHON" -m py_compile \
+    parlar/*.py scripts/render_service.py scripts/render_desktop.py tests/*.py
 
 echo "==> Smokes CLI"
 "$PYTHON" -m parlar --help >"$TEMP_DIR/parlar-help.txt"
