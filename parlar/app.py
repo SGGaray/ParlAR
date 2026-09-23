@@ -25,6 +25,7 @@ from .capturador_audio import CapturadorMic, Segmentador, crear_vad
 from .cliente_guionar import crear_cliente
 from .config import Config
 from .control import ServidorControl, normalizar_comando
+from .control_gesto_dictado import ControlGestoDictado
 from .daemon_atajos import DaemonAtajos
 from .entrega import EstadoEntrega, ResultadoDistribucion, ResultadoSink
 from .indicador import crear_ui
@@ -110,11 +111,15 @@ class App:
         self.mic = mic or CapturadorMic(cfg.sample_rate, cfg.frame_samples)
         self.ui = ui or crear_ui(cfg.overlay, al_click=self.alternar)
         self.control = control or ServidorControl(self._atender_comando)
+        self.gesto_dictado = ControlGestoDictado(
+            self.iniciar_grabacion,
+            self.detener_grabacion,
+        )
         self.atajos = atajos or DaemonAtajos(
             cfg.hotkey_toggle,
             cfg.hotkey_quit,
-            al_presionar=self.iniciar_grabacion,
-            al_soltar=self.detener_grabacion,
+            al_presionar=self.gesto_dictado.presionar,
+            al_soltar=self.gesto_dictado.soltar,
             al_salir=self.salir,
         )
 
@@ -158,7 +163,7 @@ class App:
             self.atajos.iniciar()
             if self.atajos._listener:
                 pista = (
-                    f"Mantené {self.cfg.hotkey_toggle} para dictar"
+                    f"Mantené {self.cfg.hotkey_toggle} para dictar; ""doble toque para modo continuo"
                 )
             else:
                 pista = "Iniciá/detené con `parlarctl alternar`"
@@ -302,6 +307,10 @@ class App:
         return True
 
     def salir(self, *, esperar: bool = True):
+        gesto = getattr(self, "gesto_dictado", None)
+        if gesto is not None:
+            gesto.cerrar()
+
         propietario = False
         with self._transicion_lock:
             with self._estado_cv:

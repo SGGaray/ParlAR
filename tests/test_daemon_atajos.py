@@ -4,6 +4,7 @@ from unittest import mock
 
 from parlar.app import App
 from parlar.config import Config
+from parlar.control_gesto_dictado import ControlGestoDictado
 from parlar.daemon_atajos import (
     DaemonAtajos,
     _EstadoCombo,
@@ -266,20 +267,20 @@ class PruebasDaemonAtajos(unittest.TestCase):
 
         self.assertIs(
             kwargs["al_presionar"].__self__,
-            app,
+            app.gesto_dictado,
         )
         self.assertIs(
             kwargs["al_presionar"].__func__,
-            App.iniciar_grabacion,
+            ControlGestoDictado.presionar,
         )
 
         self.assertIs(
             kwargs["al_soltar"].__self__,
-            app,
+            app.gesto_dictado,
         )
         self.assertIs(
             kwargs["al_soltar"].__func__,
-            App.detener_grabacion,
+            ControlGestoDictado.soltar,
         )
 
         self.assertIs(
