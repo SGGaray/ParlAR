@@ -1,0 +1,2 @@
+{"id":"ejemplo-001","audio":"audio/ejemplo-001.wav","text":"Esta es una prueba de transcripción de ParlAR.","language":"es","tags":["normal"]}
+{"id":"ejemplo-002","audio":"audio/ejemplo-002.wav","text":"El control debe preservar el texto aunque cambie la aplicación activa.","language":"es","tags":["normal","tecnico"]}
