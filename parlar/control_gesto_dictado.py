@@ -54,6 +54,7 @@ class ControlGestoDictado:
         self._estado_lock = threading.RLock()
 
         self._timer_stop = None
+        self._timer_generacion = 0
         self._cerrado = False
 
     @property
@@ -62,6 +63,9 @@ class ControlGestoDictado:
             return self._gestor.continuo
 
     def _cancelar_timer_locked(self) -> None:
+        # cancel() no garantiza que un callback que ya arrancó no termine
+        # ejecutándose. La generación invalida lógicamente callbacks viejos.
+        self._timer_generacion += 1
         timer = self._timer_stop
         self._timer_stop = None
 
@@ -83,9 +87,12 @@ class ControlGestoDictado:
             hasta - self._reloj(),
         )
 
+        generacion_timer = self._timer_generacion
+
         timer = self._timer_factory(
             demora,
-            self._vencer_stop_pendiente,
+            lambda generacion=generacion_timer:
+                self._vencer_stop_pendiente(generacion),
         )
 
         try:
@@ -166,10 +173,16 @@ class ControlGestoDictado:
 
             self._ejecutar(acciones)
 
-    def _vencer_stop_pendiente(self) -> None:
+    def _vencer_stop_pendiente(
+        self,
+        generacion_timer: int,
+    ) -> None:
         with self._evento_lock:
             with self._estado_lock:
-                if self._cerrado:
+                if (
+                    self._cerrado
+                    or generacion_timer != self._timer_generacion
+                ):
                     return
 
                 self._timer_stop = None
@@ -186,6 +199,16 @@ class ControlGestoDictado:
                     self._programar_timer_locked()
 
             self._ejecutar(acciones)
+
+    def reiniciar(self) -> None:
+        """Vuelve a PTT normal sin cerrar permanentemente el controlador."""
+        with self._evento_lock:
+            with self._estado_lock:
+                if self._cerrado:
+                    return
+
+                self._cancelar_timer_locked()
+                self._gestor.reiniciar()
 
     def cerrar(self) -> None:
         """Cancela timers y evita callbacks posteriores al shutdown."""

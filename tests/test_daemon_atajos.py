@@ -17,6 +17,7 @@ CTRL_R = 65508
 SHIFT_L = 65505
 SHIFT_R = 65506
 ALT_L = 65513
+ESC = 65307
 
 
 class KeyCodeFalso:
@@ -79,6 +80,9 @@ class ListenerFalso:
 class TecladoFalso:
     HotKey = HotKeyFalso
     Listener = ListenerFalso
+    Key = SimpleNamespace(
+        esc=KeyFalsa(ESC)
+    )
 
 
 class PruebasIdentidadFisica(unittest.TestCase):
@@ -230,6 +234,46 @@ class PruebasDaemonAtajos(unittest.TestCase):
             ["press", "release"],
         )
 
+    def test_escape_cancela_una_vez_por_presion_fisica(self):
+        eventos = []
+
+        daemon = DaemonAtajos(
+            "<ctrl_r>+<shift_r>",
+            "<ctrl>+<alt>+q",
+            al_presionar=lambda:
+                eventos.append("press"),
+            al_soltar=lambda:
+                eventos.append("release"),
+            al_salir=lambda:
+                eventos.append("quit"),
+            al_cancelar=lambda:
+                eventos.append("cancel"),
+        )
+
+        listener = daemon._crear_listener(
+            TecladoFalso
+        )
+
+        escape = KeyFalsa(ESC)
+
+        listener.on_press(escape)
+        listener.on_press(escape)
+
+        self.assertEqual(
+            eventos,
+            ["cancel"],
+        )
+
+        listener.on_release(escape)
+        listener.on_press(escape)
+
+        self.assertEqual(
+            eventos,
+            ["cancel", "cancel"],
+        )
+
+        listener.on_release(escape)
+
     def test_app_conecta_inicio_y_detencion_explicitos(self):
         cfg = Config()
 
@@ -281,6 +325,15 @@ class PruebasDaemonAtajos(unittest.TestCase):
         self.assertIs(
             kwargs["al_soltar"].__func__,
             ControlGestoDictado.soltar,
+        )
+
+        self.assertIs(
+            kwargs["al_cancelar"].__self__,
+            app,
+        )
+        self.assertIs(
+            kwargs["al_cancelar"].__func__,
+            App.cancelar_grabacion,
         )
 
         self.assertIs(

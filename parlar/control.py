@@ -30,6 +30,7 @@ _MAX_CLIENTES = 8
 # alias inglés -> canónico español (UX para quien prefiera comandos en inglés)
 ALIAS_COMANDOS = {
     "toggle": "alternar", "start": "iniciar", "stop": "detener",
+    "cancel": "cancelar",
     "status": "estado", "mode": "modo", "rewrite": "reescritura",
     "quit": "salir",
 }

@@ -102,12 +102,14 @@ class DaemonAtajos:
         al_presionar: Callable[[], None],
         al_soltar: Callable[[], None],
         al_salir: Callable[[], None],
+        al_cancelar: Callable[[], None] | None = None,
     ):
         self.combo_dictado = combo_dictado
         self.combo_salir = combo_salir
         self.al_presionar = al_presionar
         self.al_soltar = al_soltar
         self.al_salir = al_salir
+        self.al_cancelar = al_cancelar or (lambda: None)
 
         self._listener = None
         self._estado_dictado = None
@@ -132,9 +134,15 @@ class DaemonAtajos:
             self.al_salir,
         )
 
+        escape_id = _identidad_tecla(
+            keyboard.Key.esc
+        )
+        escape_presionado = False
         listener = None
 
         def al_press(tecla):
+            nonlocal escape_presionado
+
             # El hotkey de salida conserva el comportamiento estándar
             # de pynput, para el que sí conviene canonicalizar.
             hotkey_salir.press(
@@ -143,15 +151,25 @@ class DaemonAtajos:
 
             identidad = _identidad_tecla(tecla)
 
+            if identidad == escape_id:
+                if not escape_presionado:
+                    escape_presionado = True
+                    self.al_cancelar()
+                return
+
             if estado_dictado.presionar(
                 identidad
             ):
                 self.al_presionar()
 
         def al_release(tecla):
+            nonlocal escape_presionado
+
             identidad = _identidad_tecla(tecla)
 
-            if estado_dictado.soltar(
+            if identidad == escape_id:
+                escape_presionado = False
+            elif estado_dictado.soltar(
                 identidad
             ):
                 self.al_soltar()

@@ -545,6 +545,202 @@ class PruebasApp(unittest.TestCase):
         self.assertFalse(app.iniciar_grabacion())
 
 
+
+    def test_cancel_descarta_frase_abierta_sin_emitirla(self):
+        app, mic, _, _, _, _, sesion, fabrica = self.app()
+
+        self.assertTrue(
+            app.iniciar_grabacion()
+        )
+        mic.enviar(1)
+        mic.enviar(2)
+        self.esperar_voz(fabrica)
+
+        self.assertTrue(
+            app.cancelar_grabacion()
+        )
+        self.assertEqual(
+            app.estado,
+            EstadoApp.IDLE,
+        )
+        self.assertFalse(
+            app.grabando.is_set()
+        )
+
+        # Una sesión posterior sirve como barrera observable del worker.
+        self.assertTrue(
+            app.iniciar_grabacion()
+        )
+        mic.enviar(101)
+        mic.enviar(0)
+
+        self.assertTrue(
+            sesion.escrito.wait(2)
+        )
+        self.assertEqual(
+            sesion.textos,
+            ["U:101"],
+        )
+
+    def test_cancel_durante_stt_invalida_resultado_tardio(self):
+        frases = FrasesFalsas(
+            bloquear=True
+        )
+        app, mic, _, _, _, _, sesion, _ = self.app(
+            frases=frases
+        )
+
+        self.assertTrue(
+            app.iniciar_grabacion()
+        )
+        mic.enviar(7)
+        mic.enviar(0)
+
+        self.assertTrue(
+            frases.inferencia_iniciada.wait(2)
+        )
+
+        self.assertTrue(
+            app.cancelar_grabacion()
+        )
+        self.assertEqual(
+            app.estado,
+            EstadoApp.IDLE,
+        )
+
+        frases.liberar.set()
+
+        self.assertTrue(
+            app.iniciar_grabacion()
+        )
+        mic.enviar(101)
+        mic.enviar(0)
+
+        self.assertTrue(
+            sesion.escrito.wait(2)
+        )
+        self.assertEqual(
+            sesion.textos,
+            ["U:101"],
+        )
+
+    def test_cancel_durante_starting_no_resucita_recording(self):
+        mic = MicFalso(
+            bloquear_inicio=True
+        )
+        app, *_ = self.app(
+            mic=mic
+        )
+
+        resultado_start = []
+        resultado_cancel = []
+
+        hilo_start = threading.Thread(
+            target=lambda:
+                resultado_start.append(
+                    app.iniciar_grabacion()
+                )
+        )
+        hilo_start.start()
+
+        self.assertTrue(
+            mic.inicio_entrado.wait(2)
+        )
+
+        hilo_cancel = threading.Thread(
+            target=lambda:
+                resultado_cancel.append(
+                    app.cancelar_grabacion()
+                )
+        )
+        hilo_cancel.start()
+
+        self.assertTrue(
+            app.esperar_estado(
+                EstadoApp.IDLE
+            )
+        )
+
+        mic.liberar_inicio.set()
+
+        hilo_start.join(2)
+        hilo_cancel.join(2)
+
+        self.assertFalse(
+            hilo_start.is_alive()
+        )
+        self.assertFalse(
+            hilo_cancel.is_alive()
+        )
+        self.assertEqual(
+            resultado_start,
+            [False],
+        )
+        self.assertEqual(
+            resultado_cancel,
+            [True],
+        )
+        self.assertEqual(
+            app.estado,
+            EstadoApp.IDLE,
+        )
+        self.assertIsNone(
+            app.generacion_activa
+        )
+        self.assertFalse(
+            app.grabando.is_set()
+        )
+
+    def test_cancel_dos_veces_es_idempotente(self):
+        app, mic, *_ = self.app()
+
+        self.assertTrue(
+            app.iniciar_grabacion()
+        )
+        self.assertTrue(
+            app.cancelar_grabacion()
+        )
+        self.assertTrue(
+            app.cancelar_grabacion()
+        )
+
+        self.assertEqual(
+            app.estado,
+            EstadoApp.IDLE,
+        )
+        self.assertEqual(
+            mic.detenciones,
+            1,
+        )
+
+
+
+    def test_ipc_cancel_alias_invalida_sesion(self):
+        app, mic, _, _, _, _, sesion, _ = self.app()
+
+        self.assertTrue(
+            app.iniciar_grabacion()
+        )
+
+        mic.enviar(9)
+
+        self.assertEqual(
+            app._atender_comando("cancel"),
+            "OK detenido",
+        )
+        self.assertEqual(
+            app.estado,
+            EstadoApp.IDLE,
+        )
+        self.assertIsNone(
+            app.generacion_activa
+        )
+        self.assertEqual(
+            sesion.textos,
+            [],
+        )
+
+
 def _esperar_cantidad(salida, cantidad, timeout=2.0):
     limite = threading.Event()
     # Las escrituras disparan ``escrito``. Limpiarlo y esperar evita sleeps;

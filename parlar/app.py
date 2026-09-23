@@ -121,6 +121,7 @@ class App:
             al_presionar=self.gesto_dictado.presionar,
             al_soltar=self.gesto_dictado.soltar,
             al_salir=self.salir,
+            al_cancelar=self.cancelar_grabacion,
         )
 
     # ------------------------------------------------------------ ciclo de vida
@@ -208,6 +209,8 @@ class App:
 
             with self._salida_lock:
                 with self._estado_cv:
+                    if self._estado != EstadoApp.STARTING:
+                        return False
                     self._sesion_activa = generacion
                     self._modo_por_sesion = {generacion: self._modo_solicitado}
                     self._estado_cv.notify_all()
@@ -224,13 +227,18 @@ class App:
             except Exception as exc:
                 with self._salida_lock:
                     with self._estado_cv:
+                        vigente = (
+                            self._sesion_activa == generacion
+                            and self._estado == EstadoApp.STARTING
+                        )
                         if self._sesion_activa == generacion:
                             self._sesion_activa = None
                         self._modo_por_sesion.pop(generacion, None)
                         self._stops_listos.discard(generacion)
                         self._errores_stop.discard(generacion)
-                        self._estado = EstadoApp.ERROR
-                        self._ultimo_error = f"micrófono: {exc}"
+                        if vigente:
+                            self._estado = EstadoApp.ERROR
+                            self._ultimo_error = f"micrófono: {exc}"
                         self._estado_cv.notify_all()
                 try:
                     self.mic.detener(vaciar=True)
@@ -243,13 +251,41 @@ class App:
                     print("[app] descarte de audio falló: "
                           f"{type(cleanup_exc).__name__}", file=sys.stderr)
                 self.grabando.clear()
+                if not vigente:
+                    return False
                 self.ui.fijar_estado("error")
                 print(f"[app] no se pudo abrir el micrófono: {exc}", file=sys.stderr)
                 return False
 
             with self._estado_cv:
-                self._estado = EstadoApp.RECORDING
-                self._estado_cv.notify_all()
+                vigente = (
+                    self._sesion_activa == generacion
+                    and self._estado == EstadoApp.STARTING
+                )
+                if vigente:
+                    self._estado = EstadoApp.RECORDING
+                    self._estado_cv.notify_all()
+
+            if not vigente:
+                try:
+                    self.mic.detener(vaciar=True)
+                except Exception as cleanup_exc:
+                    print(
+                        "[app] cierre de micrófono cancelado falló: "
+                        f"{type(cleanup_exc).__name__}",
+                        file=sys.stderr,
+                    )
+                try:
+                    self.mic.descartar_pendientes(generacion)
+                except Exception as cleanup_exc:
+                    print(
+                        "[app] descarte cancelado falló: "
+                        f"{type(cleanup_exc).__name__}",
+                        file=sys.stderr,
+                    )
+                self.grabando.clear()
+                return False
+
             self.grabando.set()
             self.ui.fijar_estado("recording")
             print(f"[app] ● grabando (sesión {generacion})")
@@ -291,6 +327,126 @@ class App:
             self.ui.fijar_estado("transcribing")
             print(f"[app] ◌ deteniendo (sesión {generacion})")
             return error is None
+
+    def cancelar_grabacion(self) -> bool:
+        """Invalida la sesión sin finalizar ni emitir audio pendiente."""
+        generacion = None
+
+        # La barrera de salida es lo primero: cualquier escritura que ya
+        # comenzó termina antes de esta sección; ninguna nueva puede empezar
+        # después de invalidar la generación.
+        with self._salida_lock:
+            with self._estado_cv:
+                if self._estado in (
+                    EstadoApp.SHUTTING_DOWN,
+                    EstadoApp.CLOSED,
+                ):
+                    return True
+
+                if self._estado in (
+                    EstadoApp.IDLE,
+                    EstadoApp.ERROR,
+                ):
+                    ya_detenido = True
+                else:
+                    ya_detenido = False
+                    generacion = self._sesion_activa
+                    self._sesion_activa = None
+
+                    if generacion is not None:
+                        self._modo_por_sesion.pop(
+                            generacion,
+                            None,
+                        )
+                        self._stops_listos.discard(
+                            generacion
+                        )
+                        self._errores_stop.discard(
+                            generacion
+                        )
+
+                    self._estado = EstadoApp.IDLE
+                    self._ultimo_error = ""
+                    self.grabando.clear()
+                    self._estado_cv.notify_all()
+
+            if not ya_detenido:
+                self.guionar.enviar_parcial("")
+
+                cancelar_unidad = getattr(
+                    self.inyector,
+                    "cancelar_unidad",
+                    None,
+                )
+                if cancelar_unidad:
+                    cancelar_unidad()
+
+        # También elimina continuo/doble-tap/timers pendientes.
+        gesto = getattr(
+            self,
+            "gesto_dictado",
+            None,
+        )
+        if gesto is not None:
+            gesto.reiniciar()
+
+        if ya_detenido:
+            return True
+
+        error = None
+
+        # START/STOP físicos siguen serializados. Si un START estaba dentro
+        # de mic.iniciar(), esperamos su retorno después de haber invalidado
+        # ya la generación.
+        with self._transicion_lock:
+            try:
+                self.mic.detener(vaciar=True)
+            except Exception as exc:
+                error = exc
+                print(
+                    "[app] falló el cierre por cancelación: "
+                    f"{exc}",
+                    file=sys.stderr,
+                )
+
+            if generacion is not None:
+                try:
+                    self.mic.descartar_pendientes(
+                        generacion
+                    )
+                except Exception as exc:
+                    if error is None:
+                        error = exc
+                    print(
+                        "[app] falló el descarte por cancelación: "
+                        f"{exc}",
+                        file=sys.stderr,
+                    )
+
+        if error is not None:
+            with self._estado_cv:
+                if (
+                    self._estado == EstadoApp.IDLE
+                    and self._sesion_activa is None
+                ):
+                    self._estado = EstadoApp.ERROR
+                    self._ultimo_error = (
+                        f"micrófono: {error}"
+                    )
+                    self._estado_cv.notify_all()
+
+            self.ui.fijar_estado("error")
+            return False
+
+        self.ui.fijar_estado("idle")
+
+        if generacion is not None:
+            print(
+                f"[app] × cancelado "
+                f"(sesión {generacion})"
+            )
+
+        return True
 
     def cambiar_modo(self, modo: str) -> bool:
         if modo not in Config.MODOS:
@@ -924,6 +1080,8 @@ class App:
             return self._respuesta_control_lifecycle(self.iniciar_grabacion())
         if op == "detener":
             return self._respuesta_control_lifecycle(self.detener_grabacion())
+        if op == "cancelar":
+            return self._respuesta_control_lifecycle(self.cancelar_grabacion())
         if op == "estado":
             return self._respuesta_estado()
         if op == "modo" and len(partes) > 1 and partes[1] in Config.MODOS:

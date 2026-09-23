@@ -167,6 +167,97 @@ class PruebasControlGestoDictado(unittest.TestCase):
             ["start", "stop"],
         )
 
+    def test_timer_cancelado_ya_arrancado_no_toca_stop_nuevo(self):
+        # Timer A: primer tap.
+        self.reloj.ahora = 1.000
+        self.control.presionar()
+
+        self.reloj.ahora = 1.080
+        self.control.soltar()
+
+        timer_a = self.timers.timers[-1]
+
+        # Segundo tap cancela A y entra en continuo.
+        self.reloj.ahora = 1.200
+        self.control.presionar()
+
+        self.reloj.ahora = 1.280
+        self.control.soltar()
+
+        self.assertTrue(
+            timer_a.cancelado
+        )
+        self.assertTrue(
+            self.control.continuo_activo
+        )
+
+        # Doble tap de salida.
+        self.reloj.ahora = 2.000
+        self.control.presionar()
+
+        self.reloj.ahora = 2.080
+        self.control.soltar()
+
+        self.reloj.ahora = 2.200
+        self.control.presionar()
+
+        self.reloj.ahora = 2.280
+        self.control.soltar()
+
+        self.assertFalse(
+            self.control.continuo_activo
+        )
+        self.assertEqual(
+            self.eventos,
+            ["start", "stop"],
+        )
+
+        # Nueva sesión/tap: crea Timer B.
+        self.reloj.ahora = 3.000
+        self.control.presionar()
+
+        self.reloj.ahora = 3.080
+        self.control.soltar()
+
+        timer_b = self.timers.timers[-1]
+
+        self.assertEqual(
+            len(self.timers.timers),
+            2,
+        )
+        self.assertIs(
+            self.control._timer_stop,
+            timer_b,
+        )
+
+        # Simula Timer A ya despachado por threading antes de cancel().
+        # Llamamos el callback directamente para ignorar su flag cancelado.
+        self.reloj.ahora = 3.100
+        timer_a.callback()
+
+        # A debe ser completamente inerte: no borra B ni crea Timer C.
+        self.assertEqual(
+            len(self.timers.timers),
+            2,
+        )
+        self.assertIs(
+            self.control._timer_stop,
+            timer_b,
+        )
+        self.assertEqual(
+            self.eventos,
+            ["start", "stop", "start"],
+        )
+
+        # B conserva su deadline y detiene normalmente.
+        self.reloj.ahora = 3.380
+        timer_b.disparar()
+
+        self.assertEqual(
+            self.eventos,
+            ["start", "stop", "start", "stop"],
+        )
+
     def test_cerrar_cancela_stop_pendiente(self):
         self.reloj.ahora = 1.000
         self.control.presionar()
@@ -188,6 +279,48 @@ class PruebasControlGestoDictado(unittest.TestCase):
         self.assertEqual(
             self.eventos,
             ["start"],
+        )
+
+
+    def test_reiniciar_sale_de_continuo_y_cancela_timer(self):
+        # Entra en continuo.
+        self.reloj.ahora = 1.000
+        self.control.presionar()
+
+        self.reloj.ahora = 1.080
+        self.control.soltar()
+
+        timer = self.timers.timers[-1]
+
+        self.reloj.ahora = 1.200
+        self.control.presionar()
+
+        self.reloj.ahora = 1.280
+        self.control.soltar()
+
+        self.assertTrue(
+            self.control.continuo_activo
+        )
+        self.assertTrue(
+            timer.cancelado
+        )
+
+        self.control.reiniciar()
+
+        self.assertFalse(
+            self.control.continuo_activo
+        )
+
+        # El siguiente gesto vuelve a ser PTT normal.
+        self.reloj.ahora = 2.000
+        self.control.presionar()
+
+        self.reloj.ahora = 2.500
+        self.control.soltar()
+
+        self.assertEqual(
+            self.eventos,
+            ["start", "start", "stop"],
         )
 
 
