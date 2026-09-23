@@ -15,6 +15,7 @@ from parlar.capturador_audio import (
     CapturadorMic, EventoSegmento, FrameAudio, Segmentador,
 )
 from parlar.config import Config
+from parlar.cliente_guionar import ClienteNulo
 
 
 class MicFalso:
@@ -767,6 +768,35 @@ class PruebasApp(unittest.TestCase):
             mic.detenciones,
             1,
         )
+
+    def test_cancel_limpia_parcial_guionar_sin_borrar_final_previo(self):
+        app, mic, _, _, _, guionar, sesion, _ = self.app(modo="streaming")
+        self.assertTrue(app.iniciar_grabacion())
+        mic.enviar(1)
+        mic.enviar(0)
+        self.assertTrue(sesion.escrito.wait(2))
+        self.assertEqual(guionar.textos, ["S:1"])
+        self.assertEqual(sesion.textos, ["S:1"])
+
+        guionar.enviar_parcial("hipótesis pendiente")
+        self.assertTrue(app.cancelar_grabacion())
+
+        self.assertEqual(guionar.parciales[-2:], [
+            "hipótesis pendiente", "",
+        ])
+        self.assertEqual(guionar.textos, ["S:1"])
+        self.assertEqual(sesion.textos, ["S:1"])
+
+    def test_pipeline_funciona_con_guionar_desactivado(self):
+        app, mic, _, _, _, guionar, sesion, _ = self.app(
+            guionar=ClienteNulo())
+        self.assertTrue(guionar.es_nulo)
+        self.assertTrue(app.iniciar_grabacion())
+        mic.enviar(4)
+        mic.enviar(0)
+        self.assertTrue(sesion.escrito.wait(2))
+        self.assertEqual(sesion.textos, ["U:4"])
+        self.assertTrue(app.cancelar_grabacion())
 
 
 
