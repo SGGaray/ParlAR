@@ -63,3 +63,7 @@ probe-*.txt
 
 # --- Transcripts locales creados accidentalmente dentro del checkout ---
 parlar-*.txt
+
+# VAD endpoint benchmark — capturas/resultados locales
+/benchmarks/vad/corpus.raw.jsonl
+/benchmarks/vad/results/

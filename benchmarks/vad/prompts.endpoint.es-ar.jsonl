@@ -1,0 +1,12 @@
+{"id":"endpoint-001","text":"Hoy tengo varias cosas para revisar antes de terminar el trabajo.","tags":["natural"]}
+{"id":"endpoint-002","text":"Cuando termine esta parte, voy a revisar los cambios y después continúo.","tags":["natural","pause"]}
+{"id":"endpoint-003","text":"El sistema recibe el audio, detecta la voz y finalmente entrega el texto.","tags":["natural","pause"]}
+{"id":"endpoint-004","text":"Necesito comprobar primero la configuración y después ejecutar todas las pruebas.","tags":["natural"]}
+{"id":"endpoint-005","text":"COBIT define objetivos de gobierno mientras NIST organiza resultados de ciberseguridad.","tags":["technical"]}
+{"id":"endpoint-006","text":"CUDA y cuDNN están disponibles, pero el modelo sigue necesitando una configuración correcta.","tags":["technical","pause"]}
+{"id":"endpoint-007","text":"La evidencia quedó guardada en GitHub y la revisión puede continuar mañana.","tags":["technical"]}
+{"id":"endpoint-008","text":"OWASP publica diferentes recursos para mejorar el desarrollo seguro de aplicaciones.","tags":["technical"]}
+{"id":"endpoint-009","text":"Si hago una pausa corta en el medio de la oración quiero que ParlAR siga escuchando.","tags":["pause"]}
+{"id":"endpoint-010","text":"A veces pienso una palabra, hago una pausa y después continúo hablando normalmente.","tags":["pause"]}
+{"id":"endpoint-011","text":"Esta frase tiene varias partes, algunas más rápidas, y otras dichas con un poco más de calma.","tags":["pause","variable"]}
+{"id":"endpoint-012","text":"Voy a hablar de manera natural sin intentar adaptar mi ritmo al funcionamiento del programa.","tags":["natural","control"]}
