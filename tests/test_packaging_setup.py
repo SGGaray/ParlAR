@@ -1,5 +1,6 @@
 """Regresiones del contrato de checkout, setup, servicio y gate central."""
 
+import json
 import os
 import shlex
 import shutil
@@ -661,6 +662,58 @@ except SystemExit as exc:
         self.assertEqual(resultado.returncode, 0, resultado.stderr)
         self.assertIn("usage: parlarctl", resultado.stdout)
         self.assertIn("cancelar", resultado.stdout)
+
+    def test_inspeccion_config_no_carga_runtime_y_expone_hotkey(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_home = Path(tmp) / "config"
+            ruta = config_home / "parlar" / "config.json"
+            ruta.parent.mkdir(parents=True)
+            ruta.write_text(json.dumps({
+                "hotkey_toggle": "<ctrl>+<alt>+d",
+                "context_terms": ["Amara"],
+            }), encoding="utf-8")
+            entorno = os.environ.copy()
+            entorno["XDG_CONFIG_HOME"] = str(config_home)
+
+            atajo = ejecutar(
+                sys.executable, "-B", "-m", "parlar", "--mostrar-atajo",
+                env=entorno)
+            self.assertEqual(atajo.returncode, 0, atajo.stderr)
+            self.assertEqual(atajo.stdout.strip(), "<ctrl>+<alt>+d")
+            self.assertNotIn("[stt]", atajo.stdout)
+
+            ruta_resultado = ejecutar(
+                sys.executable, "-B", "-m", "parlar", "--config-path",
+                env=entorno)
+            self.assertEqual(ruta_resultado.returncode, 0, ruta_resultado.stderr)
+            self.assertEqual(ruta_resultado.stdout.strip(), str(ruta))
+
+            mostrada = ejecutar(
+                sys.executable, "-B", "-m", "parlar", "--show-config",
+                env=entorno)
+            self.assertEqual(mostrada.returncode, 0, mostrada.stderr)
+            datos = json.loads(mostrada.stdout)
+            self.assertEqual(datos["hotkey_toggle"], "<ctrl>+<alt>+d")
+            self.assertEqual(datos["context_terms"], ["Amara"])
+            self.assertEqual(datos["schema_version"], 1)
+
+    def test_atajo_cli_se_puede_persistir_sin_iniciar_runtime(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_home = Path(tmp) / "config"
+            entorno = os.environ.copy()
+            entorno["XDG_CONFIG_HOME"] = str(config_home)
+            resultado = ejecutar(
+                sys.executable, "-B", "-m", "parlar",
+                "--atajo", "<ctrl>+<alt>+p",
+                "--guardar-config", "--mostrar-atajo",
+                env=entorno,
+            )
+            self.assertEqual(resultado.returncode, 0, resultado.stderr)
+            self.assertIn("[config] guardada", resultado.stdout)
+            self.assertTrue(resultado.stdout.rstrip().endswith("<ctrl>+<alt>+p"))
+            guardada = json.loads(
+                (config_home / "parlar" / "config.json").read_text())
+            self.assertEqual(guardada["hotkey_toggle"], "<ctrl>+<alt>+p")
 
     def test_setup_instala_paquete_y_documenta_comandos(self):
         setup = (ROOT / "setup.sh").read_text(encoding="utf-8")

@@ -5,11 +5,13 @@ como alias, por si preferís esa nomenclatura.
 """
 
 import argparse
+from dataclasses import asdict
+import json
 import signal
 import sys
 import threading
 
-from .config import Config, ErrorConfiguracion
+from .config import CONFIG_FILE, Config, ErrorConfiguracion
 from .runtime_nvidia import preparar_runtime_nvidia
 
 _ALIAS_MODO = {"frase": "utterance"}
@@ -102,6 +104,27 @@ def _crear_parser(cfg: Config) -> argparse.ArgumentParser:
     ap.add_argument("--guardar-config", "--save-config", dest="guardar_config",
                     action="store_true",
                     help="persiste los flags actuales en ~/.config/parlar/config.json")
+    inspeccion = ap.add_mutually_exclusive_group()
+    inspeccion.add_argument(
+        "--mostrar-config", "--show-config", dest="mostrar_config",
+        action="store_true",
+        help="muestra la configuración efectiva como JSON y termina",
+    )
+    inspeccion.add_argument(
+        "--ruta-config", "--config-path", dest="ruta_config",
+        action="store_true",
+        help="muestra la ruta del archivo de configuración y termina",
+    )
+    inspeccion.add_argument(
+        "--mostrar-atajo", "--show-hotkey", dest="mostrar_atajo",
+        action="store_true",
+        help="muestra el atajo X11 efectivo y termina",
+    )
+    ap.add_argument(
+        "--atajo", "--hotkey", dest="atajo", default=cfg.hotkey_toggle,
+        metavar="COMBINACIÓN",
+        help="atajo X11; usalo con --guardar-config para persistirlo",
+    )
     return ap
 
 
@@ -132,13 +155,12 @@ def main():
     cfg.guionar = args.guionar
     cfg.guionar_socket = args.guionar_socket
     cfg.guardar_sesion = args.guardar_sesion
+    cfg.hotkey_toggle = args.atajo
     try:
         cfg.validate()
     except ErrorConfiguracion as e:
         print(f"[config] configuración inválida: {e}", file=sys.stderr)
         raise SystemExit(2)
-
-    preparar_runtime_nvidia(cfg.device)
 
     if args.guardar_config:
         try:
@@ -147,6 +169,18 @@ def main():
             print(f"[config] no se pudo guardar: {e}", file=sys.stderr)
             raise SystemExit(2)
         print("[config] guardada")
+
+    if args.mostrar_config:
+        print(json.dumps(asdict(cfg), indent=2, ensure_ascii=False))
+        return
+    if args.ruta_config:
+        print(CONFIG_FILE)
+        return
+    if args.mostrar_atajo:
+        print(cfg.hotkey_toggle)
+        return
+
+    preparar_runtime_nvidia(cfg.device)
 
     from .app import App  # imports pesados diferidos hasta después del parseo
     _ejecutar_con_sigterm(App(cfg))

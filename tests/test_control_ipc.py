@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 
 from parlar.config import SOCKET_PATH
-from parlar.control import ServidorControl
+from parlar.control import ServidorControl, normalizar_comando
 
 
 def peticion(ruta, partes, *, cerrar_escritura=False):
@@ -119,6 +119,34 @@ class PruebasControl(unittest.TestCase):
     def test_fallback_global_incluye_uid(self):
         if str(SOCKET_PATH).startswith("/tmp/"):
             self.assertIn(str(os.getuid()), SOCKET_PATH.name)
+
+    def test_matriz_aliases_y_valores_normalizados(self):
+        casos = {
+            " iniciar ": ["iniciar"],
+            "START": ["iniciar"],
+            "detener": ["detener"],
+            "stop": ["detener"],
+            "cancelar": ["cancelar"],
+            "CANCEL": ["cancelar"],
+            "alternar": ["alternar"],
+            "toggle": ["alternar"],
+            "estado": ["estado"],
+            "status": ["estado"],
+            "modo frase": ["modo", "utterance"],
+            "MODE STREAMING": ["modo", "streaming"],
+            "reescritura ninguna": ["reescritura", "none"],
+            "rewrite concise": ["reescritura", "concise"],
+            "rewrite correo": ["reescritura", "email"],
+            "salir": ["salir"],
+            "QUIT": ["salir"],
+        }
+        for entrada, esperado in casos.items():
+            with self.subTest(entrada=entrada):
+                self.assertEqual(normalizar_comando(entrada), esperado)
+
+        self.assertEqual(normalizar_comando(""), [])
+        self.assertNotEqual(
+            normalizar_comando("cancel"), normalizar_comando("stop"))
 
 
 if __name__ == "__main__":
