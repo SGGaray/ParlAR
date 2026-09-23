@@ -288,6 +288,23 @@ class PruebasApp(unittest.TestCase):
         self.assertTrue(fabrica.creada.wait(2))
         self.assertTrue(fabrica.instancias[-1].voz_iniciada.wait(2))
 
+    def test_pista_headless_no_promete_indicador(self):
+        app, *_ = self.app()
+        pista = app._pista_controles()
+        self.assertIn("parlarctl", pista)
+        self.assertIn("cancelar", pista)
+        self.assertNotIn("indicador", pista)
+
+    def test_pista_x11_documenta_ptt_continuo_esc_e_indicador(self):
+        app, *_ = self.app()
+        app.cfg.overlay = True
+        app.atajos._listener = object()
+        pista = app._pista_controles()
+        self.assertIn(app.cfg.hotkey_toggle, pista)
+        self.assertIn("doble toque", pista)
+        self.assertIn("Esc cancela", pista)
+        self.assertIn("click en el indicador", pista)
+
     def test_stop_finaliza_frase_abierta(self):
         app, mic, _, _, _, _, sesion, fabrica = self.app()
         self.assertTrue(app.iniciar_grabacion())

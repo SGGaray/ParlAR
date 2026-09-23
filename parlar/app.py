@@ -162,21 +162,29 @@ class App:
             self._iniciar_trabajador()
             self.control.iniciar()
             self.atajos.iniciar()
-            if self.atajos._listener:
-                pista = (
-                    f"Mantené {self.cfg.hotkey_toggle} para dictar; ""doble toque para modo continuo"
-                )
-            else:
-                pista = "Iniciá/detené con `parlarctl alternar`"
             print(
-                f"[app] listo. Modo: {self.cfg.mode}. {pista}, "
-                "o usá un click en el punto del indicador."
+                f"[app] listo. Modo: {self.cfg.mode}. "
+                f"{self._pista_controles()}"
             )
             self.ui.ejecutar()
         except KeyboardInterrupt:
             pass
         finally:
             self.salir()
+
+    def _pista_controles(self) -> str:
+        if self.atajos._listener:
+            controles = (
+                f"Mantené {self.cfg.hotkey_toggle} para dictar; "
+                "doble toque para modo continuo; Esc cancela"
+            )
+        else:
+            controles = (
+                "Usá `parlarctl iniciar`, `detener`, `cancelar` o `alternar`"
+            )
+        if self.cfg.overlay:
+            controles += "; también podés hacer click en el indicador"
+        return controles + "."
 
     def alternar(self):
         estado = self.estado
