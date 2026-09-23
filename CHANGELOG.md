@@ -2,7 +2,22 @@
 
 ## [Unreleased]
 
+### Agregado
+- Packaging Python con entrypoints instalables `parlar` y `parlarctl`.
+- Instalación de usuario autocontenida, launcher `.desktop`, servicio systemd
+  opcional y desinstalación conservadora que preserva config y transcripts.
+- Schema de configuración v1 con migración conservadora, claves desconocidas
+  preservadas y comandos CLI para mostrar config, ruta y hotkey vigente.
+- Matriz reproducible de readiness Linux 1.0 que separa evidencia automatizada
+  de los retests físicos pendientes.
+
 ### Corregido
+- Los mensajes de startup distinguen indicador, headless, X11 y fallback IPC,
+  y documentan PTT, doble toque continuo y Esc.
+- CANCEL durante un STOP físico bloqueado no puede republicar una generación
+  ya invalidada.
+- `webrtcvad-wheels` reemplaza el paquete antiguo que importaba la API obsoleta
+  `pkg_resources`, conservando la interfaz y la salida del corpus VAD probado.
 - Filtro conservador de alucinaciones conocidas de Whisper: patrones completos
   como "¡Suscríbete!" o créditos de Amara se descartan cuando las métricas
   acústicas/modelo indican una unidad dudosa, sin bloquear menciones legítimas.

@@ -16,7 +16,9 @@ Haciendo ingeniería inversa del comportamiento observable de Wispr Flow, la arq
    - *Modo por frase (chunked):* transcribe cada segmento VAD al cerrarse. Simple, preciso; latencia = umbral de silencio + inferencia.
    - *Modo streaming:* re-transcribe una ventana creciente cada ~1s y confirma solo las palabras en las que dos hipótesis consecutivas coinciden (política "LocalAgreement" del paper whisper_streaming). Las palabras aparecen mientras seguís hablando.
 5. **Post-procesamiento.** Whisper ya emite puntuación y mayúsculas; una capa conservadora protege primero tokens estructurados (números, URLs, correos, dominios, versiones, identificadores y código), normaliza solo prosa inequívoca, quita muletillas aisladas e interpreta comandos de voz. La reescritura es opcional y explícita (por reglas acotadas, o con un modelo de Ollama local).
-6. **Inyección a nivel sistema.** El texto limpio se tipea en la ventana con foco usando pulsaciones sintéticas del SO. En Linux: `xdotool` (X11), `wtype`/`ydotool` (Wayland).
+6. **Inyección a nivel sistema.** En X11, el texto Unicode viaja por `xclip` y
+   `xdotool` emite un Ctrl+V sintético. En Wayland se usa `wtype` o `ydotool`.
+   Si no hay una ruta de inserción, el fallback es copia manual.
 7. **Indicador mínimo.** Un puntito siempre visible que muestra el estado de grabación.
 
 ## 2. Diagrama de componentes
@@ -47,8 +49,8 @@ Haciendo ingeniería inversa del comportamiento observable de Wispr Flow, la arq
                  │                                texto limpio  │ / comandos                  │
                  │                                  ┌───────────▼──────────┐   ┌───────────┐  │
                  │                                  │ inyector_salida      │──>│ CUALQUIER │  │
-                 │                                  │ xdotool / wtype      │   │ app con   │  │
-                 │                                  │ / ydotool            │   │ foco      │  │
+                 │                                  │ xclip+xdotool /      │   │ app con   │  │
+                 │                                  │ wtype / ydotool      │   │ foco      │  │
                  │                                  └──────────────────────┘   └───────────┘  │
                  │   ┌──────────────┐                                                         │
                  │   │ indicador.py │ <── eventos de estado (inactivo/grabando/transcribiendo)│
@@ -67,7 +69,7 @@ mic → PCM int16 @16kHz → frames de 20ms → puerta VAD
     → filtro de frase: patrón conocido + baja confianza del mismo segmento
     → procesador_texto: protección de tokens estructurados, limpieza conservadora,
                         parseo de comandos de voz, reescritura opcional
-    → inyector: pulsaciones sintéticas en la ventana con foco (X11 o Wayland)
+    → inyector: xclip+paste sintético (X11), wtype/ydotool (Wayland) o copia
 ```
 
 Cada texto confirmado se distribuye de manera independiente al inyector, a
@@ -102,8 +104,8 @@ directorio, lo hace `0700`.
 |----------------------|---------------------------------|---------|
 | STT                  | **faster-whisper** (CTranslate2)| 4x más rápido que openai/whisper en CPU, cuantización int8, float16 con CUDA, timestamps por palabra (necesarios para confirmar en streaming). whisper.cpp queda como respaldo si algún día hace falta latencia a nivel C++; el límite de módulo (`motor_transcripcion.py`) aísla ese reemplazo. |
 | Captura de audio     | sounddevice (PortAudio)         | Captura por callback sólida, funciona con PulseAudio y PipeWire. |
-| VAD                  | webrtcvad                       | Chico, rápido, probadísimo, granularidad de frames de 20ms. Respaldo por energía incluido si el wheel no está disponible. |
-| Inyección X11        | xdotool                         | El estándar. `type --clearmodifiers --delay 1`. |
+| VAD                  | webrtcvad-wheels                | Mantiene la API `webrtcvad` sin depender de `pkg_resources`; usa frames de 20ms. Respaldo por energía incluido si el wheel no está disponible. |
+| Inyección X11        | xclip + xdotool                 | `xclip` transporta Unicode y `xdotool` emite Ctrl+V. No existe ACK de inserción del editor, por lo que esta ruta no habilita undo destructivo. |
 | Inyección Wayland    | wtype, luego ydotool            | wtype usa el protocolo virtual-keyboard (wlroots, KDE). ydotool funciona en todos lados vía uinput pero necesita su daemon. Respaldo por portapapeles (wl-copy/xclip) como último recurso. |
 | Atajos               | pynput en X11; socket unix + `parlarctl` en Wayland | Los compositores Wayland no permiten capturas globales de teclas desde apps arbitrarias; el patrón correcto es asignar `parlarctl alternar` a un atajo del compositor. |
 | Indicador            | tkinter                         | Cero dependencias extra (python3-tk), puntito sin bordes siempre visible. |
@@ -120,7 +122,10 @@ directorio, lo hace `0700`.
 - El modelo se carga una vez al iniciar el daemon y queda caliente. `beam_size=1` (greedy) en streaming, `beam_size=5` en la pasada final por frase.
 - GPU: autodetectada. CUDA → float16; CPU → int8.
 - Idioma fijado en español por defecto (`language = "es"`), lo que evita la detección de idioma en cada decodificación y reduce latencia.
-- En modo frase, cada segmento se evalúa de manera independiente. Un patrón conocido de alucinación solo se descarta si además cumple simultáneamente `no_speech_prob > 0.6` y `avg_logprob < -1.0`; ni el patrón ni la baja confianza por separado borran texto. No se inventan scores nuevos ni se aplica este filtro al camino streaming.
+- En ambos modos, una unidad solo se descarta cuando todo su texto normalizado
+  coincide con una plantilla estrecha conocida y al menos una métrica del mismo
+  segmento resulta sospechosa. Una mención contextual o una coincidencia con
+  métricas sanas se conserva.
 - El post-procesador sustituye temporalmente tokens con sintaxis estructurada por marcadores libres de colisiones, limpia la prosa restante y restaura cada token byte por byte. Ante puntuación ambigua (por ejemplo, `test.it`) prioriza fidelidad. La mayúscula inicial solo se agrega tras una transformación inequívoca —muletilla eliminada, regla de reescritura aplicada o signo `¿`/`¡` inicial—; el modo `none` no invoca Ollama.
 
 ## 6. Manejo de fallas y sesiones largas
@@ -130,7 +135,8 @@ directorio, lo hace `0700`.
 - `parlarctl estado` expone `drops`, discontinuidades, profundidad de cola y backlog aproximado (`frames_en_cola × frame_ms`). `audio=degradado` significa que existe un gap todavía pendiente de entregar; `audio=recuperado-con-perdida` indica que el pipeline cruzó esa frontera y volvió a operar, aunque la pérdida histórica de la sesión sigue visible. Los contadores se reinician al abrir una nueva generación.
 - Un tope de frase (30s) evita buffers sin límite si el VAD nunca ve silencio (ambientes ruidosos).
 - Los errores del subproceso de inyección degradan a copia al portapapeles más una notificación de escritorio, en vez de morir.
-- El daemon es candidato a servicio systemd de usuario (unit incluida) con `Restart=on-failure`.
+- La instalación puede generar una unit systemd de usuario con
+  `Restart=on-failure`; instalarla o activarla siempre es opt-in.
 
 ## 7. Lifecycle, sesiones y ownership
 

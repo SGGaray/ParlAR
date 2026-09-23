@@ -1,277 +1,309 @@
 # ParlAR
 
-**Local-first, system-wide voice dictation for Linux. Spanish-first.**
+Local, system-wide voice dictation for Linux. ParlAR listens only while you
+activate it, transcribes with faster-whisper, and delivers text to the focused
+application. It has no telemetry and needs no cloud account or API key.
 
-Speak into any application. ParlAR captures your voice, transcribes it locally
-with Whisper, cleans up the text (including proper Spanish punctuation like ¿
-and ¡), and types it into whatever window has focus. It has no telemetry and
-needs no API keys. Network traffic occurs only if you explicitly configure an
-external service, such as a remote `ollama_url`.
+Audio capture and transcription are local. Text leaves the machine only when
+you explicitly configure an external service, such as a remote `ollama_url`.
+The optional GuionAR integration uses local Unix IPC.
 
-> Versión en español (principal): [README.md](README.md)
+> Versión principal en español: [README.md](README.md)
 
-## Why
+ParlAR 1.0 RC targets Linux desktops on X11 and Wayland. Any linked browser
+demo is illustrative only: it does not run the native audio, hotkey, IPC, or
+injection architecture described here.
 
-Cloud dictation tools send every word you speak to someone else's servers.
-ParlAR performs transcription and its default cleanup on your hardware. The
-optional rewrite feature can call Ollama at loopback by default; changing
-`ollama_url` to a remote endpoint sends rewrite text to that endpoint.
+## Requirements
 
-## Features
+- Desktop Linux; the provisioning scripts support Debian/Ubuntu and Fedora.
+- Python 3.12 or newer with `venv`.
+- PortAudio and an input device exposed through PipeWire or PulseAudio.
+- X11: `xdotool` plus `xclip` for Unicode delivery.
+- Wayland: `wtype` or `ydotool`; compatible clipboard tools provide a
+  copy-only fallback.
+- Optional: Tk for the indicator, `notify-send` for notifications, and an
+  NVIDIA GPU for faster transcription.
 
-- **System-wide injection**: types into any focused application via xdotool (X11) or wtype/ydotool (Wayland), with clipboard fallback
-- **Two transcription modes**:
-  - *Utterance mode* (default): transcribes each phrase when you pause, roughly 0.2 to 0.6s inference on GPU
-  - *Streaming mode*: words appear while you are still speaking, using the LocalAgreement-2 commit policy so injected text never needs retraction
-- **Spanish-first text processing**: inverted punctuation handling (¿ ¡), sentence capitalization, filler-word removal
-- **Voice commands**: "nuevo párrafo", "borra la última oración", "enviar", "detener dictado" (English equivalents also work)
-- **Rewrite modes**: formal / concise / email, rule-based or through a local Ollama model
-- **VAD-gated capture**: webrtcvad segmentation with pre-roll, plus an adaptive energy fallback
-- **GPU optional**: CUDA float16 when available, CPU int8 otherwise, auto-detected
-- **Controllable daemon**: global hotkey on X11, unix-socket CLI (`parlarctl`) for Wayland shortcut binding, minimal always-on-top indicator
-- **GuionAR integration (optional)**: mirrors dictated text and voice activity to the [GuionAR](https://github.com/SGGaray/GuionAR) teleprompter overlay, fire-and-forget over a local unix socket
-
-## Tech stack
-
-| Concern | Choice |
-|---|---|
-| Speech-to-text | [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (CTranslate2 backend) |
-| Audio capture | sounddevice (PortAudio) |
-| Voice activity detection | webrtcvad, energy-based fallback |
-| Text injection | xdotool / wtype / ydotool |
-| Hotkeys and IPC | pynput (X11), unix domain socket |
-| Overlay | tkinter |
-
-Architecture details, component diagram, and latency strategy: [arquitectura.md](arquitectura.md) (Spanish).
-
-## Requirements and installation
-
-The checkout installer supports Debian/Ubuntu and Fedora desktop sessions on
-X11 or Wayland. ParlAR requires Python 3.12 or newer; CI validates 3.12 and the
-current local development environment also validates 3.14. PipeWire or
-PulseAudio must expose an input device to PortAudio.
-
-Required system components are Python, venv, and PortAudio. Desktop
-integrations are optional alternatives: tkinter, notifications, X11/Wayland
-typing tools, clipboard tools, and compilation headers. Required Python
-dependencies are faster-whisper, sounddevice, numpy, and pynput. `webrtcvad`
-is optional; a tested adaptive energy VAD is used when it is unavailable.
+Typical packages:
 
 ```bash
-git clone https://github.com/SGGaray/parlar.git
-cd parlar
-./setup.sh                 # system packages, venv, and Python dependencies
-source .venv/bin/activate
-./scripts/check.sh         # complete hardware-free gate
-python -m parlar           # first start; downloads Whisper small if absent
+# Debian / Ubuntu
+sudo apt install python3 python3-venv python3-dev portaudio19-dev \
+  python3-tk libnotify-bin xdotool xclip wtype wl-clipboard
+
+# Fedora
+sudo dnf install python3 python3-devel portaudio-devel python3-tkinter \
+  libnotify xdotool xclip wtype wl-clipboard
 ```
 
-Setup reuses a valid `.venv` and does not delete configuration, models, or
-transcripts. It refuses to remove an incomplete `.venv`. Use
-`--skip-system-packages` when system dependencies are already installed. Model
-provisioning is separate: first use downloads the configured model, or
-`./setup.sh --skip-system-packages --preload-model` preloads `small` explicitly.
+`ydotool` is a uinput-based Wayland alternative and requires its daemon and
+the permissions documented by your distribution.
 
-NVIDIA GPU note: if faster-whisper reports `libcublas.so.12 not found`, install the CUDA runtime libraries inside the venv and expose them:
+## User installation
 
 ```bash
-pip install nvidia-cublas-cu12 nvidia-cudnn-cu12
+git clone https://github.com/SGGaray/ParlAR.git
+cd ParlAR
+./install.sh --preload-model
 ```
 
-Then append to `.venv/bin/activate`:
+The installer creates an isolated environment under
+`$XDG_DATA_HOME/parlar/venv` (normally `~/.local/share/parlar/venv`), links
+`parlar` and `parlarctl` into `~/.local/bin`, and generates a desktop
+launcher. It never enables a service implicitly. Add `~/.local/bin` to your
+`PATH` if your shell does not already include it.
+
+`--preload-model` downloads Whisper `small` during installation. Without it,
+the first run downloads the model. Provisioning requires network access; normal
+runtime does not.
+
+To install, but not enable, the optional user service:
 
 ```bash
-SITE="$(python -c 'import site; print(site.getsitepackages()[0])')"
-if [ -d "$SITE/nvidia/cublas/lib" ]; then
-    export LD_LIBRARY_PATH="$SITE/nvidia/cublas/lib:$SITE/nvidia/cudnn/lib:$LD_LIBRARY_PATH"
-fi
-```
-
-## Usage
-
-```bash
-python -m parlar                        # utterance mode, Spanish
-python -m parlar --modo streaming       # words appear as you speak
-python -m parlar --idioma en            # dictate in English
-```
-
-1. Focus any text field.
-2. Press **Ctrl+Alt+D** (X11) or your bound shortcut (Wayland). The indicator dot turns red.
-3. Speak. Pause briefly. Clean text appears in the focused app.
-4. Press the hotkey again to stop.
-
-On Wayland, bind `parlarctl alternar` to a keyboard shortcut in your desktop environment (compositors block global key grabs by design). Runtime control:
-
-```bash
-./parlarctl estado
-./parlarctl modo streaming
-./parlarctl reescritura formal
-```
-
-English command aliases (`toggle`, `status`, `mode`, ...) are accepted for compatibility.
-
-With rewriting disabled (the default), cleanup is conservative: decimals
-(including signed values), times, URLs, email addresses, domains, versions,
-identifiers, strings, and code regions are kept exactly as Whisper produced
-them. Preservation wins when the input is ambiguous. Only unambiguous prose
-spacing, isolated fillers outside literal regions, and Spanish opening
-punctuation are normalized. A quoted phrase that resembles a voice command
-remains literal text even when `.`, `?`, or `!` follows the closing quote.
-
-Formal, concise, and email modes are explicit opt-ins. Local rules only apply
-small, context-safe substitutions; the local concise fallback avoids deleting
-linguistically ambiguous qualifiers such as `literally`, `basically`,
-`actually`, `kind of`, or `viste`. Recognized structured
-regions are protected during rewriting; if a model drops a marker, ParlAR uses
-the conservative local fallback. Configuring a local Ollama model enables
-generative rewriting and may change the prose wording. In both modes, ParlAR
-compares against a small explicit set of narrow known Whisper boilerplate
-templates. A segment is dropped only when the entire normalized unit matches a
-template and at least one acoustic/model metric is suspicious. Ordinary
-contextual mentions and templates with healthy metrics are preserved; the
-filter reduces known cases but cannot eliminate all hallucinations.
-
-## GuionAR integration (teleprompter)
-
-For the full system design (ParlAR + GuionAR, the socket protocol, and why they're two processes), see [GuionAR/ARCHITECTURE.md](https://github.com/SGGaray/GuionAR/blob/main/ARCHITECTURE.md).
-
-ParlAR can mirror dictated text and voice activity to [GuionAR](https://github.com/SGGaray/GuionAR), an always-on-top teleprompter overlay that shows what you are dictating near the camera.
-
-```bash
-# terminal 1: the teleprompter
-cd GuionAR && python guionar.py --socket
-
-# terminal 2: ParlAR with the integration enabled
-python -m parlar --guionar --modo streaming
-```
-
-| Flag | Description |
-|---|---|
-| `--guionar` (alias `--guionar-enabled`) | Send text and VAD state to the teleprompter |
-| `--guionar-socket PATH` | Socket path override (default `$XDG_RUNTIME_DIR/guionar.sock`) |
-
-It can also be enabled permanently with `"guionar": true` in `~/.config/parlar/config.json`.
-
-The integration is best-effort. Reconnection sends the current VAD and partial
-snapshot, but does not replay historical final text and has no application ACK.
-GuionAR limits each final text message to 2,000 characters. Its receiving
-socket permissions are owned by GuionAR, not ParlAR.
-
-Insertion, clipboard copy, GuionAR mirroring, and transcript persistence are
-independent results. Streaming clipboard fallback accumulates a recoverable
-utterance, but does not insert it or add it to undo history. Undo remains
-dependent on the focused external editor. On X11, `xclip` plus synthetic
-Ctrl+V has no acknowledgement from that editor: even when `xdotool` succeeds
-and the delivery API reports `inserted`, the attempt is not added to destructive
-undo history and clears any older history boundary. Therefore “delete last
-sentence” emits no Backspace after an unverifiable X11 paste. Existing undo
-eligibility remains unchanged for `wtype` and `ydotool`; the explicit
-`clipboard` backend remains copy-only and never enters undo history. By default
-`comando_enviar=false`
-blocks every physical Enter/Return action, whether it comes from a command,
-multiline text, streaming, or rewrite output. Multiline content is then copied
-intact and reported as copied rather than inserted, without entering undo
-history.
-
-Control uses a `0600` Unix socket, one newline-terminated UTF-8 operation per
-connection, a 4 KiB limit, verified stale-socket recovery, and UID-qualified
-fallback paths under `/tmp`.
-
-Configuration is validated before the model or microphone is initialized.
-JSON types are strict, capture is fixed at 16 kHz, and WebRTC VAD frame size
-must be 10, 20, or 30 ms. Only `mode` and `rewrite_mode` are runtime-dynamic;
-other changes require a restart. Saved configuration is atomically replaced
-and uses mode `0600` in a newly created `0700` directory.
-
-Session transcripts are disabled by default. `--guardar-sesion` creates one
-exclusive `0600` plaintext file per daemon run in the session directory,
-which is created as `0700`; concurrent runs never append to the same file.
-ParlAR does not delete or encrypt these files. A transcript is an append-only
-history of confirmed emissions, not a reconstruction of Return, undo, editor,
-or clipboard state. Normal logs contain operational metadata, not dictated
-text.
-
-Installation and provisioning may download dependencies and models. At
-runtime, GuionAR uses local Unix IPC. The clipboard and destination application
-are outside the ParlAR process and its storage guarantees. On X11, the
-`xdotool` backend transports text through `xclip` and triggers a synthetic paste
-to preserve Unicode. The clipboard is a transient transport detail on this
-path: neither preservation of its previous contents nor availability of the
-transported text after the paste is guaranteed. ParlAR does not attempt to
-restore it because it may contain multiple MIME formats. This does not change
-the explicit `--inyector clipboard` backend: a successful copy through that
-backend does leave the text available for manual pasting.
-
-## Running the tests
-
-```bash
-./scripts/check.sh
-```
-
-This is the same gate CI runs: shell syntax, Python compilation, CLI smokes,
-58 legacy checks, every unittest suite, Unix IPC, and `git diff --check`. It
-does not require audio hardware, a display, a downloaded model, Ollama,
-GuionAR, clipboard, or a real systemd session.
-
-The suites cover session lifecycle, deterministic concurrency, mode
-boundaries, shutdown ordering, worker health, microphone ownership, bounded
-capture backpressure, gap recovery, structured-token fidelity, safe rewrite
-rules, and confidence-gated hallucination filtering. No audio hardware required.
-
-Capture keeps a bounded queue of roughly ten seconds. If the worker falls
-behind, the oldest frames are dropped to preserve recent audio. ParlAR cannot
-reconstruct discarded audio: per-session sequence numbers expose the gap and
-the worker separates audio before and after it instead of presenting a false
-continuous utterance. A PortAudio `input_overflow` creates the same boundary,
-invalidates any preceding partial frame, and is counted separately as
-`device_overflows` without inventing a dropped-frame count. `parlarctl estado`
-reports capture health, queue drops, device overflows, discontinuities, queue
-depth, and estimated backlog. Once the boundary is handled, health becomes
-`recuperado-con-perdida` while the loss remains visible for that session.
-
-The callback may accept audio while backend startup is still completing, but
-the worker waits for startup to resolve before processing it. A failed open
-invalidates that generation and its frames and leaves microphone startup
-retryable. `parlarctl estado` also keeps STT and VAD health separate
-(`healthy`, `degraded`, or `recovered`), with historical counters and the last
-exception type but no audio or transcript content. VAD deliberately fails
-open to avoid losing speech; while degraded it can increase STT work and
-produce false utterances.
-
-Streaming retains its acoustic minimum for an initially short utterance. When
-a valid trim leaves a tail below that minimum, stop performs one final decode
-instead of dropping the tail automatically; append-only agreement still gates
-the result and never retracts emitted text.
-
-## Optional user service
-
-```bash
-./setup.sh --skip-system-packages --install-service
+./install.sh --install-service
 systemctl --user enable --now parlar
 ```
 
-Setup renders the unit with the checkout's real absolute path and venv Python,
-keeps `UMask=0077`, and will not replace an unrelated unit. Repeating it for
-the same checkout is a no-op. A user service still depends on desktop-specific
-audio, display, X11/Wayland, and clipboard access; launch ParlAR from a terminal
-inside that desktop session if those variables are unavailable to systemd.
-Shutdown invalidates the generation and joins the worker before closing output
-sinks. Every resource receives a cleanup attempt even when another closer
-fails; the app reaches `closed` and retains closure error types for diagnosis.
+The generated unit points to the self-contained installation, not the source
+checkout. It still needs the graphical user session's display and audio
+environment. If your desktop does not propagate those to systemd, start
+`parlar` from a terminal in that session.
 
-For later manual hardware validation, check microphone open, utterance mode,
-streaming, stop, restart, optional GuionAR, clipboard fallback, and shutdown.
+`setup.sh` remains available for development from a checkout; it is not the
+primary end-user distribution path.
 
-## Project status
+## First run and controls
 
-**v0.2.0, experimental.** It has been exercised on Fedora/X11 hardware, but
-still requires broader fresh-install and desktop validation:
+```bash
+parlar
+```
 
-- No graphical UI yet beyond the minimal overlay indicator; configuration is JSON plus CLI flags
-- The output system is not yet fully decoupled (injection is wired directly into the pipeline; the GuionAR client is the first decoupled output)
-- API and module layout may change between 0.x releases
+On X11, the default control is **right Ctrl + right Shift**:
 
-Roadmap: decoupled output backends, configuration UI, packaging (RPM/deb/Flatpak).
+- Hold both keys to START immediately, without waiting for VAD.
+- Speak while holding them.
+- Release the combination to STOP immediately and finalize the unit.
+- Two short taps within 300 ms enter continuous mode in the same session.
+  Double-tap again to leave continuous mode and stop.
+- **Esc** CANCELS the active session. It discards pending audio/results, does
+  not undo, and does not remove already confirmed output.
+
+When available, the indicator displays state and accepts a left-click toggle.
+`--sin-indicador` / `--no-overlay` runs without that UI while keyboard and
+IPC controls remain available.
+
+## `parlarctl`
+
+```bash
+parlarctl iniciar
+parlarctl detener
+parlarctl cancelar
+parlarctl alternar
+parlarctl estado
+parlarctl modo streaming
+parlarctl reescritura formal
+parlarctl salir
+```
+
+English aliases are also accepted: `start`, `stop`, `cancel`, `toggle`,
+`status`, `mode`, `rewrite`, and `quit`. CANCEL and STOP are deliberately
+different: STOP finalizes accepted input; CANCEL invalidates the generation and
+discards pending work.
+
+The daemon uses a `0600` socket at `$XDG_RUNTIME_DIR/parlar.sock`. Ordered
+shutdown removes its own socket. `SIGTERM`, including systemd stop, follows
+the normal cleanup path.
+
+### Wayland
+
+ParlAR does not pretend it can globally capture keys on Wayland. Bind an
+absolute command in your compositor:
+
+```text
+/home/YOUR_USER/.local/bin/parlarctl alternar
+```
+
+GNOME and KDE expose custom shortcuts in their settings. A generic Hyprland
+binding is:
+
+```text
+bind = CTRL SHIFT, D, exec, ~/.local/bin/parlarctl alternar
+```
+
+Separate `iniciar`, `detener`, and `cancelar` bindings are also supported.
+
+## Modes
+
+`utterance` is the default; a 600 ms pause closes a phrase. `streaming`
+confirms prefixes while you speak and never retracts delivered text.
+
+```bash
+parlar --mode streaming
+parlarctl mode utterance
+```
+
+Runtime mode changes take effect at a safe unit boundary.
+
+## Configuration
+
+Configuration lives at `$XDG_CONFIG_HOME/parlar/config.json`, normally
+`~/.config/parlar/config.json`. The strict format has a `schema_version`,
+is validated before resources open, and preserves unknown keys under `extras`.
+An unversioned legacy file is migrated without guessing whether its hotkey was
+a default or an explicit user choice.
+
+```bash
+parlar --config-path
+parlar --show-config
+parlar --show-hotkey
+parlar --help
+```
+
+Flags can be atomically persisted with `--save-config`. Add an inspection
+action to avoid starting the daemon during the change:
+
+```bash
+parlar --mode streaming --injector auto --save-config --show-config
+parlar --hotkey '<ctrl_r>+<shift_r>' --save-config --show-hotkey
+```
+
+Add proper names, acronyms, or specialist vocabulary with repeatable context
+terms:
+
+```bash
+parlar \
+  --context-term ParlAR \
+  --context-term GuionAR \
+  --save-config --show-config
+```
+
+Providing context terms replaces the configured list; `--no-context` clears
+it. Terms are used locally by STT and do not enable telemetry.
+
+Audio capture currently uses PortAudio's default input device. ParlAR does not
+yet have its own microphone selector; choose the default input in desktop sound
+settings and restart ParlAR.
+
+## Injection, clipboard, and undo
+
+X11 preserves Unicode through:
+
+```text
+xclip → synthetic Ctrl+V
+```
+
+The clipboard is a transient transport on this path. ParlAR does not guarantee
+preservation of its previous contents or availability of the transported text
+after paste, and does not attempt restoration. The explicit
+`--injector clipboard` backend is different: it is copy-only and leaves text
+available for manual paste.
+
+A successful `xdotool` exit does not prove that the focused application
+inserted anything. X11 paste is therefore never added to destructive undo
+history and clears the previous undo boundary. “Delete last sentence” cannot
+send Backspace against unrelated content after an unverifiable paste. Existing
+`wtype` and `ydotool` behavior remains unchanged; no backend can provide a
+transaction with an external editor.
+
+## Voice commands and Return safety
+
+Commands are recognized only as exact, whole utterances. Stable aliases include
+“mandar mensaje”, “enviar mensaje”, “salto de línea”, and “salto de párrafo”,
+alongside existing short and English commands. There is no fuzzy or phonetic
+matching.
+
+Every Enter/Return action is blocked by default through
+`"comando_enviar": false`. This includes send, new line, new paragraph,
+multiline output, and rewritten output. Enabling it may execute text in a
+terminal or submit a form; read [SECURITY.md](SECURITY.md) first.
+
+## CUDA and CPU
+
+With `device=auto`, ParlAR uses CUDA when CTranslate2 detects it and falls
+back to CPU int8 otherwise. NVIDIA runtime bootstrapping is bounded and cannot
+restart recursively.
+
+```bash
+parlar --device cpu
+parlar --device cuda
+```
+
+Real CUDA availability depends on the host driver, libraries, and GPU and must
+be checked after installation. CPU is a supported fallback, not a failure mode.
+
+## Optional GuionAR integration
+
+[GuionAR](https://github.com/SGGaray/GuionAR) can receive VAD, partials, and
+final text over local Unix IPC:
+
+```bash
+parlar --guionar --mode streaming
+```
+
+It is best-effort and not on the critical path. ParlAR continues when GuionAR
+is absent. Reconnection publishes current state, not historical final text.
+
+## Privacy and transcripts
+
+Normal logs contain states, timings, and error types, not dictated audio or
+text. `--save-session` is opt-in and writes `0600` plaintext under
+`$XDG_DATA_HOME/parlar/sesiones/`. ParlAR neither encrypts nor deletes those
+files. See [SECURITY.md](SECURITY.md) for the complete threat model.
+
+## Troubleshooting
+
+- **`parlar` is not found:** make sure `~/.local/bin` is in `PATH`.
+- **Microphone busy or missing:** choose a default input in desktop sound
+  settings and restart ParlAR.
+- **Wayland does not type:** try `wtype`; where unsupported, configure
+  `ydotool` or use `--injector clipboard` for manual paste.
+- **No global Wayland hotkey:** expected; bind `parlarctl` in the compositor.
+- **The service cannot access display/audio:** inspect
+  `systemctl --user status parlar` and `journalctl --user -u parlar`, or
+  launch from a graphical terminal.
+- **Esc appears as `^[` in the focused app:** pynput can observe Esc but
+  cannot selectively suppress it without an aggressive global grab. CANCEL
+  still runs; passthrough is a known limitation.
+
+## Uninstall
+
+From a checkout of the same version:
+
+```bash
+./uninstall.sh
+```
+
+The script disables and removes only the marked ParlAR unit and launcher,
+removes its links and installed environment, and preserves configuration and
+transcripts. Remove those separately only if you deliberately want to erase
+them. Account for custom `XDG_CONFIG_HOME` or `XDG_DATA_HOME` values.
+
+## Development and validation
+
+```bash
+./setup.sh
+source .venv/bin/activate
+./scripts/check.sh
+```
+
+The gate checks shell and bytecode, entrypoints, configuration, lifecycle,
+cancellation, Unix IPC, simulated injection, systemd rendering, desktop entry,
+and legacy/unit suites. It needs no microphone, display, model, clipboard,
+GuionAR, or live systemd user session.
+
+Physical and perceptual checks are kept separate in
+[docs/release-readiness-1.0.md](docs/release-readiness-1.0.md).
+
+## Known limitations
+
+- Esc may also reach the focused X11 application.
+- Microphone selection relies on the system default input.
+- Wayland global hotkeys require compositor bindings.
+- Delivery to an external application is not transactional; X11 paste is
+  intentionally ineligible for destructive undo.
+- Fresh-install compatibility still needs physical validation across desktop,
+  audio hardware, and GPU combinations.
 
 ## License
 

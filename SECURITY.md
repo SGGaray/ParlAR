@@ -103,6 +103,10 @@ ParlAR queda `0700`.
 
 ## Qué no está mitigado (limitaciones conocidas)
 
+- En X11, pynput puede observar Esc pero no suprimir únicamente esa tecla. El
+  modo `suppress=True` tomaría un grab global agresivo y afectaría otros atajos,
+  por lo que no se usa. CANCEL sigue ejecutándose, pero Esc puede atravesar a la
+  aplicación enfocada (por ejemplo como `^[` en una terminal).
 - "Borrar última oración" y "detener dictado" siguen activos por defecto. Undo
   solo usa inserciones que el backend reportó como tipeadas, pero depende del
   foco y del estado del editor externo y no es transaccional.
