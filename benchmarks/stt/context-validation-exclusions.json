@@ -1,0 +1,13 @@
+{
+  "excluded": [
+    {
+      "id": "val-target-007",
+      "reason": "capture_reference_mismatch",
+      "evidence": {
+        "duration_s": 1.04,
+        "audible_reference_speech": false,
+        "reference_words": 12
+      }
+    }
+  ]
+}
