@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ParlAR"
+version = "1.0.0rc1"
+description = "Dictado local a nivel sistema para Linux"
+readme = "README.md"
+requires-python = ">=3.12"
+license = {file = "LICENSE"}
+authors = [{name = "SGGaray"}]
+dependencies = [
+  "faster-whisper>=1.0.0",
+  "sounddevice>=0.4.6",
+  "numpy>=1.24",
+  "pynput>=1.7.6",
+]
+
+[project.optional-dependencies]
+vad = ["webrtcvad>=2.0.10"]
+
+[project.scripts]
+parlar = "parlar.__main__:main"
+parlarctl = "parlar.control:parlarctl_main"
+
+[project.urls]
+Repository = "https://github.com/SGGaray/ParlAR"
+
+[tool.setuptools.packages.find]
+include = ["parlar*"]

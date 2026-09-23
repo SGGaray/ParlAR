@@ -95,6 +95,9 @@ VENV_PYTHON="$REPO_DIR/.venv/bin/python"
 echo "==> Instalando dependencias Python requeridas"
 "$VENV_PYTHON" -m pip install -r requirements.txt
 
+echo "==> Instalando ParlAR y sus comandos"
+"$VENV_PYTHON" -m pip install --no-deps "$REPO_DIR"
+
 echo "==> Intentando instalar VAD opcional"
 if "$VENV_PYTHON" -m pip install -r requirements-optional.txt; then
     echo "==> webrtcvad disponible"
@@ -154,12 +157,12 @@ cat <<'EOF'
 
 Ejecutar:
     source .venv/bin/activate
-    python -m parlar
+    parlar
 
 Validar sin hardware:
     ./scripts/check.sh
 
 Control:
-    X11: Ctrl+Alt+D
-    Wayland: asigná `./parlarctl alternar` a un atajo del escritorio
+    X11: mantené Ctrl derecho + Shift derecho; Esc cancela
+    Wayland: asigná `parlarctl alternar` a un atajo del escritorio
 EOF

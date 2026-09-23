@@ -10,6 +10,7 @@ Comandos (español primero, alias en inglés entre paréntesis):
   reescritura <none|ninguna|formal|concise|conciso|email|correo> (rewrite)
 """
 
+import argparse
 import os
 import fcntl
 import socket
@@ -344,11 +345,28 @@ def enviar_comando(cmd: str) -> str:
 
 
 def parlarctl_main():
-    if len(sys.argv) < 2:
-        print("uso: parlarctl <alternar|iniciar|detener|estado|modo M|reescritura M|salir>")
+    parser = argparse.ArgumentParser(
+        prog="parlarctl",
+        description="Controla una instancia local de ParlAR.",
+        epilog="También se aceptan aliases en inglés.",
+    )
+    parser.add_argument(
+        "comando",
+        nargs="*",
+        metavar="COMANDO",
+        help=("alternar|iniciar|detener|cancelar|estado|modo M|"
+              "reescritura M|salir"),
+    )
+    args = parser.parse_args()
+    if not args.comando:
+        print(
+            "uso: parlarctl "
+            "<alternar|iniciar|detener|cancelar|estado|modo M|"
+            "reescritura M|salir>"
+        )
         print("     (los comandos en inglés también funcionan)")
         sys.exit(2)
-    cmd = " ".join(sys.argv[1:])
+    cmd = " ".join(args.comando)
     try:
         print(enviar_comando(cmd))
     except (ConnectionRefusedError, FileNotFoundError):

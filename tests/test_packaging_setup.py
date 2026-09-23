@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import tomllib
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -30,7 +31,10 @@ def ejecutar(*args, cwd=ROOT, env=None):
 
 class ContratoSetup(unittest.TestCase):
     def preparar_setup_simulado(self, base):
-        for nombre in ("setup.sh", "requirements.txt", "requirements-optional.txt"):
+        for nombre in (
+            "setup.sh", "requirements.txt", "requirements-optional.txt",
+            "pyproject.toml",
+        ):
             shutil.copy2(ROOT / nombre, base / nombre)
         (base / "scripts").mkdir()
         shutil.copy2(ROOT / "scripts" / "render_service.py",
@@ -431,6 +435,15 @@ class ContratoServicio(unittest.TestCase):
 
 
 class SmokesCheckout(unittest.TestCase):
+    def test_pyproject_instala_ambos_entrypoints(self):
+        proyecto = tomllib.loads(
+            (ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        self.assertEqual(proyecto["project"]["requires-python"], ">=3.12")
+        self.assertEqual(proyecto["project"]["scripts"], {
+            "parlar": "parlar.__main__:main",
+            "parlarctl": "parlar.control:parlarctl_main",
+        })
+
     @staticmethod
     def _python_controlado(base):
         python = base / "python"
@@ -527,6 +540,18 @@ except SystemExit as exc:
         resultado = ejecutar("./parlarctl")
         self.assertEqual(resultado.returncode, 2)
         self.assertIn("uso: parlarctl", resultado.stdout)
+
+    def test_parlarctl_help_no_contacta_daemon(self):
+        resultado = ejecutar("./parlarctl", "--help")
+        self.assertEqual(resultado.returncode, 0, resultado.stderr)
+        self.assertIn("usage: parlarctl", resultado.stdout)
+        self.assertIn("cancelar", resultado.stdout)
+
+    def test_setup_instala_paquete_y_documenta_comandos(self):
+        setup = (ROOT / "setup.sh").read_text(encoding="utf-8")
+        self.assertIn('pip install --no-deps "$REPO_DIR"', setup)
+        self.assertIn("    parlar\n", setup)
+        self.assertIn("`parlarctl alternar`", setup)
 
     def test_ci_invoca_el_gate_central_completo(self):
         workflow = (ROOT / ".github/workflows/tests.yml").read_text()
