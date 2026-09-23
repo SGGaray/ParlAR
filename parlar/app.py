@@ -326,12 +326,18 @@ class App:
                 print(f"[app] falló el cierre del micrófono: {exc}", file=sys.stderr)
 
             with self._estado_cv:
-                if generacion is not None:
+                cancelada = (
+                    self._estado != EstadoApp.STOPPING
+                    or self._sesion_activa != generacion
+                )
+                if generacion is not None and not cancelada:
                     self._stops_listos.add(generacion)
                     if error is not None:
                         self._errores_stop.add(generacion)
                         self._ultimo_error = f"micrófono: {error}"
                 self._estado_cv.notify_all()
+            if cancelada:
+                return error is None
             self.ui.fijar_estado("transcribing")
             print(f"[app] ◌ deteniendo (sesión {generacion})")
             return error is None

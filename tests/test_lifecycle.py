@@ -19,14 +19,17 @@ from parlar.config import Config
 
 class MicFalso:
     def __init__(self, *, fallar_inicio=False, fallar_stop=False,
-                 bloquear_inicio=False):
+                 bloquear_inicio=False, bloquear_stop=False):
         self.q = queue.Queue()
         self.generacion = None
         self.fallar_inicio = fallar_inicio
         self.fallar_stop = fallar_stop
         self.bloquear_inicio = bloquear_inicio
+        self.bloquear_stop = bloquear_stop
         self.inicio_entrado = threading.Event()
         self.liberar_inicio = threading.Event()
+        self.stop_entrado = threading.Event()
+        self.liberar_stop = threading.Event()
         self.inicios = 0
         self.detenciones = 0
 
@@ -44,6 +47,10 @@ class MicFalso:
     def detener(self, *, vaciar=True):
         if self.generacion is not None:
             self.detenciones += 1
+        self.stop_entrado.set()
+        if self.bloquear_stop:
+            if not self.liberar_stop.wait(2):
+                raise TimeoutError("stop falso no liberado")
         self.generacion = None
         if vaciar:
             self._filtrar(None)
@@ -707,6 +714,37 @@ class PruebasApp(unittest.TestCase):
         self.assertFalse(
             app.grabando.is_set()
         )
+
+    def test_cancel_durante_stopping_no_republica_generacion_vieja(self):
+        mic = MicFalso(bloquear_stop=True)
+        app, _, _, _, _, _, sesion, _ = self.app(mic=mic)
+        self.assertTrue(app.iniciar_grabacion())
+        generacion = app.generacion_activa
+
+        resultado_stop = []
+        resultado_cancel = []
+        hilo_stop = threading.Thread(
+            target=lambda: resultado_stop.append(app.detener_grabacion()))
+        hilo_stop.start()
+        self.assertTrue(mic.stop_entrado.wait(2))
+        self.assertEqual(app.estado, EstadoApp.STOPPING)
+
+        hilo_cancel = threading.Thread(
+            target=lambda: resultado_cancel.append(app.cancelar_grabacion()))
+        hilo_cancel.start()
+        self.assertTrue(app.esperar_estado(EstadoApp.IDLE))
+
+        mic.liberar_stop.set()
+        hilo_stop.join(2)
+        hilo_cancel.join(2)
+        self.assertFalse(hilo_stop.is_alive())
+        self.assertFalse(hilo_cancel.is_alive())
+        self.assertEqual(resultado_stop, [True])
+        self.assertEqual(resultado_cancel, [True])
+        self.assertEqual(app.estado, EstadoApp.IDLE)
+        self.assertIsNone(app.generacion_activa)
+        self.assertNotIn(generacion, app._stops_listos)
+        self.assertEqual(sesion.textos, [])
 
     def test_cancel_dos_veces_es_idempotente(self):
         app, mic, *_ = self.app()
