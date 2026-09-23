@@ -1,0 +1,16 @@
+{"id":"hw-001","text":"El comité adoptó COBIT 2019 para ordenar responsabilidades de gobierno tecnológico.","tags":["heldout","target","cobit"]}
+{"id":"hw-002","text":"La función Govern debe quedar definida antes de asignar responsables y métricas.","tags":["heldout","target","govern"],"instruction":"Pronunciá Govern como gávern."}
+{"id":"hw-003","text":"La estación ejecuta el modelo con CUDA 12 para acelerar la inferencia.","tags":["heldout","target","cuda"]}
+{"id":"hw-004","text":"El entorno usa cuDNN 9 junto con las bibliotecas necesarias de NVIDIA.","tags":["heldout","target","cudnn"],"instruction":"Pronunciá cuDNN como cu di en en."}
+{"id":"hw-005","text":"OWASP mantiene guías para analizar riesgos de aplicaciones y sistemas de inteligencia artificial.","tags":["heldout","target","owasp"]}
+{"id":"hw-006","text":"NIST CSF 2.0 permite organizar resultados de ciberseguridad según funciones y categorías.","tags":["heldout","target","nist-csf"],"instruction":"Pronunciá NIST como nist, CSF letra por letra y 2.0 como dos punto cero."}
+{"id":"hw-007","text":"El cambio quedó documentado en GitHub con pruebas, revisión y evidencia reproducible.","tags":["heldout","target","github"]}
+{"id":"hw-008","text":"El uso no autorizado de asistentes puede convertirse en un caso de Shadow AI.","tags":["heldout","target","shadow-ai"]}
+{"id":"hw-009","text":"El alcance de ISO 27001 debe estar documentado antes de evaluar controles.","tags":["heldout","target","iso27001"]}
+{"id":"hw-010","text":"El informe compara COBIT, NIST CSF y OWASP para separar gobierno, riesgo y prácticas técnicas.","tags":["heldout","target","mixed-terms"]}
+{"id":"control-001","text":"La política de salud cambió después de la pandemia de COVID.","tags":["heldout","control"]}
+{"id":"control-002","text":"El gobierno asignó nuevas responsabilidades al comité de tecnología.","tags":["heldout","control"]}
+{"id":"control-003","text":"La estación ejecuta el proceso localmente con la placa gráfica disponible.","tags":["heldout","control"]}
+{"id":"control-004","text":"El equipo revisó la guía interna antes de actualizar las aplicaciones.","tags":["heldout","control"]}
+{"id":"control-005","text":"El repositorio interno conserva el historial, las revisiones y la evidencia del proyecto.","tags":["heldout","control"]}
+{"id":"control-006","text":"La auditoría verificó accesos, registros y tratamiento de riesgos durante el trimestre.","tags":["heldout","control"]}
