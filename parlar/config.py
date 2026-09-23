@@ -31,6 +31,7 @@ class ErrorConfiguracion(ValueError):
 
 @dataclass
 class Config:
+    SCHEMA_VERSION: ClassVar[int] = 1
     MODOS: ClassVar[frozenset[str]] = frozenset({"utterance", "streaming"})
     DISPOSITIVOS: ClassVar[frozenset[str]] = frozenset({"auto", "cpu", "cuda"})
     COMPUTE_TYPES: ClassVar[frozenset[str]] = frozenset(
@@ -49,6 +50,8 @@ class Config:
     CAMPOS_DINAMICOS: ClassVar[frozenset[str]] = frozenset(
         {"mode", "rewrite_mode"}
     )
+
+    schema_version: int = SCHEMA_VERSION
 
     # --- STT ---
     model_size: str = "small"          # tiny | base | small | medium | large-v3
@@ -127,6 +130,8 @@ class Config:
                     f"{CONFIG_FILE}: la raíz debe ser un objeto JSON"
                 )
 
+            data = cls._migrar_datos(data)
+
             configurables = {
                 campo.name: campo.type for campo in fields(cls)
                 if campo.name != "extras"
@@ -151,6 +156,34 @@ class Config:
                     cfg.extras[nombre] = valor
         cfg.validate()
         return cfg
+
+    @classmethod
+    def _migrar_datos(cls, data: dict) -> dict:
+        """Actualiza formatos conocidos sin inferir preferencias del usuario."""
+        version = data.get("schema_version", 0)
+        if type(version) is not int:
+            raise ErrorConfiguracion(
+                f"{CONFIG_FILE}: 'schema_version' debe ser entero, no "
+                f"{type(version).__name__}"
+            )
+        if version < 0:
+            raise ErrorConfiguracion(
+                f"{CONFIG_FILE}: 'schema_version' no puede ser negativo"
+            )
+        if version > cls.SCHEMA_VERSION:
+            raise ErrorConfiguracion(
+                f"{CONFIG_FILE}: schema_version={version} requiere una "
+                "versión más nueva de ParlAR"
+            )
+
+        migrados = dict(data)
+        while version < cls.SCHEMA_VERSION:
+            if version == 0:
+                # El formato sin versión no registraba si hotkey_toggle era
+                # default o elección explícita. Se preserva exactamente.
+                version = 1
+            migrados["schema_version"] = version
+        return migrados
 
     def save(self) -> None:
         self.validate()
@@ -219,6 +252,12 @@ class Config:
         enum("mode", self.MODOS)
         enum("rewrite_mode", self.REESCRITURAS)
         enum("injector", self.INYECTORES)
+
+        if self.schema_version != self.SCHEMA_VERSION:
+            errores.append(
+                f"'schema_version'={self.schema_version}: se esperaba "
+                f"{self.SCHEMA_VERSION}"
+            )
 
         if type(self.context_terms) is list:
             if len(self.context_terms) > self.MAX_CONTEXT_TERMS:

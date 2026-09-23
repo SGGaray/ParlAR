@@ -48,6 +48,36 @@ class ConfigTemporal(unittest.TestCase):
         self.assertEqual(cfg.mode, "streaming")
         self.assertEqual(cfg.extras, {"futura": 7})
 
+    def test_config_legacy_adquiere_schema_sin_cambiar_hotkey(self):
+        hotkey_legacy = "<ctrl>+<alt>+d"
+        self.escribir({
+            "hotkey_toggle": hotkey_legacy,
+            "futura": {"preservar": True},
+        })
+        cfg = Config.load()
+        self.assertEqual(cfg.schema_version, Config.SCHEMA_VERSION)
+        self.assertEqual(cfg.hotkey_toggle, hotkey_legacy)
+        self.assertEqual(cfg.extras, {"futura": {"preservar": True}})
+
+        cfg.save()
+        guardada = json.loads(self.ruta.read_text(encoding="utf-8"))
+        self.assertEqual(guardada["schema_version"], Config.SCHEMA_VERSION)
+        self.assertEqual(guardada["hotkey_toggle"], hotkey_legacy)
+        self.assertEqual(
+            guardada["extras"], {"futura": {"preservar": True}})
+
+    def test_schema_futuro_y_version_invalida_fallan_cerrado(self):
+        for valor, patron in (
+            (Config.SCHEMA_VERSION + 1, "versión más nueva"),
+            (-1, "no puede ser negativo"),
+            ("1", "debe ser entero"),
+            (True, "debe ser entero"),
+        ):
+            with self.subTest(valor=valor):
+                self.escribir({"schema_version": valor})
+                with self.assertRaisesRegex(ErrorConfiguracion, patron):
+                    Config.load()
+
     def test_todos_los_enums_conocidos_pasan(self):
         for campo, opciones in (
             ("device", Config.DISPOSITIVOS),
