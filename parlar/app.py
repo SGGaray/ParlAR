@@ -111,8 +111,12 @@ class App:
         self.ui = ui or crear_ui(cfg.overlay, al_click=self.alternar)
         self.control = control or ServidorControl(self._atender_comando)
         self.atajos = atajos or DaemonAtajos(
-            cfg.hotkey_toggle, cfg.hotkey_quit,
-            al_alternar=self.alternar, al_salir=self.salir)
+            cfg.hotkey_toggle,
+            cfg.hotkey_quit,
+            al_presionar=self.iniciar_grabacion,
+            al_soltar=self.detener_grabacion,
+            al_salir=self.salir,
+        )
 
     # ------------------------------------------------------------ ciclo de vida
 
@@ -152,10 +156,16 @@ class App:
             self._iniciar_trabajador()
             self.control.iniciar()
             self.atajos.iniciar()
-            pista = (f"atajo {self.cfg.hotkey_toggle}" if self.atajos._listener
-                     else "`parlarctl alternar`")
-            print(f"[app] listo. Modo: {self.cfg.mode}. Iniciá/detené con {pista}, "
-                  f"o con un click en el punto del indicador.")
+            if self.atajos._listener:
+                pista = (
+                    f"Mantené {self.cfg.hotkey_toggle} para dictar"
+                )
+            else:
+                pista = "Iniciá/detené con `parlarctl alternar`"
+            print(
+                f"[app] listo. Modo: {self.cfg.mode}. {pista}, "
+                "o usá un click en el punto del indicador."
+            )
             self.ui.ejecutar()
         except KeyboardInterrupt:
             pass

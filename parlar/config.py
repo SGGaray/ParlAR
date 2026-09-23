@@ -87,8 +87,10 @@ class Config:
     injector: str = "auto"             # auto | xdotool | wtype | ydotool | clipboard
     type_delay_ms: int = 1
 
-    # --- Atajos (solo X11; en Wayland asigná `parlarctl alternar` en tu DE) ---
-    hotkey_toggle: str = "<ctrl>+<alt>+d"
+    # --- Atajos ---
+    # X11: mantener para dictar. Conservamos el nombre histórico del campo.
+    # Wayland: usar bindings del compositor con parlarctl.
+    hotkey_toggle: str = "<ctrl_r>+<shift_r>"
     hotkey_quit: str = "<ctrl>+<alt>+q"
 
     # --- UI ---
