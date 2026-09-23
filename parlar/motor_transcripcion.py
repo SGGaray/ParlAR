@@ -43,7 +43,7 @@ class MotorWhisper:
 
     def __init__(self, model_size: str, device: str, compute_type: str,
                  language: str = "", beam_size: int = 5,
-                 hotwords: str = ""):
+                 hotwords: str = "", initial_prompt: str = ""):
         from faster_whisper import WhisperModel
         device, compute_type = _elegir_dispositivo(device, compute_type)
         print(f"[stt] cargando faster-whisper '{model_size}' en {device} ({compute_type})...")
@@ -53,6 +53,7 @@ class MotorWhisper:
         self.language = language or None
         self.beam_size = beam_size
         self.hotwords = hotwords.strip() or None
+        self.initial_prompt = initial_prompt.strip() or None
 
     def decodificar(self, audio: np.ndarray, *, word_timestamps: bool = False,
                     beam_size: Optional[int] = None):
@@ -64,6 +65,7 @@ class MotorWhisper:
             vad_filter=False,          # ya hacemos VAD aguas arriba
             condition_on_previous_text=False,
             hotwords=self.hotwords,
+            initial_prompt=self.initial_prompt,
         )
         return list(segments)
 

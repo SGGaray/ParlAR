@@ -142,6 +142,11 @@ def main() -> int:
         default="",
         help="vocabulario contextual opcional pasado a faster-whisper",
     )
+    parser.add_argument(
+        "--initial-prompt",
+        default="",
+        help="contexto inicial opcional pasado a faster-whisper",
+    )
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
 
@@ -154,6 +159,7 @@ def main() -> int:
         language=args.language,
         beam_size=args.beam_size,
         hotwords=args.hotwords,
+        initial_prompt=args.initial_prompt,
     )
     transcriptor = TranscriptorFrase(motor)
 
@@ -223,6 +229,7 @@ def main() -> int:
         "beam_size": args.beam_size,
         "language": args.language,
         "hotwords": motor.hotwords,
+        "initial_prompt": motor.initial_prompt,
         "samples": len(resultados),
         "words": total_palabras,
         "errors": total_errores,
