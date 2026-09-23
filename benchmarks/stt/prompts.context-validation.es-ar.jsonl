@@ -1,0 +1,18 @@
+{"id":"val-target-001","text":"La organización utiliza COBIT 2019 para evaluar responsabilidades y objetivos de gobierno.","tags":["validation","target","cobit"]}
+{"id":"val-target-002","text":"Govern define resultados relacionados con estrategia, expectativas y supervisión del riesgo.","tags":["validation","target","govern"],"instruction":"Pronunciá Govern como gávern."}
+{"id":"val-target-003","text":"El backend confirmó que CUDA 12 está disponible para ejecutar la inferencia local.","tags":["validation","target","cuda"]}
+{"id":"val-target-004","text":"La instalación de cuDNN 9 quedó disponible dentro del entorno de Python.","tags":["validation","target","cudnn"],"instruction":"Pronunciá cuDNN como cu di en en."}
+{"id":"val-target-005","text":"El análisis tomó como referencia una guía publicada por OWASP.","tags":["validation","target","owasp"]}
+{"id":"val-target-006","text":"NIST CSF 2.0 separa los resultados de ciberseguridad en funciones y categorías.","tags":["validation","target","nist-csf"],"instruction":"Pronunciá NIST como nist, CSF letra por letra y 2.0 como dos punto cero."}
+{"id":"val-target-007","text":"La evidencia de la prueba quedó vinculada al cambio correspondiente en GitHub.","tags":["validation","target","github"]}
+{"id":"val-target-008","text":"Una política de Shadow AI debe contemplar uso autorizado, datos y trazabilidad.","tags":["validation","target","shadow-ai"]}
+{"id":"val-target-009","text":"El sistema de gestión basado en ISO 27001 necesita controles y evidencia verificable.","tags":["validation","target","iso27001"]}
+{"id":"val-target-010","text":"COBIT y NIST CSF cumplen funciones distintas dentro del gobierno y la gestión del riesgo.","tags":["validation","target","cobit","nist-csf"]}
+{"id":"val-target-011","text":"OWASP y GitHub aparecen en etapas diferentes del proceso de desarrollo seguro.","tags":["validation","target","owasp","github"]}
+{"id":"val-target-012","text":"El entorno combina CUDA, cuDNN y un modelo local para procesar audio sin servicios externos.","tags":["validation","target","cuda","cudnn"]}
+{"id":"val-control-001","text":"La campaña de vacunación contra COVID continuó durante los meses siguientes.","tags":["validation","control","covid"]}
+{"id":"val-control-002","text":"El gobierno corporativo define quién toma decisiones y quién supervisa los resultados.","tags":["validation","control"]}
+{"id":"val-control-003","text":"La aplicación utiliza la tarjeta gráfica disponible para acelerar algunas operaciones.","tags":["validation","control"]}
+{"id":"val-control-004","text":"El equipo documentó los hallazgos y agregó la evidencia al repositorio interno.","tags":["validation","control"]}
+{"id":"val-control-005","text":"La política establece requisitos para proveedores, accesos y tratamiento de información.","tags":["validation","control"]}
+{"id":"val-control-006","text":"La revisión encontró diferencias entre el procedimiento escrito y la práctica cotidiana.","tags":["validation","control"]}
