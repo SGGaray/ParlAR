@@ -21,6 +21,21 @@ from parlar.config import Config
 
 
 SAMPLE_WIDTH = 2
+MAX_PALABRAS_POR_SEGUNDO = 8.0
+
+
+def duracion_minima_referencia(texto: str, cfg: Config) -> float:
+    palabras = max(1, len(texto.split()))
+    margen_segmentador_s = (
+        cfg.preroll_ms + cfg.silence_ms
+    ) / 1000.0
+
+    return (
+        margen_segmentador_s
+        + palabras / MAX_PALABRAS_POR_SEGUNDO
+    )
+
+
 
 
 def cargar_jsonl(ruta: Path) -> list[dict]:
@@ -392,6 +407,27 @@ def main() -> int:
                 file=sys.stderr,
             )
             print("No se guardó ningún cambio.")
+            return 1
+
+        duracion_capturada = len(audio) / cfg.sample_rate
+        duracion_minima = duracion_minima_referencia(
+            prompt["text"],
+            cfg,
+        )
+
+        if duracion_capturada < duracion_minima:
+            print(
+                "[audio] toma rechazada: "
+                f"duración={duracion_capturada:.2f}s, "
+                f"mínimo conservador={duracion_minima:.2f}s "
+                f"para {len(prompt['text'].split())} palabras",
+                file=sys.stderr,
+            )
+            print(
+                "La captura parece incompleta o disparada por ruido. "
+                "No se guardó ningún cambio.",
+                file=sys.stderr,
+            )
             return 1
 
         duracion = escribir_wav(
