@@ -10,6 +10,31 @@ VENV_DIR="$INSTALL_HOME/venv"
 DESKTOP_PATH="$DATA_BASE/applications/parlar.desktop"
 UNIT_PATH="$CONFIG_BASE/systemd/user/parlar.service"
 
+uso() {
+    cat <<'EOF'
+Uso: ./uninstall.sh
+
+Desinstala ParlAR de la cuenta de usuario.
+Conserva la configuración y los transcripts.
+
+  -h, --help    muestra esta ayuda sin modificar el sistema
+EOF
+}
+
+while (($#)); do
+    case "$1" in
+        -h|--help)
+            uso
+            exit 0
+            ;;
+        *)
+            echo "!! opción desconocida: $1" >&2
+            uso >&2
+            exit 2
+            ;;
+    esac
+done
+
 if [[ "$INSTALL_HOME" != /* \
         || "$(basename -- "$INSTALL_HOME")" != "parlar" \
         || "$(dirname -- "$INSTALL_HOME")" == "/" ]]; then

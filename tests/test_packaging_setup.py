@@ -465,6 +465,69 @@ class ContratoInstalacionUsuario(unittest.TestCase):
                 render_desktop.instalar(contenido, salida)
             self.assertIn("Name=Personal", salida.read_text())
 
+    def test_uninstall_help_y_opcion_invalida_no_borran_nada(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            home = base / "home"
+            data = home / "share"
+            config = home / "config"
+            install_home = data / "parlar"
+            bin_dir = home / "bin"
+
+            install_home.mkdir(parents=True)
+            bin_dir.mkdir(parents=True)
+
+            testigo = install_home / "NO_BORRAR"
+            testigo.write_text("presente\n", encoding="utf-8")
+
+            entorno = os.environ.copy()
+            entorno.update({
+                "HOME": str(home),
+                "XDG_DATA_HOME": str(data),
+                "XDG_CONFIG_HOME": str(config),
+                "PARLAR_INSTALL_HOME": str(install_home),
+                "PARLAR_BIN_DIR": str(bin_dir),
+            })
+
+            ayuda = ejecutar(
+                str(ROOT / "uninstall.sh"),
+                "--help",
+                cwd=ROOT,
+                env=entorno,
+            )
+
+            self.assertEqual(
+                ayuda.returncode,
+                0,
+                ayuda.stderr,
+            )
+            self.assertIn(
+                "Uso: ./uninstall.sh",
+                ayuda.stdout,
+            )
+            self.assertTrue(
+                testigo.exists()
+            )
+
+            invalida = ejecutar(
+                str(ROOT / "uninstall.sh"),
+                "--opcion-inexistente",
+                cwd=ROOT,
+                env=entorno,
+            )
+
+            self.assertEqual(
+                invalida.returncode,
+                2,
+            )
+            self.assertIn(
+                "opción desconocida",
+                invalida.stderr,
+            )
+            self.assertTrue(
+                testigo.exists()
+            )
+
     def test_instalacion_y_desinstalacion_xdg_simuladas(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
