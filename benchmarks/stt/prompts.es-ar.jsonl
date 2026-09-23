@@ -1,0 +1,30 @@
+{"id": "normal-001", "text": "Hoy tengo que revisar unas cosas antes de salir de casa.", "language": "es", "tags": ["normal"]}
+{"id": "normal-002", "text": "Dejé las llaves arriba de la mesa, al lado del cargador.", "language": "es", "tags": ["normal"]}
+{"id": "normal-003", "text": "Si termino temprano, paso por el supermercado y después vuelvo.", "language": "es", "tags": ["normal"]}
+{"id": "normal-004", "text": "Mañana a la mañana tengo que llamar para pedir un turno.", "language": "es", "tags": ["normal"]}
+{"id": "normal-005", "text": "No sé si va a llover, pero igual voy a llevar una campera.", "language": "es", "tags": ["normal"]}
+{"id": "normal-006", "text": "Mandame el archivo cuando puedas y lo reviso más tarde.", "language": "es", "tags": ["normal"]}
+{"id": "normal-007", "text": "Estuve trabajando toda la tarde y recién ahora pude sentarme.", "language": "es", "tags": ["normal"]}
+{"id": "normal-008", "text": "Prefiero que me avises antes de cambiar algo importante.", "language": "es", "tags": ["normal"]}
+{"id": "normal-009", "text": "La reunión empezó tarde, pero por suerte terminó bastante rápido.", "language": "es", "tags": ["normal"]}
+{"id": "normal-010", "text": "Cuando llegue a casa voy a preparar algo para comer.", "language": "es", "tags": ["normal"]}
+{"id": "tecnico-001", "text": "El control debe reducir el riesgo sin bloquear innecesariamente al usuario.", "language": "es", "tags": ["tecnico"]}
+{"id": "tecnico-002", "text": "La evidencia de auditoría tiene que ser suficiente, trazable y reproducible.", "language": "es", "tags": ["tecnico"]}
+{"id": "tecnico-003", "text": "NIST CSF 2.0 incorpora la función Govern dentro del marco de ciberseguridad.", "language": "es", "tags": ["tecnico", "siglas"]}
+{"id": "tecnico-004", "text": "ISO 27001 exige gestionar riesgos y mantener evidencia sobre los controles aplicables.", "language": "es", "tags": ["tecnico", "siglas"]}
+{"id": "tecnico-005", "text": "COBIT ayuda a alinear gobierno, riesgo y objetivos de tecnología.", "language": "es", "tags": ["tecnico", "siglas"]}
+{"id": "tecnico-006", "text": "El principio de mínimo privilegio limita el acceso a lo estrictamente necesario.", "language": "es", "tags": ["tecnico"]}
+{"id": "tecnico-007", "text": "Una vulnerabilidad no implica el mismo nivel de riesgo en todos los contextos.", "language": "es", "tags": ["tecnico"]}
+{"id": "tecnico-008", "text": "El Shadow AI puede introducir exposición de datos y pérdida de trazabilidad.", "language": "es", "tags": ["tecnico", "ingles"]}
+{"id": "tecnico-009", "text": "La autenticación multifactor reduce el impacto de una contraseña comprometida.", "language": "es", "tags": ["tecnico"]}
+{"id": "tecnico-010", "text": "El registro de eventos debe permitir reconstruir qué ocurrió, cuándo y sobre qué sistema.", "language": "es", "tags": ["tecnico"]}
+{"id": "mixto-001", "text": "El servidor escucha en el puerto 443 y responde por HTTPS.", "language": "es", "tags": ["numeros", "siglas"]}
+{"id": "mixto-002", "text": "La dirección IP 192.168.1.25 pertenece a una red privada.", "language": "es", "tags": ["numeros", "siglas"]}
+{"id": "mixto-003", "text": "El SLA es de 99,9 por ciento y el RTO objetivo es de cuatro horas.", "language": "es", "tags": ["numeros", "siglas"]}
+{"id": "mixto-004", "text": "La versión Python 3.14 corre con CUDA 12 y cuDNN 9.", "language": "es", "tags": ["numeros", "ingles", "tecnico"]}
+{"id": "mixto-005", "text": "El equipo usa GitHub, AWS, NIST y OWASP para distintos procesos técnicos.", "language": "es", "tags": ["siglas", "ingles"]}
+{"id": "rapido-001", "text": "Necesito revisar el informe, corregir los datos, mandarlo y salir antes de las seis.", "language": "es", "tags": ["rapido"], "instruction": "Decilo de corrido, algo más rápido de lo normal."}
+{"id": "rapido-002", "text": "Abrí el archivo, cambiá el nombre, guardá una copia y después cerralo.", "language": "es", "tags": ["rapido"], "instruction": "Decilo de corrido, algo más rápido de lo normal."}
+{"id": "rapido-003", "text": "Si el servicio falla reinicialo, revisá el registro y confirmá que vuelva a responder.", "language": "es", "tags": ["rapido", "tecnico"], "instruction": "Decilo de corrido, algo más rápido de lo normal."}
+{"id": "rapido-004", "text": "Primero verificamos el riesgo, después aplicamos el control y finalmente guardamos la evidencia.", "language": "es", "tags": ["rapido", "tecnico"], "instruction": "Decilo de corrido, algo más rápido de lo normal."}
+{"id": "rapido-005", "text": "No quiero que cambies el texto, solamente detectá el error y avisame dónde está.", "language": "es", "tags": ["rapido"], "instruction": "Decilo de corrido, algo más rápido de lo normal."}

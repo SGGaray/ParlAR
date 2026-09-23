@@ -11,10 +11,15 @@ import argparse
 import json
 import re
 import statistics
+import sys
 import time
 import unicodedata
 import wave
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import numpy as np
 
@@ -145,6 +150,11 @@ def main() -> int:
         beam_size=args.beam_size,
     )
     transcriptor = TranscriptorFrase(motor)
+
+    # Warm-up no medido: la primera inferencia CUDA puede inicializar
+    # kernels y no debe contaminar la latencia de la primera muestra.
+    primer_audio = cargar_wav(args.manifest.parent / casos[0]["audio"])
+    transcriptor.transcribir(primer_audio)
 
     resultados = []
     total_palabras = 0
