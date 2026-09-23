@@ -137,6 +137,11 @@ def main() -> int:
     parser.add_argument("--compute-type", default="auto")
     parser.add_argument("--beam-size", type=int, default=5)
     parser.add_argument("--language", default="es")
+    parser.add_argument(
+        "--hotwords",
+        default="",
+        help="vocabulario contextual opcional pasado a faster-whisper",
+    )
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
 
@@ -148,6 +153,7 @@ def main() -> int:
         compute_type=args.compute_type,
         language=args.language,
         beam_size=args.beam_size,
+        hotwords=args.hotwords,
     )
     transcriptor = TranscriptorFrase(motor)
 
@@ -216,6 +222,7 @@ def main() -> int:
         "compute_type": args.compute_type,
         "beam_size": args.beam_size,
         "language": args.language,
+        "hotwords": motor.hotwords,
         "samples": len(resultados),
         "words": total_palabras,
         "errors": total_errores,
