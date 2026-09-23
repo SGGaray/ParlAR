@@ -13,6 +13,7 @@ DESKTOP_PATH="$DATA_BASE/applications/parlar.desktop"
 UNIT_PATH="$CONFIG_BASE/systemd/user/parlar.service"
 INSTALL_SERVICE=0
 PRELOAD_MODEL=0
+CPU_ONLY=0
 
 uso() {
     cat <<'EOF'
@@ -20,6 +21,7 @@ Uso: ./install.sh [opciones]
 
   --install-service  instala la unit systemd de usuario (no la activa)
   --preload-model    descarga/precarga Whisper small
+  --cpu-only         no instala las runtimes CUDA aunque haya NVIDIA
   -h, --help         muestra esta ayuda sin modificar el sistema
 EOF
 }
@@ -28,6 +30,7 @@ while (($#)); do
     case "$1" in
         --install-service) INSTALL_SERVICE=1 ;;
         --preload-model) PRELOAD_MODEL=1 ;;
+        --cpu-only) CPU_ONLY=1 ;;
         -h|--help) uso; exit 0 ;;
         *) echo "!! opción desconocida: $1" >&2; uso >&2; exit 2 ;;
     esac
@@ -70,6 +73,22 @@ fi
 
 echo "==> Instalando ParlAR"
 "$VENV_PYTHON" -m pip install "$REPO_DIR"
+
+if ((CPU_ONLY)); then
+    echo "==> Instalación CPU solicitada; se omiten runtimes NVIDIA"
+elif "$VENV_PYTHON" - <<'PYCUDA' >/dev/null 2>&1
+import ctranslate2
+
+raise SystemExit(
+    0 if ctranslate2.get_cuda_device_count() > 0 else 1
+)
+PYCUDA
+then
+    echo "==> GPU CUDA detectada por CTranslate2; instalando runtime NVIDIA de ParlAR"
+    "$VENV_PYTHON" -m pip install "$REPO_DIR[cuda]"
+else
+    echo "==> CTranslate2 no detectó GPU CUDA; ParlAR usará CPU"
+fi
 
 echo "==> Intentando instalar WebRTC VAD opcional"
 if ! "$VENV_PYTHON" -m pip install --no-deps 'webrtcvad-wheels==2.0.14'; then

@@ -19,6 +19,11 @@ dependencies = [
 
 [project.optional-dependencies]
 vad = ["webrtcvad-wheels==2.0.14"]
+cuda = [
+    "nvidia-cublas-cu12==12.9.2.10",
+    "nvidia-cuda-nvrtc-cu12==12.9.86",
+    "nvidia-cudnn-cu12==9.24.0.43",
+]
 
 [project.scripts]
 parlar = "parlar.__main__:main"

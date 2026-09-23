@@ -441,6 +441,32 @@ class ContratoServicio(unittest.TestCase):
             self.assertEqual(salida.read_text(), "[Unit]\nDescription=personal\n")
 
 
+class ContratoCudaPackaging(unittest.TestCase):
+    def test_pyproject_declara_runtime_cuda_reproducible(self):
+        pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+        self.assertIn(
+            'nvidia-cublas-cu12==12.9.2.10',
+            pyproject,
+        )
+        self.assertIn(
+            'nvidia-cuda-nvrtc-cu12==12.9.86',
+            pyproject,
+        )
+        self.assertIn(
+            'nvidia-cudnn-cu12==9.24.0.43',
+            pyproject,
+        )
+
+    def test_instalador_ofrece_cpu_only_y_extra_cuda(self):
+        instalador = (ROOT / "install.sh").read_text(encoding="utf-8")
+
+        self.assertIn("--cpu-only", instalador)
+        self.assertIn('"$REPO_DIR[cuda]"', instalador)
+        self.assertIn("ctranslate2.get_cuda_device_count()", instalador)
+        self.assertNotIn("nvidia-smi", instalador)
+
+
 class ContratoInstalacionUsuario(unittest.TestCase):
     def test_launcher_es_valido_idempotente_y_no_reemplaza_ajeno(self):
         with tempfile.TemporaryDirectory() as tmp:
