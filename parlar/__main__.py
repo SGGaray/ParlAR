@@ -12,6 +12,7 @@ import sys
 import threading
 
 from .config import CONFIG_FILE, Config, ErrorConfiguracion
+from .control import GuardiaInstancia, InstanciaActivaError
 from .runtime_nvidia import preparar_runtime_nvidia
 
 _ALIAS_MODO = {"frase": "utterance"}
@@ -181,16 +182,20 @@ def main():
         print(cfg.hotkey_toggle)
         return
 
-    preparar_runtime_nvidia(cfg.device)
-
-    from .app import App  # imports pesados diferidos hasta después del parseo
-    from .control import InstanciaActivaError
-
+    guardia = None
     try:
-        _ejecutar_con_sigterm(App(cfg))
+        guardia = GuardiaInstancia.adquirir_para_entry_point()
+        with guardia.preservar_en_reexec():
+            preparar_runtime_nvidia(cfg.device)
+
+        from .app import App  # import pesado posterior al lock de instancia
+        _ejecutar_con_sigterm(App(cfg, guardia_instancia=guardia))
     except InstanciaActivaError:
         print("ParlAR ya está ejecutándose.", file=sys.stderr)
         raise SystemExit(_CODIGO_INSTANCIA_ACTIVA)
+    finally:
+        if guardia is not None:
+            guardia.liberar()
 
 
 if __name__ == "__main__":

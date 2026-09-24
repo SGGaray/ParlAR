@@ -48,7 +48,7 @@ class EstadoApp(str, Enum):
 class App:
     def __init__(self, cfg: Config, *, motor=None, frases=None, streaming=None,
                  proc=None, inyector=None, guionar=None, sesion=None, mic=None,
-                 ui=None, control=None, atajos=None,
+                 ui=None, control=None, atajos=None, guardia_instancia=None,
                  vad_factory=crear_vad, segmentador_factory=Segmentador):
         cfg.validate()
         self.cfg = cfg
@@ -110,7 +110,8 @@ class App:
             print(f"[guionar] integración activa (socket: {self.guionar.ruta})")
         self.mic = mic or CapturadorMic(cfg.sample_rate, cfg.frame_samples)
         self.ui = ui or crear_ui(cfg.overlay, al_click=self.alternar)
-        self.control = control or ServidorControl(self._atender_comando)
+        self.control = control or ServidorControl(
+            self._atender_comando, guardia_instancia=guardia_instancia)
         self.gesto_dictado = ControlGestoDictado(
             self.iniciar_grabacion,
             self.detener_grabacion,

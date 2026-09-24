@@ -1,5 +1,6 @@
 """Regresiones de SIGTERM en la frontera ejecutable del daemon."""
 
+import contextlib
 import signal
 import socket
 import subprocess
@@ -174,6 +175,8 @@ class PruebasSenalesEntryPoint(unittest.TestCase):
 
     def test_sigterm_entra_por_main_limpia_una_vez_y_sale_normal(self):
         app = AppEntradaFalsa()
+        guardia = mock.Mock()
+        guardia.preservar_en_reexec.return_value = contextlib.nullcontext()
         handler_original = signal.signal(
             signal.SIGTERM, _fallar_sigterm_sin_entry_point)
         try:
@@ -183,12 +186,18 @@ class PruebasSenalesEntryPoint(unittest.TestCase):
                 mock.patch.object(sys, "argv", ["parlar"]),
                 mock.patch.object(
                     entrada, "preparar_runtime_nvidia", return_value=False),
+                mock.patch.object(
+                    entrada.GuardiaInstancia,
+                    "adquirir_para_entry_point",
+                    return_value=guardia,
+                ),
                 mock.patch("parlar.app.App", return_value=app),
             ):
                 resultado = entrada.main()
             self.assertIsNone(resultado)
             self.assertEqual(app.ejecuciones, 1)
             self.assertEqual(app.solicitudes, 1)
+            guardia.liberar.assert_called_once_with()
             self.assertIs(
                 signal.getsignal(signal.SIGTERM),
                 _fallar_sigterm_sin_entry_point,

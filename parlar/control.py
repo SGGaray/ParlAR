@@ -11,6 +11,7 @@ Comandos (español primero, alias en inglés entre paréntesis):
 """
 
 import argparse
+from contextlib import contextmanager
 import os
 import fcntl
 import socket
@@ -47,6 +48,116 @@ class InstanciaActivaError(RuntimeError):
     """El inicio fue rechazado porque otra instancia conserva el control."""
 
 
+class GuardiaInstancia:
+    """Ownership único del flock, transferible a través del reexec NVIDIA."""
+
+    ENV_FD = "PARLAR_INSTANCE_LOCK_FD"
+
+    def __init__(self, ruta=None):
+        self.ruta = Path(ruta or SOCKET_PATH)
+        self.ruta_lock = Path(f"{self.ruta}.lock")
+        self._fd = None
+        self._identidad = None
+
+    @property
+    def adquirida(self):
+        return self._fd is not None
+
+    def fileno(self):
+        if self._fd is None:
+            raise RuntimeError("el lock de instancia no está adquirido")
+        return self._fd
+
+    def _validar_fd(self, fd, *, heredado=False):
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+            raise RuntimeError("el lock de control no es un archivo propio")
+        if heredado:
+            info_ruta = os.lstat(self.ruta_lock)
+            if (info.st_dev, info.st_ino) != (
+                    info_ruta.st_dev, info_ruta.st_ino):
+                raise RuntimeError("el lock heredado no corresponde a ParlAR")
+        os.fchmod(fd, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise InstanciaActivaError(
+                "ya existe una instancia activa de ParlAR") from exc
+        return info
+
+    def adquirir(self):
+        if self._fd is not None:
+            raise RuntimeError("la instancia de control ya posee su lock")
+        flags = os.O_CREAT | os.O_RDWR
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        try:
+            fd = os.open(self.ruta_lock, flags, 0o600)
+        except OSError as exc:
+            raise RuntimeError(
+                f"no se pudo abrir el lock de control: {self.ruta_lock}") from exc
+        try:
+            info = self._validar_fd(fd)
+        except BaseException:
+            os.close(fd)
+            raise
+        self._fd = fd
+        self._identidad = (info.st_dev, info.st_ino)
+
+    @classmethod
+    def adquirir_para_entry_point(cls, ruta=None):
+        guardia = cls(ruta)
+        heredado = os.environ.pop(cls.ENV_FD, None)
+        if heredado is None:
+            guardia.adquirir()
+            return guardia
+        try:
+            fd = int(heredado)
+            if fd < 0:
+                raise ValueError
+        except ValueError as exc:
+            raise RuntimeError("descriptor de lock heredado inválido") from exc
+        try:
+            info = guardia._validar_fd(fd, heredado=True)
+            os.set_inheritable(fd, False)
+        except BaseException:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            raise
+        guardia._fd = fd
+        guardia._identidad = (info.st_dev, info.st_ino)
+        return guardia
+
+    @contextmanager
+    def preservar_en_reexec(self):
+        fd = self.fileno()
+        heredable_anterior = os.get_inheritable(fd)
+        entorno_anterior = os.environ.get(self.ENV_FD)
+        os.set_inheritable(fd, True)
+        os.environ[self.ENV_FD] = str(fd)
+        try:
+            yield
+        finally:
+            if self._fd == fd:
+                os.set_inheritable(fd, heredable_anterior)
+            if entorno_anterior is None:
+                os.environ.pop(self.ENV_FD, None)
+            else:
+                os.environ[self.ENV_FD] = entorno_anterior
+
+    def liberar(self):
+        fd, self._fd = self._fd, None
+        self._identidad = None
+        if fd is None:
+            return
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
 def normalizar_comando(cmd: str) -> list[str]:
     partes = cmd.strip().split()
     if not partes:
@@ -58,16 +169,20 @@ def normalizar_comando(cmd: str) -> list[str]:
 
 
 class ServidorControl:
-    def __init__(self, manejador: Callable[[str], str], ruta=None):
+    def __init__(self, manejador: Callable[[str], str], ruta=None,
+                 guardia_instancia=None):
         self.manejador = manejador
         self.ruta = ruta or SOCKET_PATH
-        self._ruta_lock = Path(f"{self.ruta}.lock")
+        self._guardia_instancia = (
+            guardia_instancia or GuardiaInstancia(self.ruta))
+        if self._guardia_instancia.ruta != Path(self.ruta):
+            raise ValueError("la guardia no corresponde al socket de control")
+        self._ruta_lock = self._guardia_instancia.ruta_lock
+        self._lock_pre_adquirido = self._guardia_instancia.adquirida
         self._sock: socket.socket | None = None
         self._hilo: threading.Thread | None = None
         self._corriendo = False
         self._identidad = None
-        self._lock_fd = None
-        self._lock_identidad = None
         self._clientes = threading.BoundedSemaphore(_MAX_CLIENTES)
         self._hilos_clientes = set()
         self._conexiones_activas = set()
@@ -115,41 +230,24 @@ class ServidorControl:
         self._sock.listen(_MAX_CLIENTES)
 
     def _adquirir_lock_instancia(self):
-        if self._lock_fd is not None:
+        if self._guardia_instancia.adquirida:
+            if self._lock_pre_adquirido:
+                self._lock_pre_adquirido = False
+                return
             raise RuntimeError("la instancia de control ya posee su lock")
-        flags = os.O_CREAT | os.O_RDWR
-        if hasattr(os, "O_NOFOLLOW"):
-            flags |= os.O_NOFOLLOW
-        try:
-            fd = os.open(self._ruta_lock, flags, 0o600)
-        except OSError as exc:
-            raise RuntimeError(
-                f"no se pudo abrir el lock de control: {self._ruta_lock}") from exc
-        try:
-            info = os.fstat(fd)
-            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
-                raise RuntimeError("el lock de control no es un archivo propio")
-            os.fchmod(fd, 0o600)
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError as exc:
-                raise InstanciaActivaError(
-                    "ya existe una instancia activa de ParlAR") from exc
-        except BaseException:
-            os.close(fd)
-            raise
-        self._lock_fd = fd
-        self._lock_identidad = (info.st_dev, info.st_ino)
+        self._guardia_instancia.adquirir()
 
     def _liberar_lock_instancia(self):
-        fd, self._lock_fd = self._lock_fd, None
-        self._lock_identidad = None
-        if fd is None:
-            return
-        try:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-        finally:
-            os.close(fd)
+        self._lock_pre_adquirido = False
+        self._guardia_instancia.liberar()
+
+    @property
+    def _lock_fd(self):
+        return self._guardia_instancia._fd
+
+    @property
+    def _lock_identidad(self):
+        return self._guardia_instancia._identidad
 
     def _limpiar_recursos_instancia(self):
         """Intenta endpoint y flock completos, preservando el primer error."""

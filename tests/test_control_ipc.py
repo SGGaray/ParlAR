@@ -7,9 +7,11 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from parlar.config import SOCKET_PATH
 from parlar.control import (
+    GuardiaInstancia,
     InstanciaActivaError,
     ServidorControl,
     normalizar_comando,
@@ -110,6 +112,31 @@ class PruebasControl(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "no es socket"):
             conflicto.iniciar()
         self.assertEqual(self.ruta.read_text(encoding="utf-8"), "ajeno")
+
+    def test_guardia_preflight_se_usa_sin_retomar_el_lock(self):
+        guardia = GuardiaInstancia(self.ruta)
+        guardia.adquirir()
+        fd = guardia.fileno()
+        servidor = ServidorControl(
+            lambda cmd: f"OK {cmd}", self.ruta,
+            guardia_instancia=guardia,
+        )
+        self.servidor = servidor
+
+        with mock.patch.object(
+                guardia, "adquirir", wraps=guardia.adquirir) as adquirir:
+            servidor.iniciar()
+
+        adquirir.assert_not_called()
+        self.assertEqual(servidor._lock_fd, fd)
+        self.assertEqual(peticion(self.ruta, [b"estado\n"]), "OK estado")
+        servidor.detener()
+        self.servidor = None
+        self.assertFalse(guardia.adquirida)
+
+        siguiente = GuardiaInstancia(self.ruta)
+        siguiente.adquirir()
+        siguiente.liberar()
 
     def test_shutdown_solo_elimina_endpoint_propio(self):
         self.iniciar()

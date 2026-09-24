@@ -114,6 +114,7 @@ class PruebasContextoConfig(unittest.TestCase):
             notify=False,
         )
 
+        guardia = object()
         with (
             mock.patch("parlar.app.MotorWhisper") as motor,
             mock.patch("parlar.app.TranscriptorFrase"),
@@ -124,10 +125,10 @@ class PruebasContextoConfig(unittest.TestCase):
             mock.patch("parlar.app.crear_salida_sesion"),
             mock.patch("parlar.app.CapturadorMic"),
             mock.patch("parlar.app.crear_ui"),
-            mock.patch("parlar.app.ServidorControl"),
+            mock.patch("parlar.app.ServidorControl") as control,
             mock.patch("parlar.app.DaemonAtajos"),
         ):
-            App(cfg)
+            App(cfg, guardia_instancia=guardia)
 
         motor.assert_called_once_with(
             "small",
@@ -139,6 +140,8 @@ class PruebasContextoConfig(unittest.TestCase):
                 "Vocabulario relevante: COBIT, OWASP."
             ),
         )
+        control.assert_called_once_with(
+            mock.ANY, guardia_instancia=guardia)
 
 
 if __name__ == "__main__":
