@@ -55,7 +55,7 @@ def transcribir(*segmentos):
 
 class RespuestaOllamaFalsa:
     def __init__(self, texto):
-        self.texto = texto
+        self.data = json.dumps({"response": texto}).encode()
 
     def __enter__(self):
         return self
@@ -63,8 +63,9 @@ class RespuestaOllamaFalsa:
     def __exit__(self, *args):
         return False
 
-    def read(self):
-        return json.dumps({"response": self.texto}).encode()
+    def read1(self, cantidad):
+        trozo, self.data = self.data[:cantidad], self.data[cantidad:]
+        return trozo
 
 
 class PruebasLiteral(unittest.TestCase):

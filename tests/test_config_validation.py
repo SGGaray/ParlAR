@@ -217,14 +217,17 @@ class ConfigTemporal(unittest.TestCase):
 
     def test_fallback_ollama_cubre_request_urlopen_y_parseo(self):
         class RespuestaRota:
+            data = b"{"
+
             def __enter__(self):
                 return self
 
             def __exit__(self, *args):
                 return False
 
-            def read(self):
-                return b"{"
+            def read1(self, cantidad):
+                trozo, self.data = self.data[:cantidad], self.data[cantidad:]
+                return trozo
 
         casos = (
             ("request",
