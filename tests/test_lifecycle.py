@@ -815,6 +815,62 @@ class PruebasApp(unittest.TestCase):
                 self.assertTrue(sesion.escrito.wait(2))
                 self.assertEqual(sesion.textos, ["U:101"])
 
+    def test_cancel_viejo_no_publica_estado_terminal_sobre_restart(self):
+        for fallar_stop, estado_terminal, resultado_esperado in (
+                (False, "idle", True),
+                (True, "error", False)):
+            with self.subTest(estado_terminal=estado_terminal):
+                mic = MicFalso(fallar_stop=fallar_stop)
+                app, _, _, _, _, _, sesion, fabrica = self.app(mic=mic)
+                self.assertTrue(app.iniciar_grabacion())
+                generacion_vieja = app.generacion_activa
+
+                publicar_original = (
+                    app._estado_visual_terminal_si_vigente
+                )
+                publicador_viejo_entrado = threading.Event()
+                liberar_publicador_viejo = threading.Event()
+
+                def publicar_bloqueado(estado, estado_app, generacion):
+                    if estado == estado_terminal:
+                        publicador_viejo_entrado.set()
+                        if not liberar_publicador_viejo.wait(2):
+                            raise TimeoutError("publicador viejo no liberado")
+                    return publicar_original(estado, estado_app, generacion)
+
+                app._estado_visual_terminal_si_vigente = publicar_bloqueado
+                resultado_cancel = []
+                hilo_cancel = threading.Thread(
+                    target=lambda: resultado_cancel.append(
+                        app.cancelar_grabacion()))
+                hilo_cancel.start()
+
+                self.assertTrue(publicador_viejo_entrado.wait(2))
+                self.assertEqual(app.estado, (
+                    EstadoApp.ERROR if fallar_stop else EstadoApp.IDLE))
+
+                self.assertEqual(
+                    app._atender_comando("iniciar"), "OK grabando")
+                generacion_nueva = app.generacion_activa
+                self.assertNotEqual(generacion_vieja, generacion_nueva)
+                self.assertEqual(app.ui.estados[-1], "recording")
+
+                liberar_publicador_viejo.set()
+                hilo_cancel.join(2)
+                self.assertFalse(hilo_cancel.is_alive())
+                self.assertEqual(resultado_cancel, [resultado_esperado])
+                self.assertEqual(app.estado, EstadoApp.RECORDING)
+                self.assertEqual(app.generacion_activa, generacion_nueva)
+                self.assertEqual(mic.generacion, generacion_nueva)
+                self.assertTrue(app.grabando.is_set())
+                self.assertEqual(app.ui.estados[-1], "recording")
+
+                self.assertTrue(mic.enviar(101))
+                mic.enviar(0)
+                self.assertTrue(fabrica.creada.wait(2))
+                self.assertTrue(sesion.escrito.wait(2))
+                self.assertEqual(sesion.textos, ["U:101"])
+
     def test_cancel_dos_veces_es_idempotente(self):
         app, mic, *_ = self.app()
 

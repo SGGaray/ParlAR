@@ -262,7 +262,8 @@ class App:
                 self.grabando.clear()
                 if not vigente:
                     return False
-                self.ui.fijar_estado("error")
+                self._estado_visual_terminal_si_vigente(
+                    "error", EstadoApp.ERROR, generacion)
                 print(f"[app] no se pudo abrir el micrófono: {exc}", file=sys.stderr)
                 return False
 
@@ -296,7 +297,7 @@ class App:
                 return False
 
             self.grabando.set()
-            self.ui.fijar_estado("recording")
+            self._estado_visual_si_vigente("recording", generacion)
             print(f"[app] ● grabando (sesión {generacion})")
             return True
 
@@ -339,13 +340,14 @@ class App:
                 self._estado_cv.notify_all()
             if cancelada:
                 return error is None
-            self.ui.fijar_estado("transcribing")
+            self._estado_visual_si_vigente("transcribing", generacion)
             print(f"[app] ◌ deteniendo (sesión {generacion})")
             return error is None
 
     def cancelar_grabacion(self) -> bool:
         """Invalida la sesión sin finalizar ni emitir audio pendiente."""
         generacion = None
+        revision = None
 
         # La barrera de salida es lo primero: cualquier escritura que ya
         # comenzó termina antes de esta sección; ninguna nueva puede empezar
@@ -357,6 +359,7 @@ class App:
                     EstadoApp.CLOSED,
                 ):
                     return True
+                revision = self._generacion
 
                 if self._estado in (
                     EstadoApp.IDLE,
@@ -461,16 +464,12 @@ class App:
                     self._estado_cv.notify_all()
 
             if error_vigente:
-                self.ui.fijar_estado("error")
+                self._estado_visual_terminal_si_vigente(
+                    "error", EstadoApp.ERROR, revision)
             return False
 
-        with self._estado_cv:
-            publicar_idle = (
-                self._estado == EstadoApp.IDLE
-                and self._sesion_activa is None
-            )
-        if publicar_idle:
-            self.ui.fijar_estado("idle")
+        self._estado_visual_terminal_si_vigente(
+            "idle", EstadoApp.IDLE, revision)
 
         if generacion is not None:
             print(
@@ -1019,7 +1018,11 @@ class App:
             self._modo_por_sesion.pop(generacion, None)
             self._estado = EstadoApp.ERROR if con_error else EstadoApp.IDLE
             self._estado_cv.notify_all()
-        self.ui.fijar_estado("error" if con_error else "idle")
+        self._estado_visual_terminal_si_vigente(
+            "error" if con_error else "idle",
+            EstadoApp.ERROR if con_error else EstadoApp.IDLE,
+            generacion,
+        )
         print(f"[app] ○ detenido (sesión {generacion})")
 
     def _evento_vad(self, hablando: bool, generacion: int):
@@ -1034,6 +1037,22 @@ class App:
         with self._salida_lock:
             if self._puede_emit(generacion):
                 self.ui.fijar_estado(estado)
+
+    def _estado_visual_terminal_si_vigente(
+            self, estado: str, estado_app: EstadoApp, generacion: int) -> bool:
+        """Publica un terminal solo si ninguna generación lo reemplazó."""
+        with self._salida_lock:
+            with self._estado_cv:
+                vigente = (
+                    self._generacion == generacion
+                    and self._sesion_activa is None
+                    and self._estado == estado_app
+                )
+            if vigente:
+                # Indicador.fijar_estado solo actualiza una variable protegida;
+                # no ejecuta callbacks Tk ni lifecycle bajo esta barrera.
+                self.ui.fijar_estado(estado)
+            return vigente
 
     def _registrar_fallo_worker(self, exc: Exception):
         print(f"[app] fallo inesperado del worker: {type(exc).__name__}",

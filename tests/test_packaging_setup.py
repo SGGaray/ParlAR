@@ -667,19 +667,78 @@ class ContratoInstalacionUsuario(unittest.TestCase):
     def test_uninstall_no_sigue_install_home_symlink(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
-            home = base / "home"
-            data = home / "share"
-            config = home / "config"
-            bin_dir = home / "bin"
-            destino_ajeno = base / "destino-ajeno"
-            testigo_venv = destino_ajeno / "venv" / "NO_BORRAR"
-            testigo_venv.parent.mkdir(parents=True)
-            testigo_venv.write_text("venv ajeno\n", encoding="utf-8")
-            testigo_datos = destino_ajeno / "datos.txt"
-            testigo_datos.write_text("datos ajenos\n", encoding="utf-8")
+            tools = base / "tools"
+            tools.mkdir()
+            (tools / "systemctl").symlink_to(shutil.which("true"))
+
+            variantes = (
+                ("directa", "", 0, "enlace simbólico"),
+                ("slash", "/", 0, "enlace simbólico"),
+                ("slashes", "///", 0, "enlace simbólico"),
+                ("punto", "/.", 1, "ruta de instalación insegura"),
+                ("dotdot", "/../parlar", 1, "ruta de instalación insegura"),
+            )
+            for nombre, sufijo, retorno, mensaje in variantes:
+                with self.subTest(variante=nombre):
+                    raiz = base / nombre
+                    home = raiz / "home con ñ"
+                    data = home / "datos con espacios"
+                    config = home / "configuración"
+                    bin_dir = home / "bin"
+                    destino_ajeno = raiz / "destino ajeno ñ"
+                    testigo_venv = destino_ajeno / "venv" / "KEEP"
+                    testigo_venv.parent.mkdir(parents=True)
+                    testigo_venv.write_bytes(b"venv ajeno\x00\xff")
+                    testigo_datos = destino_ajeno / "datos.bin"
+                    testigo_datos.write_bytes(b"datos ajenos\x00\xfe")
+                    install_home = data / "parlar"
+                    install_home.parent.mkdir(parents=True)
+                    install_home.symlink_to(
+                        destino_ajeno, target_is_directory=True)
+                    preservados = {
+                        ruta: hashlib.sha256(ruta.read_bytes()).hexdigest()
+                        for ruta in (testigo_venv, testigo_datos)
+                    }
+
+                    entorno = os.environ.copy()
+                    entorno.update({
+                        "HOME": str(home),
+                        "XDG_DATA_HOME": str(data),
+                        "XDG_CONFIG_HOME": str(config),
+                        "PARLAR_INSTALL_HOME": str(install_home) + sufijo,
+                        "PARLAR_BIN_DIR": str(bin_dir),
+                        "PATH": f"{tools}:/usr/bin:/bin",
+                    })
+
+                    resultado = ejecutar(
+                        str(ROOT / "uninstall.sh"), cwd=ROOT, env=entorno)
+
+                    self.assertEqual(
+                        resultado.returncode, retorno, resultado.stderr)
+                    self.assertTrue(install_home.is_symlink())
+                    for ruta, digest in preservados.items():
+                        self.assertTrue(ruta.exists(), ruta)
+                        self.assertEqual(
+                            hashlib.sha256(ruta.read_bytes()).hexdigest(),
+                            digest,
+                        )
+                    self.assertIn(mensaje, resultado.stderr)
+
+    def test_uninstall_elimina_venv_symlink_sin_seguir_destino(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            home = base / "home con ñ"
+            data = home / "datos con espacios"
+            config = home / "configuración"
             install_home = data / "parlar"
-            install_home.parent.mkdir(parents=True)
-            install_home.symlink_to(destino_ajeno, target_is_directory=True)
+            install_home.mkdir(parents=True)
+            destino_ajeno = base / "venv ajeno"
+            testigo = destino_ajeno / "KEEP"
+            testigo.parent.mkdir(parents=True)
+            testigo.write_bytes(b"entorno ajeno\x00\xff")
+            digest = hashlib.sha256(testigo.read_bytes()).hexdigest()
+            venv = install_home / "venv"
+            venv.symlink_to(destino_ajeno, target_is_directory=True)
 
             tools = base / "tools"
             tools.mkdir()
@@ -690,7 +749,7 @@ class ContratoInstalacionUsuario(unittest.TestCase):
                 "XDG_DATA_HOME": str(data),
                 "XDG_CONFIG_HOME": str(config),
                 "PARLAR_INSTALL_HOME": str(install_home),
-                "PARLAR_BIN_DIR": str(bin_dir),
+                "PARLAR_BIN_DIR": str(home / "bin"),
                 "PATH": f"{tools}:/usr/bin:/bin",
             })
 
@@ -698,10 +757,10 @@ class ContratoInstalacionUsuario(unittest.TestCase):
                 str(ROOT / "uninstall.sh"), cwd=ROOT, env=entorno)
 
             self.assertEqual(resultado.returncode, 0, resultado.stderr)
-            self.assertTrue(install_home.is_symlink())
-            self.assertEqual(testigo_venv.read_text(), "venv ajeno\n")
-            self.assertEqual(testigo_datos.read_text(), "datos ajenos\n")
-            self.assertIn("enlace simbólico", resultado.stderr)
+            self.assertFalse(venv.exists())
+            self.assertTrue(testigo.exists())
+            self.assertEqual(
+                hashlib.sha256(testigo.read_bytes()).hexdigest(), digest)
 
     def test_instalacion_y_desinstalacion_xdg_simuladas(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -719,7 +778,7 @@ class ContratoInstalacionUsuario(unittest.TestCase):
             ):
                 shutil.copy2(ROOT / "scripts" / nombre, scripts / nombre)
 
-            home = base / "home"
+            home = base / "home con ñ"
             data = home / "share"
             config = home / "config"
             install_home = data / "parlar"

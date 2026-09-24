@@ -4,9 +4,9 @@ set -euo pipefail
 
 DATA_BASE="${XDG_DATA_HOME:-$HOME/.local/share}"
 CONFIG_BASE="${XDG_CONFIG_HOME:-$HOME/.config}"
-INSTALL_HOME="${PARLAR_INSTALL_HOME:-$DATA_BASE/parlar}"
+INSTALL_HOME_ORIGINAL="${PARLAR_INSTALL_HOME:-$DATA_BASE/parlar}"
+INSTALL_HOME="$INSTALL_HOME_ORIGINAL"
 BIN_DIR="${PARLAR_BIN_DIR:-$HOME/.local/bin}"
-VENV_DIR="$INSTALL_HOME/venv"
 DESKTOP_PATH="$DATA_BASE/applications/parlar.desktop"
 UNIT_PATH="$CONFIG_BASE/systemd/user/parlar.service"
 AUTOSTART_PATH="$CONFIG_BASE/autostart/parlar-systemd.desktop"
@@ -37,10 +37,24 @@ while (($#)); do
     esac
 done
 
+# ``test -L ruta/`` sigue el enlace por el separador final. Colapsamos solo
+# separadores finales, preservando la identidad léxica de la raíz que se va a
+# comprobar y usar. Los componentes . y .. se rechazan: normalizarlos podría
+# cambiar qué enlace se inspecciona respecto del path que luego recibe rm.
+while [[ "$INSTALL_HOME" != "/" && "$INSTALL_HOME" == */ ]]; do
+    INSTALL_HOME="${INSTALL_HOME%/}"
+done
+case "$INSTALL_HOME" in
+    */./*|*/.|*/../*|*/..)
+        echo "!! ruta de instalación insegura: $INSTALL_HOME_ORIGINAL" >&2
+        exit 1
+        ;;
+esac
+
 if [[ "$INSTALL_HOME" != /* \
         || "$(basename -- "$INSTALL_HOME")" != "parlar" \
         || "$(dirname -- "$INSTALL_HOME")" == "/" ]]; then
-    echo "!! ruta de instalación insegura: $INSTALL_HOME" >&2
+    echo "!! ruta de instalación insegura: $INSTALL_HOME_ORIGINAL" >&2
     exit 1
 fi
 case "$INSTALL_HOME" in
@@ -49,6 +63,7 @@ case "$INSTALL_HOME" in
         exit 1
         ;;
 esac
+VENV_DIR="$INSTALL_HOME/venv"
 
 es_generado() {
     local ruta="$1"
