@@ -2,6 +2,7 @@
 
 import json
 import os
+import select
 import shlex
 import shutil
 import stat
@@ -186,6 +187,8 @@ class ContratoServicio(unittest.TestCase):
         self.assertIn("@PARLAR_WORKDIR@", plantilla)
         self.assertIn("@PARLAR_EXECUTABLE@", plantilla)
         self.assertIn("UMask=0077", plantilla)
+        self.assertEqual(
+            plantilla.count("Environment=PYTHONUNBUFFERED=1"), 1)
         self.assertNotIn("graphical-session.target", plantilla)
         self.assertNotIn("[Install]", plantilla)
         self.assertNotIn("WantedBy=default.target", plantilla)
@@ -210,9 +213,39 @@ class ContratoServicio(unittest.TestCase):
             self.assertIn(str(repo.resolve()), unit)
             self.assertIn(str(repo.resolve() / ".venv/bin/parlar"), unit)
             self.assertNotIn("@PARLAR_", unit)
+            self.assertEqual(
+                unit.count("Environment=PYTHONUNBUFFERED=1"), 1)
             self.assertIn("sin cambios", segunda.stdout)
             self.assertEqual(stat.S_IMODE(salida.stat().st_mode), 0o600)
             self.assertEqual(list(salida.parent.glob(".*.tmp-*")), [])
+
+    def test_python_unbuffered_publica_stdout_antes_del_exit(self):
+        entorno = os.environ.copy()
+        entorno["PYTHONUNBUFFERED"] = "1"
+        proceso = subprocess.Popen(
+            [
+                sys.executable,
+                "-B",
+                "-c",
+                "print('visible'); input()",
+            ],
+            cwd=ROOT,
+            env=entorno,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            listos, _, _ = select.select([proceso.stdout], [], [], 2)
+            self.assertEqual(listos, [proceso.stdout])
+            self.assertEqual(proceso.stdout.readline(), "visible\n")
+        finally:
+            if proceso.poll() is None:
+                proceso.stdin.write("\n")
+                proceso.stdin.flush()
+            _, stderr = proceso.communicate(timeout=5)
+        self.assertEqual(proceso.returncode, 0, stderr)
 
     @unittest.skipUnless(shutil.which("systemd-analyze"),
                          "systemd-analyze no está disponible")
@@ -503,6 +536,7 @@ class ContratoInstalacionUsuario(unittest.TestCase):
         self.assertNotIn("systemctl --user start", launcher)
         self.assertIn(
             "Exec=systemctl --user start parlar.service", autostart)
+        self.assertNotIn("PYTHONUNBUFFERED", autostart)
         self.assertNotIn(str(ejecutable), autostart)
         self.assertIn("X-GNOME-Autostart-enabled=true", autostart)
 
@@ -660,6 +694,8 @@ class ContratoInstalacionUsuario(unittest.TestCase):
             autostart = config / "autostart" / "parlar-systemd.desktop"
             self.assertIn(str(venv_bin / "parlar"), unit.read_text())
             self.assertNotIn(str(repo), unit.read_text())
+            self.assertIn(
+                "Environment=PYTHONUNBUFFERED=1", unit.read_text())
             self.assertNotIn("[Install]", unit.read_text())
             self.assertNotIn("graphical-session.target", unit.read_text())
             self.assertIn(str(venv_bin / "parlar"), desktop.read_text())

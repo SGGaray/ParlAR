@@ -56,7 +56,10 @@ class PruebasRuntimeNvidia(unittest.TestCase):
             ),
             mock.patch.dict(
                 os.environ,
-                {"LD_LIBRARY_PATH": "/sistema/lib"},
+                {
+                    "LD_LIBRARY_PATH": "/sistema/lib",
+                    "PYTHONUNBUFFERED": "1",
+                },
                 clear=True,
             ),
             mock.patch.object(sys, "argv", ["parlar", "--sin-indicador"]),
@@ -88,6 +91,7 @@ class PruebasRuntimeNvidia(unittest.TestCase):
             entorno[runtime_nvidia._MARCA_BOOTSTRAP],
             "1",
         )
+        self.assertEqual(entorno["PYTHONUNBUFFERED"], "1")
 
     def test_cuda_explicito_tambien_prepara_runtime(self):
         lib = Path("/venv/site-packages/nvidia/cublas/lib")

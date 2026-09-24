@@ -5,6 +5,7 @@ Description=ParlAR, daemon de dictado local
 [Service]
 Type=simple
 WorkingDirectory=@PARLAR_WORKDIR@
+Environment=PYTHONUNBUFFERED=1
 ExecStart=@PARLAR_EXECUTABLE@
 Restart=on-failure
 RestartSec=3
