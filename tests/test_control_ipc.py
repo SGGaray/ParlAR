@@ -1,14 +1,18 @@
 """Framing, concurrencia y ownership del socket Unix de control."""
 
+import contextlib
+import io
 import os
 import socket
 import stat
+import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
 from unittest import mock
 
+import parlar.control as control_mod
 from parlar.config import SOCKET_PATH
 from parlar.control import (
     GuardiaInstancia,
@@ -182,6 +186,89 @@ class PruebasControl(unittest.TestCase):
         self.assertEqual(normalizar_comando(""), [])
         self.assertNotEqual(
             normalizar_comando("cancel"), normalizar_comando("stop"))
+
+
+class PruebasEstadoParlarctl(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="parlar-estado-")
+        self.ruta = Path(self.tmp.name) / "control.sock"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def ejecutar(self, *argumentos):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        codigo = 0
+        with (
+            mock.patch.object(control_mod, "SOCKET_PATH", self.ruta),
+            mock.patch.object(sys, "argv", ["parlarctl", *argumentos]),
+            contextlib.redirect_stdout(stdout),
+            contextlib.redirect_stderr(stderr),
+        ):
+            try:
+                control_mod.parlarctl_main()
+            except SystemExit as exc:
+                codigo = exc.code
+        return codigo, stdout.getvalue(), stderr.getvalue()
+
+    def test_sin_daemon_y_lock_stale_reporta_detenido(self):
+        esperado = "el daemon de ParlAR no está corriendo\n"
+        self.assertEqual(
+            self.ejecutar("estado"), (1, "", esperado))
+
+        Path(f"{self.ruta}.lock").write_text("stale", encoding="utf-8")
+        self.assertEqual(
+            self.ejecutar("estado"), (1, "", esperado))
+
+    def test_lock_ocupado_sin_socket_reporta_inicio(self):
+        guardia = GuardiaInstancia(self.ruta)
+        guardia.adquirir()
+        fd = guardia.fileno()
+        try:
+            esperado = "el daemon de ParlAR se está iniciando\n"
+            self.assertEqual(
+                self.ejecutar("estado"), (1, "", esperado))
+            self.assertEqual(
+                self.ejecutar("iniciar"), (1, "", esperado))
+            self.assertEqual(guardia.fileno(), fd)
+            with self.assertRaises(InstanciaActivaError):
+                GuardiaInstancia(self.ruta).adquirir()
+        finally:
+            guardia.liberar()
+
+        self.assertEqual(
+            self.ejecutar("estado"),
+            (1, "", "el daemon de ParlAR no está corriendo\n"),
+        )
+
+    def test_socket_disponible_devuelve_estado_ipc_real(self):
+        servidor = ServidorControl(lambda cmd: f"OK {cmd}", self.ruta)
+        servidor.iniciar()
+        try:
+            self.assertEqual(
+                self.ejecutar("estado"), (0, "OK estado\n", ""))
+        finally:
+            servidor.detener()
+
+    def test_socket_no_disponible_con_lock_es_transicion_de_shutdown(self):
+        guardia = GuardiaInstancia(self.ruta)
+        guardia.adquirir()
+        stale = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        stale.bind(str(self.ruta))
+        stale.close()
+        try:
+            self.assertEqual(
+                self.ejecutar("estado"),
+                (1, "", "el daemon de ParlAR está iniciando o cerrando\n"),
+            )
+        finally:
+            guardia.liberar()
+
+        self.assertEqual(
+            self.ejecutar("estado"),
+            (1, "", "el daemon de ParlAR no está corriendo\n"),
+        )
 
 
 if __name__ == "__main__":

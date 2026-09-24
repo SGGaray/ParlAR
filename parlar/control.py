@@ -28,6 +28,7 @@ _MAX_COMANDO = 4096
 _TIMEOUT_CLIENTE = 0.35
 _DEADLINE_CLIENTE = 1.0
 _MAX_CLIENTES = 8
+_PROC_LOCKS = Path("/proc/locks")
 
 # alias inglés -> canónico español (UX para quien prefiera comandos en inglés)
 ALIAS_COMANDOS = {
@@ -156,6 +157,35 @@ class GuardiaInstancia:
             fcntl.flock(fd, fcntl.LOCK_UN)
         finally:
             os.close(fd)
+
+
+def lock_instancia_ocupado(ruta=None) -> bool:
+    """Consulta el flock en Linux sin adquirirlo ni interferir con startup."""
+    ruta_control = Path(ruta or SOCKET_PATH)
+    ruta_lock = Path(f"{ruta_control}.lock")
+    try:
+        info = os.lstat(ruta_lock)
+    except OSError:
+        return False
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+        return False
+    identidad = (
+        f"{os.major(info.st_dev):02x}:{os.minor(info.st_dev):02x}:"
+        f"{info.st_ino}"
+    )
+    try:
+        lineas = _PROC_LOCKS.read_text(encoding="ascii").splitlines()
+    except OSError:
+        return False
+    for linea in lineas:
+        campos = linea.split()
+        try:
+            indice = campos.index("FLOCK")
+        except ValueError:
+            continue
+        if len(campos) > indice + 4 and campos[indice + 4] == identidad:
+            return True
+    return False
 
 
 def normalizar_comando(cmd: str) -> list[str]:
@@ -472,5 +502,18 @@ def parlarctl_main():
     try:
         print(enviar_comando(cmd))
     except (ConnectionRefusedError, FileNotFoundError):
-        print("el daemon de parlar no está corriendo", file=sys.stderr)
+        if lock_instancia_ocupado():
+            try:
+                print(enviar_comando(cmd))
+                return
+            except (ConnectionRefusedError, FileNotFoundError):
+                pass
+        if lock_instancia_ocupado():
+            if Path(SOCKET_PATH).exists():
+                mensaje = "el daemon de ParlAR está iniciando o cerrando"
+            else:
+                mensaje = "el daemon de ParlAR se está iniciando"
+        else:
+            mensaje = "el daemon de ParlAR no está corriendo"
+        print(mensaje, file=sys.stderr)
         sys.exit(1)
