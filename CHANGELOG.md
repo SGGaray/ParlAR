@@ -2,11 +2,18 @@
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-09-24
+
 ### Corregido
 - La desinstalación elimina solo el entorno administrado y preserva
   transcripts, configuración y archivos no administrados bajo la raíz de datos.
+- Instalación y desinstalación normalizan de forma consistente la raíz
+  administrada; el uninstall reconoce enlaces propios legacy con separadores
+  redundantes sin seguir symlinks de la raíz ni eliminar targets ajenos.
 - Un CANCEL atrasado ya no puede cerrar la captura perteneciente a una
   generación posterior iniciada mientras esperaba la transición física.
+- Una generación cancelada ya no puede publicar un estado visual terminal
+  `idle` o `error` sobre una generación nueva que ya está grabando.
 - La documentación refleja v1.0.0 publicada y limita la evidencia física a los
   entornos realmente validados, sin presentar Wayland ni GuionAR real como PASS.
 - El launcher escapa correctamente barras invertidas literales en `Exec` sin
