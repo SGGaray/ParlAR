@@ -762,7 +762,7 @@ class ContratoInstalacionUsuario(unittest.TestCase):
             self.assertEqual(
                 hashlib.sha256(testigo.read_bytes()).hexdigest(), digest)
 
-    def test_instalacion_y_desinstalacion_xdg_simuladas(self):
+    def _comprobar_instalacion_y_desinstalacion_xdg(self, sufijo):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             repo = base / "repo"
@@ -831,7 +831,7 @@ class ContratoInstalacionUsuario(unittest.TestCase):
                 "HOME": str(home),
                 "XDG_DATA_HOME": str(data),
                 "XDG_CONFIG_HOME": str(config),
-                "PARLAR_INSTALL_HOME": str(install_home),
+                "PARLAR_INSTALL_HOME": str(install_home) + sufijo,
                 "PARLAR_BIN_DIR": str(bin_dir),
                 "PARLAR_BOOTSTRAP_PYTHON": str(python),
                 "PARLAR_SYSTEMCTL_LOG": str(log_systemctl),
@@ -895,13 +895,73 @@ class ContratoInstalacionUsuario(unittest.TestCase):
             self.assertFalse(unit.exists())
             self.assertFalse(desktop.exists())
             self.assertFalse(autostart.exists())
-            self.assertFalse((bin_dir / "parlar").exists())
-            self.assertFalse((bin_dir / "parlarctl").exists())
+            self.assertFalse(os.path.lexists(bin_dir / "parlar"))
+            self.assertFalse(os.path.lexists(bin_dir / "parlarctl"))
             for ruta, digest in preservados.items():
                 with self.subTest(preservado=ruta):
                     self.assertTrue(ruta.exists())
                     self.assertEqual(
                         hashlib.sha256(ruta.read_bytes()).hexdigest(), digest)
+
+    def test_instalacion_y_desinstalacion_xdg_simuladas(self):
+        for nombre, sufijo in (
+                ("normal", ""),
+                ("slash", "/"),
+                ("slashes", "///")):
+            with self.subTest(variante=nombre):
+                self._comprobar_instalacion_y_desinstalacion_xdg(sufijo)
+
+    def test_uninstall_reconoce_targets_legacy_sin_borrar_enlace_ajeno(self):
+        for comando_propio in ("parlar", "parlarctl"):
+            with self.subTest(comando_propio=comando_propio):
+                with tempfile.TemporaryDirectory() as tmp:
+                    base = Path(tmp)
+                    home = base / "home"
+                    data = home / "share"
+                    config = home / "config"
+                    install_home = data / "parlar"
+                    venv_bin = install_home / "venv" / "bin"
+                    venv_bin.mkdir(parents=True)
+                    bin_dir = home / "bin"
+                    bin_dir.mkdir(parents=True)
+
+                    comando_ajeno = (
+                        "parlarctl" if comando_propio == "parlar"
+                        else "parlar"
+                    )
+                    enlace_propio = bin_dir / comando_propio
+                    target_propio = (
+                        f"{install_home}///venv/bin/{comando_propio}"
+                    )
+                    enlace_propio.symlink_to(target_propio)
+                    enlace_ajeno = bin_dir / comando_ajeno
+                    target_ajeno = (
+                        f"{install_home}-ajeno/venv/bin/{comando_ajeno}"
+                    )
+                    enlace_ajeno.symlink_to(target_ajeno)
+
+                    tools = base / "tools"
+                    tools.mkdir()
+                    (tools / "systemctl").symlink_to(shutil.which("true"))
+                    entorno = os.environ.copy()
+                    entorno.update({
+                        "HOME": str(home),
+                        "XDG_DATA_HOME": str(data),
+                        "XDG_CONFIG_HOME": str(config),
+                        "PARLAR_INSTALL_HOME": str(install_home),
+                        "PARLAR_BIN_DIR": str(bin_dir),
+                        "PATH": f"{tools}:/usr/bin:/bin",
+                    })
+
+                    resultado = ejecutar(
+                        str(ROOT / "uninstall.sh"), cwd=ROOT, env=entorno)
+
+                    self.assertEqual(
+                        resultado.returncode, 0, resultado.stderr)
+                    self.assertFalse(os.path.lexists(enlace_propio))
+                    self.assertTrue(enlace_ajeno.is_symlink())
+                    self.assertEqual(
+                        os.readlink(enlace_ajeno), target_ajeno)
 
     def test_scripts_no_recomiendan_enable_para_autostart(self):
         for nombre in ("install.sh", "setup.sh"):

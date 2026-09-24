@@ -10,7 +10,7 @@ sesión gráfica, hardware o integración por inferencia.
 - `./scripts/check.sh`: PASS en la rama de readiness.
 - 58 checks legacy: PASS.
 - 391 tests unitarios en el gate publicado de v1.0.0: PASS.
-- 394 tests unitarios en la remediación post-release para una futura v1.0.1:
+- 397 tests unitarios en la remediación post-release para una futura v1.0.1:
   PASS.
 - Sintaxis shell, bytecode Python, `parlar --help` y `parlarctl --help`:
   PASS.

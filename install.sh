@@ -5,10 +5,9 @@ set -euo pipefail
 REPO_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 DATA_BASE="${XDG_DATA_HOME:-$HOME/.local/share}"
 CONFIG_BASE="${XDG_CONFIG_HOME:-$HOME/.config}"
-INSTALL_HOME="${PARLAR_INSTALL_HOME:-$DATA_BASE/parlar}"
+INSTALL_HOME_ORIGINAL="${PARLAR_INSTALL_HOME:-$DATA_BASE/parlar}"
+INSTALL_HOME="$INSTALL_HOME_ORIGINAL"
 BIN_DIR="${PARLAR_BIN_DIR:-$HOME/.local/bin}"
-VENV_DIR="$INSTALL_HOME/venv"
-VENV_PYTHON="$VENV_DIR/bin/python"
 DESKTOP_PATH="$DATA_BASE/applications/parlar.desktop"
 UNIT_PATH="$CONFIG_BASE/systemd/user/parlar.service"
 AUTOSTART_PATH="$CONFIG_BASE/autostart/parlar-systemd.desktop"
@@ -39,10 +38,15 @@ while (($#)); do
     shift
 done
 
+# Una única identidad léxica evita grabar targets distintos para la misma raíz.
+while [[ "$INSTALL_HOME" != "/" && "$INSTALL_HOME" == */ ]]; do
+    INSTALL_HOME="${INSTALL_HOME%/}"
+done
+
 if [[ "$INSTALL_HOME" != /* \
         || "$(basename -- "$INSTALL_HOME")" != "parlar" \
         || "$(dirname -- "$INSTALL_HOME")" == "/" ]]; then
-    echo "!! ruta de instalación insegura: $INSTALL_HOME" >&2
+    echo "!! ruta de instalación insegura: $INSTALL_HOME_ORIGINAL" >&2
     exit 1
 fi
 case "$INSTALL_HOME" in
@@ -51,6 +55,8 @@ case "$INSTALL_HOME" in
         exit 1
         ;;
 esac
+VENV_DIR="$INSTALL_HOME/venv"
+VENV_PYTHON="$VENV_DIR/bin/python"
 
 BOOTSTRAP_PYTHON="${PARLAR_BOOTSTRAP_PYTHON:-python3}"
 "$BOOTSTRAP_PYTHON" - <<'PY'
