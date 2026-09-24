@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-09-23
+
 ### Agregado
 - Packaging Python con entrypoints instalables `parlar` y `parlarctl`.
 - Instalación de usuario autocontenida, launcher `.desktop`, servicio systemd
