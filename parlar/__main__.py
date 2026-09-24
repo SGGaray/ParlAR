@@ -16,6 +16,7 @@ from .runtime_nvidia import preparar_runtime_nvidia
 
 _ALIAS_MODO = {"frase": "utterance"}
 _ALIAS_REESCRITURA = {"ninguna": "none", "conciso": "concise", "correo": "email"}
+_CODIGO_INSTANCIA_ACTIVA = 1  # fallo operativo; 2 queda para uso/configuración
 
 
 def _ejecutar_con_sigterm(app):
@@ -183,7 +184,13 @@ def main():
     preparar_runtime_nvidia(cfg.device)
 
     from .app import App  # imports pesados diferidos hasta después del parseo
-    _ejecutar_con_sigterm(App(cfg))
+    from .control import InstanciaActivaError
+
+    try:
+        _ejecutar_con_sigterm(App(cfg))
+    except InstanciaActivaError:
+        print("ParlAR ya está ejecutándose.", file=sys.stderr)
+        raise SystemExit(_CODIGO_INSTANCIA_ACTIVA)
 
 
 if __name__ == "__main__":

@@ -9,7 +9,11 @@ import unittest
 from pathlib import Path
 
 from parlar.config import SOCKET_PATH
-from parlar.control import ServidorControl, normalizar_comando
+from parlar.control import (
+    InstanciaActivaError,
+    ServidorControl,
+    normalizar_comando,
+)
 
 
 def peticion(ruta, partes, *, cerrar_escritura=False):
@@ -85,8 +89,12 @@ class PruebasControl(unittest.TestCase):
     def test_segunda_instancia_stale_y_archivo_regular(self):
         self.iniciar()
         segunda = ServidorControl(lambda cmd: "OK", self.ruta)
-        with self.assertRaisesRegex(RuntimeError, "instancia activa"):
+        with self.assertRaisesRegex(InstanciaActivaError, "instancia activa"):
             segunda.iniciar()
+        self.assertFalse(segunda._corriendo)
+        self.assertIsNone(segunda._sock)
+        self.assertIsNone(segunda._lock_fd)
+        self.assertEqual(peticion(self.ruta, [b"estado\n"]), "OK estado")
         self.servidor.detener()
         self.servidor = None
 

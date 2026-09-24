@@ -43,6 +43,10 @@ ALIAS_VALORES = {
 }
 
 
+class InstanciaActivaError(RuntimeError):
+    """El inicio fue rechazado porque otra instancia conserva el control."""
+
+
 def normalizar_comando(cmd: str) -> list[str]:
     partes = cmd.strip().split()
     if not partes:
@@ -129,7 +133,7 @@ class ServidorControl:
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as exc:
-                raise RuntimeError(
+                raise InstanciaActivaError(
                     "ya existe una instancia activa de ParlAR") from exc
         except BaseException:
             os.close(fd)
@@ -187,7 +191,7 @@ class ServidorControl:
             return
         finally:
             prueba.close()
-        raise RuntimeError("ya existe una instancia activa de ParlAR")
+        raise InstanciaActivaError("ya existe una instancia activa de ParlAR")
 
     def _bucle(self):
         while True:
