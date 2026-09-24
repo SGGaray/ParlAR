@@ -60,16 +60,29 @@ su ruta completa.
 flag, la primera ejecución lo descarga. La instalación y esa descarga sí
 requieren red. El runtime normal no la necesita.
 
-Para instalar además una unit de usuario, sin activarla:
+Para instalar además la integración de servicio:
 
 ```bash
 ./install.sh --install-service
-systemctl --user enable --now parlar
 ```
 
-El servicio usa la instalación autocontenida, no el checkout. Una sesión de
-systemd de usuario igualmente necesita acceso al audio y al display; si tu
-escritorio no propaga ese entorno, iniciá `parlar` desde una terminal gráfica.
+La unit queda deliberadamente **static**: systemd administra
+start/stop/restart/status, pero no la habilita en `default.target`. El arranque
+automático lo dispara `~/.config/autostart/parlar-systemd.desktop` después del
+login gráfico, cuando la sesión ya publicó `DISPLAY` y `XAUTHORITY`. Esto evita
+arranques prematuros en escritorios donde `graphical-session.target` permanece
+inactivo. El launcher normal de aplicaciones sigue siendo un artefacto separado.
+
+Para iniciarlo inmediatamente desde la terminal gráfica actual:
+
+```bash
+systemctl --user start parlar.service
+systemctl --user status parlar.service
+```
+
+No uses `systemctl --user enable`: una reinstalación limpia enlaces legacy de
+`default.target` para evitar doble autostart. El servicio usa la instalación
+autocontenida, no el checkout.
 
 `setup.sh` queda disponible para desarrollo desde el checkout. Instala una
 `.venv` local y puede preparar dependencias del sistema; no es el camino
@@ -268,7 +281,8 @@ Leé [SECURITY.md](SECURITY.md) para el modelo de amenaza completo.
   del compositor con `parlarctl`.
 - **El servicio no ve display/audio:** ejecutá `systemctl --user status parlar`
   y `journalctl --user -u parlar`; si falta el entorno gráfico, lanzá `parlar`
-  desde una terminal de esa sesión.
+  desde una terminal de esa sesión. No habilites la unit en `default.target`;
+  reinstalá con `--install-service` para restaurar el autostart XDG.
 - **Esc aparece como `^[` en la aplicación enfocada:** pynput observa Esc pero
   no puede suprimir solo esa tecla sin un grab global agresivo. CANCEL se
   ejecuta, pero el passthrough queda como limitación conocida.

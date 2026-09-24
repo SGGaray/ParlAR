@@ -58,17 +58,29 @@ launcher. It never enables a service implicitly. Add `~/.local/bin` to your
 the first run downloads the model. Provisioning requires network access; normal
 runtime does not.
 
-To install, but not enable, the optional user service:
+To install the optional service integration:
 
 ```bash
 ./install.sh --install-service
-systemctl --user enable --now parlar
 ```
 
-The generated unit points to the self-contained installation, not the source
-checkout. It still needs the graphical user session's display and audio
-environment. If your desktop does not propagate those to systemd, start
-`parlar` from a terminal in that session.
+The unit is deliberately **static**: systemd owns start/stop/restart/status,
+but the unit is not enabled in `default.target`. Instead,
+`~/.config/autostart/parlar-systemd.desktop` starts it after graphical login,
+when the session has published `DISPLAY` and `XAUTHORITY`. This avoids early
+startup on desktops where `graphical-session.target` remains inactive. The
+normal application launcher remains a separate artifact.
+
+To start ParlAR immediately from the current graphical terminal:
+
+```bash
+systemctl --user start parlar.service
+systemctl --user status parlar.service
+```
+
+Do not run `systemctl --user enable`: reinstalling with `--install-service`
+removes legacy `default.target` links to prevent duplicate autostart. The
+service points to the self-contained installation, not the source checkout.
 
 `setup.sh` remains available for development from a checkout; it is not the
 primary end-user distribution path.
@@ -261,7 +273,8 @@ files. See [SECURITY.md](SECURITY.md) for the complete threat model.
 - **No global Wayland hotkey:** expected; bind `parlarctl` in the compositor.
 - **The service cannot access display/audio:** inspect
   `systemctl --user status parlar` and `journalctl --user -u parlar`, or
-  launch from a graphical terminal.
+  launch from a graphical terminal. Do not enable the unit in `default.target`;
+  reinstall with `--install-service` to restore XDG Autostart.
 - **Esc appears as `^[` in the focused app:** pynput can observe Esc but
   cannot selectively suppress it without an aggressive global grab. CANCEL
   still runs; passthrough is a known limitation.

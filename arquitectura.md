@@ -135,8 +135,10 @@ directorio, lo hace `0700`.
 - `parlarctl estado` expone `drops`, discontinuidades, profundidad de cola y backlog aproximado (`frames_en_cola × frame_ms`). `audio=degradado` significa que existe un gap todavía pendiente de entregar; `audio=recuperado-con-perdida` indica que el pipeline cruzó esa frontera y volvió a operar, aunque la pérdida histórica de la sesión sigue visible. Los contadores se reinician al abrir una nueva generación.
 - Un tope de frase (30s) evita buffers sin límite si el VAD nunca ve silencio (ambientes ruidosos).
 - Los errores del subproceso de inyección degradan a copia al portapapeles más una notificación de escritorio, en vez de morir.
-- La instalación puede generar una unit systemd de usuario con
-  `Restart=on-failure`; instalarla o activarla siempre es opt-in.
+- La instalación puede generar una unit systemd de usuario static con
+  `Restart=on-failure`. systemd administra el proceso, mientras una entrada
+  XDG Autostart separada solicita su inicio después del login gráfico; no se
+  habilita en `default.target`.
 
 ## 7. Lifecycle, sesiones y ownership
 

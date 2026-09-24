@@ -13,7 +13,7 @@ uso() {
     cat <<'EOF'
 Uso: ./setup.sh [opciones]
 
-  --install-service       genera la unit de usuario con la ruta real del checkout
+  --install-service       instala unit static y autostart gráfico XDG
   --preload-model         descarga/precarga Whisper small (requiere red, ~460 MB)
   --skip-system-packages  omite apt/dnf; las dependencias del sistema ya deben existir
   -h, --help              muestra esta ayuda sin modificar el sistema
@@ -134,13 +134,24 @@ fi
 if ((INSTALL_SERVICE)); then
     CONFIG_BASE="${XDG_CONFIG_HOME:-$HOME/.config}"
     UNIT_PATH="$CONFIG_BASE/systemd/user/parlar.service"
+    AUTOSTART_PATH="$CONFIG_BASE/autostart/parlar-systemd.desktop"
+    LEGACY_ENABLE_PATH="$CONFIG_BASE/systemd/user/default.target.wants/parlar.service"
     "$VENV_PYTHON" scripts/render_service.py --repo "$REPO_DIR" --output "$UNIT_PATH"
+    "$VENV_PYTHON" scripts/render_desktop.py \
+        --autostart-service --output "$AUTOSTART_PATH"
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl --user disable parlar.service >/dev/null 2>&1 || true
+    fi
+    if [[ -L "$LEGACY_ENABLE_PATH" ]]; then
+        rm -f -- "$LEGACY_ENABLE_PATH"
+    fi
     if command -v systemctl >/dev/null 2>&1; then
         if ! systemctl --user daemon-reload; then
             echo "!! unit instalada; daemon-reload queda pendiente en la sesión gráfica" >&2
         fi
     fi
-    echo "    Activación opcional: systemctl --user enable --now parlar"
+    echo "    Autostart gráfico instalado: $AUTOSTART_PATH"
+    echo "    Inicio opcional ahora: systemctl --user start parlar.service"
 fi
 
 if ! command -v xdotool >/dev/null 2>&1 \

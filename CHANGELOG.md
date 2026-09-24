@@ -12,6 +12,10 @@
   de los retests físicos pendientes.
 
 ### Corregido
+- El autostart del servicio ya no usa `default.target`, que podía iniciar antes
+  de que LightDM publicara `DISPLAY` y `XAUTHORITY`. La unit queda static y una
+  entrada XDG Autostart separada la inicia después del login gráfico; upgrades
+  eliminan el enlace enable legado para evitar doble arranque.
 - Los mensajes de startup distinguen indicador, headless, X11 y fallback IPC,
   y documentan PTT, doble toque continuo y Esc.
 - CANCEL durante un STOP físico bloqueado no puede republicar una generación

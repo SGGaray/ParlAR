@@ -186,6 +186,9 @@ class ContratoServicio(unittest.TestCase):
         self.assertIn("@PARLAR_WORKDIR@", plantilla)
         self.assertIn("@PARLAR_EXECUTABLE@", plantilla)
         self.assertIn("UMask=0077", plantilla)
+        self.assertNotIn("graphical-session.target", plantilla)
+        self.assertNotIn("[Install]", plantilla)
+        self.assertNotIn("WantedBy=default.target", plantilla)
 
     def test_render_usa_path_real_con_espacios_y_es_idempotente(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -491,6 +494,18 @@ class ContratoInstalacionUsuario(unittest.TestCase):
                 render_desktop.instalar(contenido, salida)
             self.assertIn("Name=Personal", salida.read_text())
 
+    def test_launcher_normal_y_autostart_systemd_son_distintos(self):
+        ejecutable = Path("/opt/parlar/venv/bin/parlar")
+        launcher = render_desktop.renderizar(ejecutable)
+        autostart = render_desktop.renderizar_autostart()
+
+        self.assertIn(f'Exec="{ejecutable}"', launcher)
+        self.assertNotIn("systemctl --user start", launcher)
+        self.assertIn(
+            "Exec=systemctl --user start parlar.service", autostart)
+        self.assertNotIn(str(ejecutable), autostart)
+        self.assertIn("X-GNOME-Autostart-enabled=true", autostart)
+
     def test_uninstall_help_y_opcion_invalida_no_borran_nada(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
@@ -505,6 +520,9 @@ class ContratoInstalacionUsuario(unittest.TestCase):
 
             testigo = install_home / "NO_BORRAR"
             testigo.write_text("presente\n", encoding="utf-8")
+            autostart = config / "autostart" / "parlar-systemd.desktop"
+            autostart.parent.mkdir(parents=True)
+            autostart.write_text("NO BORRAR\n", encoding="utf-8")
 
             entorno = os.environ.copy()
             entorno.update({
@@ -534,6 +552,7 @@ class ContratoInstalacionUsuario(unittest.TestCase):
             self.assertTrue(
                 testigo.exists()
             )
+            self.assertEqual(autostart.read_text(), "NO BORRAR\n")
 
             invalida = ejecutar(
                 str(ROOT / "uninstall.sh"),
@@ -553,6 +572,7 @@ class ContratoInstalacionUsuario(unittest.TestCase):
             self.assertTrue(
                 testigo.exists()
             )
+            self.assertEqual(autostart.read_text(), "NO BORRAR\n")
 
     def test_instalacion_y_desinstalacion_xdg_simuladas(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -566,6 +586,7 @@ class ContratoInstalacionUsuario(unittest.TestCase):
             for nombre in (
                 "render_service.py", "render_desktop.py",
                 "parlar.service.in", "parlar.desktop.in",
+                "parlar-systemd.desktop.in",
             ):
                 shutil.copy2(ROOT / "scripts" / nombre, scripts / nombre)
 
@@ -595,8 +616,21 @@ class ContratoInstalacionUsuario(unittest.TestCase):
             tools = base / "tools"
             tools.mkdir()
             systemctl = tools / "systemctl"
-            systemctl.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            systemctl.write_text(
+                "#!/bin/sh\n"
+                "printf '%s\\n' \"$*\" >>\"$PARLAR_SYSTEMCTL_LOG\"\n"
+                "exit 0\n",
+                encoding="utf-8",
+            )
             systemctl.chmod(0o755)
+
+            unit = config / "systemd" / "user" / "parlar.service"
+            legacy = (
+                config / "systemd" / "user" / "default.target.wants"
+                / "parlar.service")
+            legacy.parent.mkdir(parents=True)
+            legacy.symlink_to(unit)
+            log_systemctl = base / "systemctl.log"
 
             testigo_config = config / "parlar" / "config.json"
             testigo_config.parent.mkdir(parents=True)
@@ -609,6 +643,7 @@ class ContratoInstalacionUsuario(unittest.TestCase):
                 "PARLAR_INSTALL_HOME": str(install_home),
                 "PARLAR_BIN_DIR": str(bin_dir),
                 "PARLAR_BOOTSTRAP_PYTHON": str(python),
+                "PARLAR_SYSTEMCTL_LOG": str(log_systemctl),
                 "PATH": f"{tools}:/usr/bin:/bin",
             })
 
@@ -621,11 +656,29 @@ class ContratoInstalacionUsuario(unittest.TestCase):
                 self.assertTrue(enlace.is_symlink())
                 self.assertEqual(
                     enlace.readlink(), venv_bin / comando)
-            unit = config / "systemd" / "user" / "parlar.service"
             desktop = data / "applications" / "parlar.desktop"
+            autostart = config / "autostart" / "parlar-systemd.desktop"
             self.assertIn(str(venv_bin / "parlar"), unit.read_text())
             self.assertNotIn(str(repo), unit.read_text())
+            self.assertNotIn("[Install]", unit.read_text())
+            self.assertNotIn("graphical-session.target", unit.read_text())
             self.assertIn(str(venv_bin / "parlar"), desktop.read_text())
+            self.assertEqual(
+                next(line for line in autostart.read_text().splitlines()
+                     if line.startswith("Exec=")),
+                "Exec=systemctl --user start parlar.service",
+            )
+            if shutil.which("desktop-file-validate"):
+                validacion = ejecutar(
+                    "desktop-file-validate", str(autostart))
+                self.assertEqual(
+                    validacion.returncode, 0, validacion.stderr)
+            self.assertNotEqual(desktop, autostart)
+            self.assertFalse(legacy.is_symlink())
+            llamadas = log_systemctl.read_text().splitlines()
+            self.assertIn("--user disable parlar.service", llamadas)
+            self.assertIn("--user daemon-reload", llamadas)
+            self.assertFalse(any("enable" in llamada for llamada in llamadas))
 
             desinstalado = ejecutar(
                 str(repo / "uninstall.sh"), cwd=repo, env=entorno)
@@ -634,9 +687,20 @@ class ContratoInstalacionUsuario(unittest.TestCase):
             self.assertFalse(install_home.exists())
             self.assertFalse(unit.exists())
             self.assertFalse(desktop.exists())
+            self.assertFalse(autostart.exists())
             self.assertFalse((bin_dir / "parlar").exists())
             self.assertFalse((bin_dir / "parlarctl").exists())
             self.assertTrue(testigo_config.exists())
+
+    def test_scripts_no_recomiendan_enable_para_autostart(self):
+        for nombre in ("install.sh", "setup.sh"):
+            with self.subTest(nombre=nombre):
+                contenido = (ROOT / nombre).read_text(encoding="utf-8")
+                self.assertNotIn("enable --now parlar", contenido)
+                self.assertIn("parlar-systemd.desktop", contenido)
+                self.assertIn("--autostart-service", contenido)
+                self.assertIn(
+                    "systemctl --user disable parlar.service", contenido)
 
 
 class SmokesCheckout(unittest.TestCase):

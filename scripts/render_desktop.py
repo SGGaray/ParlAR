@@ -32,6 +32,18 @@ def renderizar(executable: Path) -> str:
         "@PARLAR_EXECUTABLE@", _argumento_exec(executable))
 
 
+def renderizar_autostart() -> str:
+    """Renderiza el arranque gráfico que delega lifecycle a systemd."""
+    plantilla = Path(__file__).with_name(
+        "parlar-systemd.desktop.in").read_text(encoding="utf-8")
+    if "@PARLAR_" in plantilla:
+        raise ValueError("autostart contiene placeholders inesperados")
+    if plantilla.count(
+            "Exec=systemctl --user start parlar.service") != 1:
+        raise ValueError("autostart sin Exec systemd único")
+    return plantilla
+
+
 def instalar(contenido: str, destino: Path) -> str:
     destino = destino.expanduser()
     if destino.exists():
@@ -72,11 +84,15 @@ def instalar(contenido: str, destino: Path) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--executable", required=True, type=Path)
+    origen = parser.add_mutually_exclusive_group(required=True)
+    origen.add_argument("--executable", type=Path)
+    origen.add_argument("--autostart-service", action="store_true")
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
     try:
-        estado = instalar(renderizar(args.executable), args.output)
+        contenido = (renderizar_autostart() if args.autostart_service
+                     else renderizar(args.executable))
+        estado = instalar(contenido, args.output)
     except (OSError, RuntimeError, ValueError) as exc:
         parser.exit(1, f"!! no se pudo instalar el launcher: {exc}\n")
     print(f"==> Launcher {estado}: {args.output.expanduser()}")

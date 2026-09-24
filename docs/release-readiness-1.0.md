@@ -8,7 +8,7 @@ requieren hardware, una sesión gráfica o percepción humana siguen pendientes.
 
 - `./scripts/check.sh`: PASS en la rama de readiness.
 - 58 checks legacy: PASS.
-- 375 tests unitarios: PASS.
+- 380 tests unitarios: PASS.
 - Sintaxis shell, bytecode Python, `parlar --help` y `parlarctl --help`:
   PASS.
 - Config schema v1, migración conservadora, validación estricta, round-trip y
@@ -60,6 +60,9 @@ parlar --ruta-config
 parlar --mostrar-atajo
 desktop-file-validate ~/.local/share/applications/parlar.desktop
 systemd-analyze verify ~/.config/systemd/user/parlar.service
+grep -Fx 'Exec=systemctl --user start parlar.service' \
+  ~/.config/autostart/parlar-systemd.desktop
+systemctl --user is-enabled parlar.service  # esperado: static
 ```
 
 Confirmar que los comandos funcionan después de mover o borrar el checkout de
@@ -87,7 +90,7 @@ XDG_SESSION_TYPE=x11 parlar --dispositivo cpu
 ### Servicio systemd y socket
 
 ```bash
-systemctl --user enable --now parlar
+systemctl --user start parlar.service
 systemctl --user status parlar --no-pager
 parlarctl estado
 systemctl --user restart parlar
@@ -99,6 +102,17 @@ pgrep -af 'parlar|xclip'
 
 Esperado: restart recupera control, stop deja el servicio inactivo, el socket
 desaparece y no quedan procesos `xclip` huérfanos.
+
+Después, cerrar sesión o reiniciar sin habilitar la unit. Tras el login gráfico:
+
+```bash
+systemctl --user is-enabled parlar.service  # static
+systemctl --user is-active parlar.service   # active
+systemctl --user show-environment | grep -E '^(DISPLAY|XAUTHORITY)='
+```
+
+Esperado: XDG Autostart inicia la unit una vez que existe el entorno gráfico;
+no hay enlace `default.target.wants/parlar.service` ni doble proceso.
 
 ### Wayland
 
@@ -124,8 +138,8 @@ de CUDA. Repetir el camino CPU explícito en la misma instalación.
 ### Launcher, login y GuionAR
 
 1. Abrir ParlAR desde el launcher y confirmar audio, indicador y control.
-2. Habilitar la unit, cerrar sesión, volver a entrar y confirmar autostart,
-   display, audio y socket.
+2. Con el autostart XDG instalado y la unit static, cerrar sesión, volver a
+   entrar y confirmar autostart, display, audio y socket.
 3. Ejecutar GuionAR real; confirmar VAD/parciales/finales y que ParlAR sigue
    funcionando al cerrar GuionAR.
 4. Ejecutar `./uninstall.sh`; confirmar que desaparecen binarios, launcher,

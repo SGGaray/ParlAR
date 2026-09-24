@@ -11,6 +11,8 @@ VENV_DIR="$INSTALL_HOME/venv"
 VENV_PYTHON="$VENV_DIR/bin/python"
 DESKTOP_PATH="$DATA_BASE/applications/parlar.desktop"
 UNIT_PATH="$CONFIG_BASE/systemd/user/parlar.service"
+AUTOSTART_PATH="$CONFIG_BASE/autostart/parlar-systemd.desktop"
+LEGACY_ENABLE_PATH="$CONFIG_BASE/systemd/user/default.target.wants/parlar.service"
 INSTALL_SERVICE=0
 PRELOAD_MODEL=0
 CPU_ONLY=0
@@ -19,7 +21,7 @@ uso() {
     cat <<'EOF'
 Uso: ./install.sh [opciones]
 
-  --install-service  instala la unit systemd de usuario (no la activa)
+  --install-service  instala unit systemd static y autostart gráfico XDG
   --preload-model    descarga/precarga Whisper small
   --cpu-only         no instala las runtimes CUDA aunque haya NVIDIA
   -h, --help         muestra esta ayuda sin modificar el sistema
@@ -127,6 +129,16 @@ if ((INSTALL_SERVICE)); then
         --workdir "$INSTALL_HOME" \
         --executable "$VENV_DIR/bin/parlar" \
         --output "$UNIT_PATH"
+    "$VENV_PYTHON" "$REPO_DIR/scripts/render_desktop.py" \
+        --autostart-service --output "$AUTOSTART_PATH"
+    if command -v systemctl >/dev/null 2>&1; then
+        # Upgrade desde la unit antigua habilitada en default.target. La unit
+        # nueva es static y el login gráfico es dueño del autostart.
+        systemctl --user disable parlar.service >/dev/null 2>&1 || true
+    fi
+    if [[ -L "$LEGACY_ENABLE_PATH" ]]; then
+        rm -f -- "$LEGACY_ENABLE_PATH"
+    fi
     if command -v systemctl >/dev/null 2>&1; then
         systemctl --user daemon-reload || echo \
             "!! daemon-reload queda pendiente en la sesión gráfica" >&2
@@ -138,5 +150,6 @@ if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
     echo "!! $BIN_DIR no está en PATH; agregalo para invocar los comandos por nombre" >&2
 fi
 if ((INSTALL_SERVICE)); then
-    echo "    Activación opcional: systemctl --user enable --now parlar"
+    echo "    Autostart gráfico instalado: $AUTOSTART_PATH"
+    echo "    Inicio opcional ahora: systemctl --user start parlar.service"
 fi
