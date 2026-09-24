@@ -10,7 +10,10 @@ The optional GuionAR integration uses local Unix IPC.
 
 > Versión principal en español: [README.md](README.md)
 
-ParlAR 1.0 RC targets Linux desktops on X11 and Wayland. Any linked browser
+ParlAR 1.0.x is the stable Linux line. v1.0.0 was physically validated on
+Fedora/X11 with LightDM and NVIDIA CUDA; the CPU path has prior physical
+evidence and automated coverage. Wayland has documented backends and compositor
+bindings, but was not physically validated for this release. Any linked browser
 demo is illustrative only: it does not run the native audio, hotkey, IPC, or
 injection architecture described here.
 
@@ -255,6 +258,8 @@ parlar --guionar --mode streaming
 
 It is best-effort and not on the critical path. ParlAR continues when GuionAR
 is absent. Reconnection publishes current state, not historical final text.
+The IPC transport has automated coverage; the real GuionAR application was not
+validated end-to-end for v1.0.0.
 
 ## Privacy and transcripts
 
@@ -288,9 +293,11 @@ From a checkout of the same version:
 ```
 
 The script disables and removes only the marked ParlAR unit and launcher,
-removes its links and installed environment, and preserves configuration and
-transcripts. Remove those separately only if you deliberately want to erase
-them. Account for custom `XDG_CONFIG_HOME` or `XDG_DATA_HOME` values.
+removes its links, and deletes only the managed
+`$XDG_DATA_HOME/parlar/venv` environment. It does not recursively delete the
+data root: configuration, transcripts, and other unmanaged sibling files are
+preserved. Remove data separately only if you deliberately want to erase it.
+Account for custom `XDG_CONFIG_HOME` or `XDG_DATA_HOME` values.
 
 ## Development and validation
 
@@ -315,8 +322,8 @@ Physical and perceptual checks are kept separate in
 - Wayland global hotkeys require compositor bindings.
 - Delivery to an external application is not transactional; X11 paste is
   intentionally ineligible for destructive undo.
-- Fresh-install compatibility still needs physical validation across desktop,
-  audio hardware, and GPU combinations.
+- Wayland and the real GuionAR application integration were not physically
+  validated for v1.0.0; see the readiness document for the exact scope.
 
 ## License
 

@@ -83,12 +83,17 @@ for comando in parlar parlarctl; do
     fi
 done
 
-if [[ -e "$INSTALL_HOME" || -L "$INSTALL_HOME" ]]; then
-    rm -rf -- "$INSTALL_HOME"
+if [[ -L "$INSTALL_HOME" ]]; then
+    echo "!! la raíz de instalación es un enlace simbólico; no se sigue ni elimina: $INSTALL_HOME" >&2
+elif [[ -d "$INSTALL_HOME" ]]; then
+    if [[ -e "$VENV_DIR" || -L "$VENV_DIR" ]]; then
+        rm -rf -- "$VENV_DIR"
+    fi
+    rmdir -- "$INSTALL_HOME" 2>/dev/null || true
 fi
 
 if command -v systemctl >/dev/null 2>&1; then
     systemctl --user daemon-reload >/dev/null 2>&1 || true
 fi
 
-echo "==> ParlAR desinstalado. Configuración y transcripts fueron preservados."
+echo "==> ParlAR desinstalado. Configuración, transcripts y otros datos fueron preservados."

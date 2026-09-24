@@ -1,5 +1,6 @@
 """Regresiones del contrato de checkout, setup, servicio y gate central."""
 
+import hashlib
 import json
 import os
 import select
@@ -17,6 +18,7 @@ from unittest import mock
 
 import scripts.render_service as render_service
 import scripts.render_desktop as render_desktop
+from parlar.sesion import SalidaSesion
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -540,6 +542,60 @@ class ContratoInstalacionUsuario(unittest.TestCase):
         self.assertNotIn(str(ejecutable), autostart)
         self.assertIn("X-GNOME-Autostart-enabled=true", autostart)
 
+    def test_launcher_escapa_matriz_de_paths_sin_shell(self):
+        variantes = (
+            ("normal", "ruta-normal"),
+            ("espacios", "ruta con espacios"),
+            ("unicode", "ruta-con-unicode-ñ"),
+            ("dolar", "ruta$con$dolar"),
+            ("porcentaje", "ruta%con%porcentaje"),
+            ("comillas", 'ruta"con"comillas'),
+            ("backslash", "ruta\\con\\backslash"),
+        )
+
+        def argumento_esperado(ruta):
+            escapes = {
+                "\\": "\\\\\\\\",
+                '"': '\\"',
+                "`": "\\`",
+                "$": "\\$",
+                "%": "%%",
+            }
+            return '"' + "".join(
+                escapes.get(caracter, caracter)
+                for caracter in str(ruta.absolute())
+            ) + '"'
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            for indice, (nombre, segmento) in enumerate(variantes):
+                with self.subTest(nombre=nombre):
+                    ejecutable = base / segmento / "parlar"
+                    ejecutable.parent.mkdir(parents=True)
+                    ejecutable.write_text("#!/bin/sh\n", encoding="utf-8")
+                    salida = base / f"parlar-{indice}.desktop"
+                    salida.write_text(
+                        render_desktop.renderizar(ejecutable),
+                        encoding="utf-8",
+                    )
+                    exec_line = next(
+                        linea for linea in salida.read_text(
+                            encoding="utf-8").splitlines()
+                        if linea.startswith("Exec=")
+                    )
+                    self.assertEqual(
+                        exec_line,
+                        "Exec=" + argumento_esperado(ejecutable),
+                    )
+                    if shutil.which("desktop-file-validate"):
+                        validacion = ejecutar(
+                            "desktop-file-validate", str(salida))
+                        self.assertEqual(
+                            validacion.returncode,
+                            0,
+                            validacion.stdout + validacion.stderr,
+                        )
+
     def test_uninstall_help_y_opcion_invalida_no_borran_nada(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
@@ -608,6 +664,45 @@ class ContratoInstalacionUsuario(unittest.TestCase):
             )
             self.assertEqual(autostart.read_text(), "NO BORRAR\n")
 
+    def test_uninstall_no_sigue_install_home_symlink(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            home = base / "home"
+            data = home / "share"
+            config = home / "config"
+            bin_dir = home / "bin"
+            destino_ajeno = base / "destino-ajeno"
+            testigo_venv = destino_ajeno / "venv" / "NO_BORRAR"
+            testigo_venv.parent.mkdir(parents=True)
+            testigo_venv.write_text("venv ajeno\n", encoding="utf-8")
+            testigo_datos = destino_ajeno / "datos.txt"
+            testigo_datos.write_text("datos ajenos\n", encoding="utf-8")
+            install_home = data / "parlar"
+            install_home.parent.mkdir(parents=True)
+            install_home.symlink_to(destino_ajeno, target_is_directory=True)
+
+            tools = base / "tools"
+            tools.mkdir()
+            (tools / "systemctl").symlink_to(shutil.which("true"))
+            entorno = os.environ.copy()
+            entorno.update({
+                "HOME": str(home),
+                "XDG_DATA_HOME": str(data),
+                "XDG_CONFIG_HOME": str(config),
+                "PARLAR_INSTALL_HOME": str(install_home),
+                "PARLAR_BIN_DIR": str(bin_dir),
+                "PATH": f"{tools}:/usr/bin:/bin",
+            })
+
+            resultado = ejecutar(
+                str(ROOT / "uninstall.sh"), cwd=ROOT, env=entorno)
+
+            self.assertEqual(resultado.returncode, 0, resultado.stderr)
+            self.assertTrue(install_home.is_symlink())
+            self.assertEqual(testigo_venv.read_text(), "venv ajeno\n")
+            self.assertEqual(testigo_datos.read_text(), "datos ajenos\n")
+            self.assertIn("enlace simbólico", resultado.stderr)
+
     def test_instalacion_y_desinstalacion_xdg_simuladas(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
@@ -668,7 +763,10 @@ class ContratoInstalacionUsuario(unittest.TestCase):
 
             testigo_config = config / "parlar" / "config.json"
             testigo_config.parent.mkdir(parents=True)
-            testigo_config.write_text("{}\n", encoding="utf-8")
+            testigo_config.write_text(
+                '{"schema_version": 1, "mode": "streaming"}\n',
+                encoding="utf-8",
+            )
             entorno = os.environ.copy()
             entorno.update({
                 "HOME": str(home),
@@ -685,6 +783,20 @@ class ContratoInstalacionUsuario(unittest.TestCase):
                 str(repo / "install.sh"), "--install-service",
                 cwd=repo, env=entorno)
             self.assertEqual(instalado.returncode, 0, instalado.stderr)
+
+            with mock.patch.dict(os.environ, entorno, clear=True):
+                sesion = SalidaSesion()
+                self.assertTrue(sesion.escribir_texto("transcript persistente ñ"))
+                sesion.cerrar()
+            transcript = sesion.ruta
+            self.assertIsNotNone(transcript)
+
+            archivo_ajeno = install_home / "archivo-no-administrado.bin"
+            archivo_ajeno.write_bytes(b"contenido ajeno\x00persistente")
+            preservados = {
+                ruta: hashlib.sha256(ruta.read_bytes()).hexdigest()
+                for ruta in (transcript, testigo_config, archivo_ajeno)
+            }
             for comando in ("parlar", "parlarctl"):
                 enlace = bin_dir / comando
                 self.assertTrue(enlace.is_symlink())
@@ -720,13 +832,17 @@ class ContratoInstalacionUsuario(unittest.TestCase):
                 str(repo / "uninstall.sh"), cwd=repo, env=entorno)
             self.assertEqual(
                 desinstalado.returncode, 0, desinstalado.stderr)
-            self.assertFalse(install_home.exists())
+            self.assertFalse((install_home / "venv").exists())
             self.assertFalse(unit.exists())
             self.assertFalse(desktop.exists())
             self.assertFalse(autostart.exists())
             self.assertFalse((bin_dir / "parlar").exists())
             self.assertFalse((bin_dir / "parlarctl").exists())
-            self.assertTrue(testigo_config.exists())
+            for ruta, digest in preservados.items():
+                with self.subTest(preservado=ruta):
+                    self.assertTrue(ruta.exists())
+                    self.assertEqual(
+                        hashlib.sha256(ruta.read_bytes()).hexdigest(), digest)
 
     def test_scripts_no_recomiendan_enable_para_autostart(self):
         for nombre in ("install.sh", "setup.sh"):

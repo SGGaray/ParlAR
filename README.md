@@ -10,9 +10,12 @@ remoto. GuionAR, cuando se habilita, usa un socket Unix local.
 
 > English: [README.en.md](README.en.md)
 
-ParlAR 1.0 RC está dirigido a escritorios Linux X11 y Wayland. El demo web, si
-lo encontrás enlazado desde el proyecto, es solo ilustrativo: no ejecuta esta
-aplicación nativa ni su pipeline de audio, hotkeys e inyección.
+ParlAR 1.0.x es la línea estable para Linux. v1.0.0 fue validada físicamente en
+Fedora/X11 con LightDM y NVIDIA CUDA; el camino CPU cuenta con validación previa
+y cobertura automatizada. Wayland dispone de backends y bindings documentados,
+pero no fue validado físicamente para esta release. El demo web, si lo encontrás
+enlazado desde el proyecto, es solo ilustrativo: no ejecuta esta aplicación
+nativa ni su pipeline de audio, hotkeys e inyección.
 
 ## Requisitos
 
@@ -260,7 +263,9 @@ parlar --guionar --modo streaming
 
 Es best-effort y no forma parte del camino crítico: si no está corriendo,
 ParlAR continúa dictando. Una reconexión publica el snapshot actual, no
-reproduce texto final histórico.
+reproduce texto final histórico. El transporte IPC tiene cobertura
+automatizada; la aplicación GuionAR real no fue validada end-to-end para
+v1.0.0.
 
 ## Privacidad y transcripts
 
@@ -296,8 +301,10 @@ Desde un checkout de la misma versión:
 ```
 
 El script desactiva y elimina solo la unit y el launcher marcados como
-generados por ParlAR, quita sus enlaces y su entorno instalado. Conserva la
-configuración y los transcripts. Para borrarlos deliberadamente:
+generados por ParlAR, quita sus enlaces y elimina únicamente el entorno
+administrado `$XDG_DATA_HOME/parlar/venv`. No borra recursivamente la raíz de
+datos: conserva la configuración, los transcripts y otros archivos hermanos
+no administrados. Para borrar datos deliberadamente:
 
 ```bash
 rm -r ~/.config/parlar
@@ -330,8 +337,8 @@ La validación que sí requiere hardware y percepción humana está separada en
   compositor.
 - La entrega a una aplicación externa no es transaccional. X11 paste es
   deliberadamente no elegible para undo destructivo.
-- La compatibilidad física post-instalación aún debe validarse por escritorio,
-  hardware de audio y GPU; el estado exacto está en el documento de readiness.
+- Wayland y la integración con la aplicación GuionAR real no fueron validados
+  físicamente para v1.0.0; el estado exacto está en el documento de readiness.
 
 ## Licencia
 

@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Corregido
+- La desinstalación elimina solo el entorno administrado y preserva
+  transcripts, configuración y archivos no administrados bajo la raíz de datos.
+- Un CANCEL atrasado ya no puede cerrar la captura perteneciente a una
+  generación posterior iniciada mientras esperaba la transición física.
+- La documentación refleja v1.0.0 publicada y limita la evidencia física a los
+  entornos realmente validados, sin presentar Wayland ni GuionAR real como PASS.
+- El launcher escapa correctamente barras invertidas literales en `Exec` sin
+  introducir shell ni alterar los paths ya admitidos.
+
 ## [1.0.0] - 2026-09-23
 
 ### Agregado

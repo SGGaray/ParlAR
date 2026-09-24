@@ -412,17 +412,26 @@ class App:
 
         # START/STOP físicos siguen serializados. Si un START estaba dentro
         # de mic.iniciar(), esperamos su retorno después de haber invalidado
-        # ya la generación.
+        # ya la generación. Bajo esta barrera comprobamos ownership otra vez:
+        # un START posterior puede haber abierto una captura nueva mientras
+        # este CANCEL esperaba el lock, y el cierre viejo no debe tocarla.
         with self._transicion_lock:
-            try:
-                self.mic.detener(vaciar=True)
-            except Exception as exc:
-                error = exc
-                print(
-                    "[app] falló el cierre por cancelación: "
-                    f"{exc}",
-                    file=sys.stderr,
+            with self._estado_cv:
+                puede_cerrar_mic = (
+                    self._sesion_activa is None
+                    or self._sesion_activa == generacion
                 )
+
+            if puede_cerrar_mic:
+                try:
+                    self.mic.detener(vaciar=True)
+                except Exception as exc:
+                    error = exc
+                    print(
+                        "[app] falló el cierre por cancelación: "
+                        f"{exc}",
+                        file=sys.stderr,
+                    )
 
             if generacion is not None:
                 try:
@@ -440,20 +449,28 @@ class App:
 
         if error is not None:
             with self._estado_cv:
-                if (
+                error_vigente = (
                     self._estado == EstadoApp.IDLE
                     and self._sesion_activa is None
-                ):
+                )
+                if error_vigente:
                     self._estado = EstadoApp.ERROR
                     self._ultimo_error = (
                         f"micrófono: {error}"
                     )
                     self._estado_cv.notify_all()
 
-            self.ui.fijar_estado("error")
+            if error_vigente:
+                self.ui.fijar_estado("error")
             return False
 
-        self.ui.fijar_estado("idle")
+        with self._estado_cv:
+            publicar_idle = (
+                self._estado == EstadoApp.IDLE
+                and self._sesion_activa is None
+            )
+        if publicar_idle:
+            self.ui.fijar_estado("idle")
 
         if generacion is not None:
             print(

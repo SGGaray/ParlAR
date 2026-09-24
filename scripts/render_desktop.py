@@ -14,7 +14,7 @@ def _argumento_exec(valor: Path) -> str:
         raise ValueError("el ejecutable del launcher debe ser absoluto")
     if any(ord(caracter) < 32 or ord(caracter) == 127 for caracter in texto):
         raise ValueError("el ejecutable contiene caracteres de control")
-    texto = (texto.replace("\\", "\\\\")
+    texto = (texto.replace("\\", "\\\\\\\\")
              .replace('"', '\\"')
              .replace("`", "\\`")
              .replace("$", "\\$")

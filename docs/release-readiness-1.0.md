@@ -1,14 +1,17 @@
-# ParlAR Linux 1.0 — release readiness
+# ParlAR Linux 1.0 — evidencia de release
 
-Este documento separa evidencia automatizada de validación física. “PASS” solo
-significa que el chequeo indicado se ejecutó realmente; los escenarios que
-requieren hardware, una sesión gráfica o percepción humana siguen pendientes.
+v1.0.0 fue publicada el 2026-09-24. Este documento separa evidencia
+automatizada, evidencia física y alcance no validado. “PASS” solo significa que
+el chequeo indicado se ejecutó realmente; no se extiende a otra distribución,
+sesión gráfica, hardware o integración por inferencia.
 
 ## AUTOMATED PASS
 
 - `./scripts/check.sh`: PASS en la rama de readiness.
 - 58 checks legacy: PASS.
-- 380 tests unitarios: PASS.
+- 391 tests unitarios en el gate publicado de v1.0.0: PASS.
+- 394 tests unitarios en la remediación post-release para una futura v1.0.1:
+  PASS.
 - Sintaxis shell, bytecode Python, `parlar --help` y `parlarctl --help`:
   PASS.
 - Config schema v1, migración conservadora, validación estricta, round-trip y
@@ -43,12 +46,25 @@ git status --short
 git diff --check
 ```
 
-## PENDING PHYSICAL
+## PHYSICAL PASS — v1.0.0
 
-Ejecutar desde un checkout limpio en una cuenta de usuario de prueba. No marcar
-ningún punto PASS solo porque su test simulado esté verde.
+- Instalación y desinstalación frescas: PASS en entorno Fedora de prueba.
+- Reinicio y autostart XDG → systemd static bajo LightDM: PASS.
+- Fedora Linux/X11: PTT, modo continuo, CANCEL, instancia duplicada, IPC,
+  Unicode y Return opt-in: PASS.
+- NVIDIA CUDA con faster-whisper/STT real: PASS.
+- El camino CPU cuenta con validación física previa y selección/fallback
+  cubiertos por el gate automatizado.
+
+## MATRIZ DE RETEST Y ALCANCE NO VALIDADO
+
+Los comandos siguientes conservan la matriz reproducible. Cada sección declara
+su evidencia actual; no marcar un escenario adicional PASS solo porque su test
+simulado esté verde.
 
 ### Instalación fresca y CLI
+
+Estado v1.0.0: **PASS físico en Fedora**.
 
 ```bash
 ./install.sh --preload-model --install-service
@@ -70,6 +86,9 @@ prueba. Restaurarlo antes de ejecutar `./uninstall.sh`.
 
 ### Fedora/X11, CPU y controles
 
+Estado v1.0.0: **PASS físico en Fedora/X11**. El camino CPU tiene evidencia
+física previa; el retest integral publicado usó NVIDIA CUDA.
+
 ```bash
 XDG_SESSION_TYPE=x11 parlar --dispositivo cpu
 ```
@@ -88,6 +107,8 @@ XDG_SESSION_TYPE=x11 parlar --dispositivo cpu
 7. Confirmar modo frase, streaming, alias largos de comandos y Return opt-in.
 
 ### Servicio systemd y socket
+
+Estado v1.0.0: **PASS físico con LightDM y XDG Autostart**.
 
 ```bash
 systemctl --user start parlar.service
@@ -116,6 +137,8 @@ no hay enlace `default.target.wants/parlar.service` ni doble proceso.
 
 ### Wayland
 
+Estado v1.0.0: **NO VALIDADO FÍSICAMENTE**.
+
 1. Iniciar `parlar` en GNOME/KDE/Hyprland Wayland.
 2. Asignar un binding del compositor a
    `$HOME/.local/bin/parlarctl alternar`.
@@ -127,6 +150,8 @@ no hay enlace `default.target.wants/parlar.service` ni doble proceso.
 
 ### NVIDIA
 
+Estado v1.0.0: **PASS físico en el hardware Fedora auditado**.
+
 ```bash
 parlar --dispositivo cuda --sin-indicador
 ```
@@ -136,6 +161,10 @@ dictado frase/streaming y fallback accionable cuando se retira la disponibilidad
 de CUDA. Repetir el camino CPU explícito en la misma instalación.
 
 ### Launcher, login y GuionAR
+
+Estado v1.0.0: launcher y login/autostart **PASS físico**. El transporte IPC de
+GuionAR tiene cobertura automatizada; la aplicación GuionAR real end-to-end
+**NO FUE VALIDADA FÍSICAMENTE**.
 
 1. Abrir ParlAR desde el launcher y confirmar audio, indicador y control.
 2. Con el autostart XDG instalado y la unit static, cerrar sesión, volver a
@@ -163,9 +192,11 @@ de CUDA. Repetir el camino CPU explícito en la misma instalación.
   entrega o undo es una transacción end-to-end.
 - Los transcripts opt-in son texto plano y no se borran automáticamente.
 
-## BLOCKERS
+## ESTADO DE RELEASE
 
-No hay un blocker automatizado conocido con el gate actual. La promoción desde
-1.0 RC a 1.0 final queda bloqueada hasta completar y registrar la matriz
-PENDING PHYSICAL de instalación fresca, X11, Wayland, CPU, NVIDIA, launcher y
-persistencia tras login. No se debe crear tag ni release antes de esa evidencia.
+v1.0.0 está publicada. La auditoría post-release confirmó cuatro remediaciones
+para una futura v1.0.1: preservación de datos al desinstalar, ownership de
+captura durante CANCEL/START, documentación de alcance y escape de backslash en
+desktop entries. Esta sección no crea ni promete una fecha para v1.0.1.
+Wayland y GuionAR real continúan explícitamente fuera de la evidencia física de
+v1.0.0.

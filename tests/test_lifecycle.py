@@ -747,6 +747,74 @@ class PruebasApp(unittest.TestCase):
         self.assertNotIn(generacion, app._stops_listos)
         self.assertEqual(sesion.textos, [])
 
+    def test_cancel_viejo_no_cierra_captura_de_restart(self):
+        for ruta_start in ("ipc", "gesto"):
+            with self.subTest(ruta_start=ruta_start):
+                mic = MicFalso(bloquear_stop=True)
+                app, _, _, _, _, _, sesion, fabrica = self.app(mic=mic)
+                self.assertTrue(app.iniciar_grabacion())
+                generacion_vieja = app.generacion_activa
+                mic.enviar(1)
+                self.esperar_voz(fabrica)
+
+                reinicio_entrado = threading.Event()
+                liberar_reinicio = threading.Event()
+                reiniciar_original = app.gesto_dictado.reiniciar
+
+                def reiniciar_bloqueado():
+                    reiniciar_original()
+                    reinicio_entrado.set()
+                    if not liberar_reinicio.wait(2):
+                        raise TimeoutError("CANCEL no liberado")
+
+                app.gesto_dictado.reiniciar = reiniciar_bloqueado
+
+                resultado_stop = []
+                hilo_stop = threading.Thread(
+                    target=lambda: resultado_stop.append(
+                        app.detener_grabacion()))
+                hilo_stop.start()
+                self.assertTrue(mic.stop_entrado.wait(2))
+                self.assertEqual(app.estado, EstadoApp.STOPPING)
+
+                resultado_cancel = []
+                hilo_cancel = threading.Thread(
+                    target=lambda: resultado_cancel.append(
+                        app.cancelar_grabacion()))
+                hilo_cancel.start()
+                self.assertTrue(reinicio_entrado.wait(2))
+                self.assertEqual(app.estado, EstadoApp.IDLE)
+
+                mic.liberar_stop.set()
+                hilo_stop.join(2)
+                self.assertFalse(hilo_stop.is_alive())
+
+                if ruta_start == "ipc":
+                    self.assertEqual(
+                        app._atender_comando("iniciar"), "OK grabando")
+                else:
+                    app.gesto_dictado.presionar()
+
+                generacion_nueva = app.generacion_activa
+                self.assertNotEqual(generacion_vieja, generacion_nueva)
+                self.assertEqual(mic.generacion, generacion_nueva)
+
+                liberar_reinicio.set()
+                hilo_cancel.join(2)
+                self.assertFalse(hilo_cancel.is_alive())
+                self.assertEqual(resultado_stop, [True])
+                self.assertEqual(resultado_cancel, [True])
+                self.assertEqual(app.estado, EstadoApp.RECORDING)
+                self.assertEqual(app.generacion_activa, generacion_nueva)
+                self.assertEqual(mic.generacion, generacion_nueva)
+                self.assertTrue(app.grabando.is_set())
+                self.assertEqual(app.ui.estados[-1], "recording")
+
+                self.assertTrue(mic.enviar(101))
+                mic.enviar(0)
+                self.assertTrue(sesion.escrito.wait(2))
+                self.assertEqual(sesion.textos, ["U:101"])
+
     def test_cancel_dos_veces_es_idempotente(self):
         app, mic, *_ = self.app()
 
