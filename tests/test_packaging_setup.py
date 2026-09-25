@@ -911,6 +911,93 @@ class ContratoInstalacionUsuario(unittest.TestCase):
             with self.subTest(variante=nombre):
                 self._comprobar_instalacion_y_desinstalacion_xdg(sufijo)
 
+    def test_install_y_uninstall_rechazan_componentes_dot_sin_efectos(self):
+        bootstrap_codigo = """#!/usr/bin/python3
+import os
+import shutil
+import sys
+from pathlib import Path
+
+with open(os.environ["PARLAR_BOOTSTRAP_LOG"], "a", encoding="utf-8") as log:
+    log.write(repr(sys.argv[1:]) + "\\n")
+args = sys.argv[1:]
+if len(args) >= 3 and args[:2] == ["-m", "venv"]:
+    bindir = Path(args[2]) / "bin"
+    bindir.mkdir(parents=True)
+    shutil.copy2(__file__, bindir / "python")
+    for nombre in ("parlar", "parlarctl"):
+        comando = bindir / nombre
+        comando.write_text("#!/bin/sh\\nexit 0\\n", encoding="utf-8")
+        comando.chmod(0o755)
+raise SystemExit(0)
+"""
+        for nombre in ("dot", "dotdot"):
+            with self.subTest(variante=nombre), \
+                    tempfile.TemporaryDirectory() as tmp:
+                base = Path(tmp)
+                home = base / "home con ñ"
+                data = home / "datos con espacios"
+                config = home / "configuración"
+                install_home = data / "parlar"
+                bin_dir = home / "bin con espacios"
+                (data / "sub").mkdir(parents=True)
+                valor = (
+                    f"{data}/./parlar" if nombre == "dot"
+                    else f"{data}/sub/../parlar"
+                )
+
+                tools = base / "tools"
+                tools.mkdir()
+                log_systemctl = base / "systemctl.log"
+                systemctl = tools / "systemctl"
+                systemctl.write_text(
+                    "#!/bin/sh\n"
+                    "printf '%s\\n' \"$*\" >>\"$PARLAR_SYSTEMCTL_LOG\"\n",
+                    encoding="utf-8",
+                )
+                systemctl.chmod(0o755)
+                bootstrap = base / "bootstrap.py"
+                bootstrap.write_text(bootstrap_codigo, encoding="utf-8")
+                bootstrap.chmod(0o755)
+                log_bootstrap = base / "bootstrap.log"
+                entorno = os.environ.copy()
+                entorno.update({
+                    "HOME": str(home),
+                    "XDG_DATA_HOME": str(data),
+                    "XDG_CONFIG_HOME": str(config),
+                    "PARLAR_INSTALL_HOME": valor,
+                    "PARLAR_BIN_DIR": str(bin_dir),
+                    "PARLAR_BOOTSTRAP_PYTHON": str(bootstrap),
+                    "PARLAR_BOOTSTRAP_LOG": str(log_bootstrap),
+                    "PARLAR_SYSTEMCTL_LOG": str(log_systemctl),
+                    "PATH": f"{tools}:/usr/bin:/bin",
+                })
+
+                instalado = ejecutar(
+                    str(ROOT / "install.sh"), "--install-service",
+                    "--cpu-only", cwd=ROOT, env=entorno)
+                desinstalado = ejecutar(
+                    str(ROOT / "uninstall.sh"), cwd=ROOT, env=entorno)
+
+                self.assertEqual(instalado.returncode, 1, instalado.stderr)
+                self.assertEqual(
+                    desinstalado.returncode, 1, desinstalado.stderr)
+                self.assertIn("ruta de instalación insegura", instalado.stderr)
+                self.assertIn(
+                    "ruta de instalación insegura", desinstalado.stderr)
+                self.assertFalse(log_bootstrap.exists())
+                self.assertFalse(log_systemctl.exists())
+                for ruta in (
+                        install_home,
+                        install_home / "venv",
+                        bin_dir / "parlar",
+                        bin_dir / "parlarctl",
+                        data / "applications" / "parlar.desktop",
+                        config / "systemd" / "user" / "parlar.service",
+                        config / "autostart" / "parlar-systemd.desktop"):
+                    with self.subTest(variante=nombre, ausente=ruta):
+                        self.assertFalse(os.path.lexists(ruta), ruta)
+
     def test_uninstall_reconoce_targets_legacy_sin_borrar_enlace_ajeno(self):
         for comando_propio in ("parlar", "parlarctl"):
             with self.subTest(comando_propio=comando_propio):

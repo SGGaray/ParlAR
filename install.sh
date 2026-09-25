@@ -42,6 +42,12 @@ done
 while [[ "$INSTALL_HOME" != "/" && "$INSTALL_HOME" == */ ]]; do
     INSTALL_HOME="${INSTALL_HOME%/}"
 done
+case "$INSTALL_HOME" in
+    */./*|*/.|*/../*|*/..)
+        echo "!! ruta de instalación insegura: $INSTALL_HOME_ORIGINAL" >&2
+        exit 1
+        ;;
+esac
 
 if [[ "$INSTALL_HOME" != /* \
         || "$(basename -- "$INSTALL_HOME")" != "parlar" \
