@@ -20,6 +20,7 @@ import json
 import os
 import select
 import socket
+import struct
 import sys
 import threading
 
@@ -33,6 +34,7 @@ def ruta_socket_por_defecto() -> str:
 
 
 _MAX_TEXTO = 2000  # GuionAR trunca a esto; truncamos acá para no gastar socket
+_UCRED = struct.Struct("=iII")  # Linux: pid_t, uid_t, gid_t
 
 
 class ClienteGuionAR:
@@ -40,6 +42,7 @@ class ClienteGuionAR:
 
     def __init__(self, ruta: str = ""):
         self.ruta = ruta or ruta_socket_por_defecto()
+        self._expected_uid = os.getuid()
         self._sock = None
         self._vad_deseado = None
         self._parcial_deseado = None
@@ -50,6 +53,26 @@ class ClienteGuionAR:
         self._lock = threading.RLock()
 
     # ---------------------------------------------------------- transporte
+    def _validar_peer(self, sock) -> bool:
+        """Verifica el UID del socket conectado antes del primer payload."""
+        opcion = getattr(socket, "SO_PEERCRED", None)
+        if opcion is None:
+            print("[guionar] validación del peer no disponible",
+                  file=sys.stderr)
+            return False
+        try:
+            datos = sock.getsockopt(socket.SOL_SOCKET, opcion, _UCRED.size)
+            if len(datos) != _UCRED.size:
+                raise ValueError("credenciales de peer malformadas")
+            _, uid, _ = _UCRED.unpack(datos)
+        except (OSError, TypeError, ValueError, struct.error):
+            print("[guionar] falló la validación del peer", file=sys.stderr)
+            return False
+        if uid != self._expected_uid:
+            print("[guionar] peer rechazado: UID inesperado", file=sys.stderr)
+            return False
+        return True
+
     def _conectar(self, *, snapshot_parcial=True) -> bool:
         if self._cerrado:
             return False
@@ -61,6 +84,9 @@ class ClienteGuionAR:
             s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             s.settimeout(0.05)
             s.connect(self.ruta)
+            if not self._validar_peer(s):
+                s.close()
+                return False
             self._sock = s
             self._epoca_conexion += 1
             self._vad_enviado = None
