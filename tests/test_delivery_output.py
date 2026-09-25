@@ -233,6 +233,7 @@ class PruebasXdotoolUnicode(unittest.TestCase):
             mock.call(
                 ["xclip", "-selection", "clipboard"],
                 input=texto.encode(), check=True, timeout=5,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             ),
         )
         self.assertEqual(
@@ -386,6 +387,7 @@ class PruebasXdotoolUnicode(unittest.TestCase):
         ejecutar.assert_called_once_with(
             ["xclip", "-selection", "clipboard"],
             input=texto.encode(), check=True, timeout=5,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         self.assertEqual(inyector._registro_oraciones, [])
 
