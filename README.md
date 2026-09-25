@@ -273,6 +273,8 @@ Los logs normales contienen estados, tiempos y tipos de error, no audio ni
 texto dictado. `--guardar-sesion` es opt-in y escribe texto plano `0600` bajo
 `$XDG_DATA_HOME/parlar/sesiones/`; ParlAR no cifra ni elimina esos archivos.
 Leé [SECURITY.md](SECURITY.md) para el modelo de amenaza completo.
+Para reportar una vulnerabilidad, usá el canal privado indicado allí. No
+publiques detalles sensibles en un issue.
 
 ## Solución de problemas
 
