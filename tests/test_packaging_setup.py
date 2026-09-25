@@ -1062,6 +1062,17 @@ raise SystemExit(0)
 
 
 class SmokesCheckout(unittest.TestCase):
+    def test_pyproject_declara_licencia_spdx_con_backend_compatible(self):
+        proyecto = tomllib.loads(
+            (ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+        self.assertEqual(
+            proyecto["build-system"]["requires"],
+            ["setuptools>=77.0.1"],
+        )
+        self.assertEqual(proyecto["project"]["license"], "MIT")
+        self.assertEqual(proyecto["project"]["license-files"], ["LICENSE"])
+
     def test_pyproject_instala_ambos_entrypoints(self):
         proyecto = tomllib.loads(
             (ROOT / "pyproject.toml").read_text(encoding="utf-8"))
