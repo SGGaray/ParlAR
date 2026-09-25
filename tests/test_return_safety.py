@@ -197,7 +197,8 @@ class PruebasReturnFisico(unittest.TestCase):
         for permitir in (False, True):
             with self.subTest(permitir=permitir):
                 cfg = Config(comando_enviar=permitir)
-                with mock.patch("parlar.app.Inyector") as constructor:
+                with mock.patch(
+                        "parlar.coordinador_salida.Inyector") as constructor:
                     App(cfg, motor=object(), **dependencias)
                 constructor.assert_called_once_with(
                     cfg.injector, cfg.type_delay_ms, cfg.notify, permitir)

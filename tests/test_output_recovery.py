@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from parlar.app import App
+from parlar.coordinador_salida import CoordinadorSalida
 from parlar.entrega import EstadoEntrega
 from parlar.inyector_salida import Inyector
 
@@ -148,8 +149,11 @@ class PruebasRecoveryUnidad(unittest.TestCase):
         app = App.__new__(App)
         app._salida_lock = threading.RLock()
         app._puede_emit = lambda generacion: generacion == 7
-        app.inyector = inyector
-        app.guionar = SimpleNamespace(enviar_parcial=lambda texto: None)
+        app.salida = CoordinadorSalida(
+            inyector,
+            SimpleNamespace(enviar_parcial=lambda texto: None),
+            SimpleNamespace(es_nulo=True),
+        )
         app.streaming = SimpleNamespace(reiniciar=lambda: None)
         app._modo_de = lambda generacion: "streaming"
         segmentador = SimpleNamespace(discontinuidad=lambda: [])

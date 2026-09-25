@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from parlar.app import App
+from parlar.coordinador_salida import CoordinadorSalida
 from parlar.entrega import EstadoEntrega, ResultadoSink
 from parlar.inyector_salida import Inyector
 from parlar.procesador_texto import Procesado, ProcesadorTexto
@@ -58,11 +59,12 @@ class SinkFalso:
 def app_minima(inyector=None, guionar=None, sesion=None, permitir_enter=False):
     app = App.__new__(App)
     app._salida_lock = threading.RLock()
-    app._necesita_espacio = False
     app.cfg = SimpleNamespace(comando_enviar=permitir_enter)
-    app.inyector = inyector or InyectorFalso()
-    app.guionar = guionar or SinkFalso()
-    app.sesion = sesion or SinkFalso()
+    app.salida = CoordinadorSalida(
+        inyector or InyectorFalso(),
+        guionar or SinkFalso(),
+        sesion or SinkFalso(),
+    )
     app._puede_emit = lambda generacion: generacion == 1
     return app
 

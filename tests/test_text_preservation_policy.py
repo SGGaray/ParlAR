@@ -8,6 +8,7 @@ from unittest import mock
 import numpy as np
 
 from parlar.app import App
+from parlar.coordinador_salida import CoordinadorSalida
 from parlar.entrega import EstadoEntrega, ResultadoSink
 from parlar.inyector_salida import Inyector
 from parlar.motor_transcripcion import TranscriptorStreaming
@@ -41,11 +42,12 @@ class InyectorEfectos:
 def _app(inyector, *, permitir_return=True):
     app = App.__new__(App)
     app._salida_lock = threading.RLock()
-    app._necesita_espacio = False
     app.cfg = SimpleNamespace(comando_enviar=permitir_return)
-    app.inyector = inyector
-    app.guionar = SimpleNamespace(es_nulo=True)
-    app.sesion = SimpleNamespace(es_nulo=True)
+    app.salida = CoordinadorSalida(
+        inyector,
+        SimpleNamespace(es_nulo=True),
+        SimpleNamespace(es_nulo=True),
+    )
     app._puede_emit = lambda generacion: generacion == 1
     app.stops = 0
     app.detener_grabacion = (
