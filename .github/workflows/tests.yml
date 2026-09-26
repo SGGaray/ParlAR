@@ -34,10 +34,6 @@ jobs:
 
   wheel-contract:
     runs-on: ubuntu-latest
-    env:
-      WHEEL_DIR: ${{ runner.temp }}/parlar-dist
-      SMOKE_VENV: ${{ runner.temp }}/parlar-wheel-smoke
-      SMOKE_DIR: ${{ runner.temp }}/parlar-smoke
 
     steps:
       - uses: actions/checkout@v4
@@ -53,6 +49,7 @@ jobs:
 
       - name: Build and inspect wheel
         run: |
+          WHEEL_DIR="$RUNNER_TEMP/parlar-dist"
           mkdir -p "$WHEEL_DIR"
           SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
           export SOURCE_DATE_EPOCH
@@ -67,6 +64,8 @@ jobs:
 
       - name: Install the built wheel in a clean venv
         run: |
+          WHEEL_DIR="$RUNNER_TEMP/parlar-dist"
+          SMOKE_VENV="$RUNNER_TEMP/parlar-wheel-smoke"
           python -m venv "$SMOKE_VENV"
           "$SMOKE_VENV/bin/python" -m pip install \
             --disable-pip-version-check \
@@ -74,6 +73,8 @@ jobs:
 
       - name: Smoke installed artifact outside the checkout
         run: |
+          SMOKE_VENV="$RUNNER_TEMP/parlar-wheel-smoke"
+          SMOKE_DIR="$RUNNER_TEMP/parlar-smoke"
           mkdir -p "$SMOKE_DIR"
           cp scripts/check_wheel_contract.py \
             "$RUNNER_TEMP/check_wheel_contract.py"
