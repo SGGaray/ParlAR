@@ -14,8 +14,9 @@ Nota: las claves de estado ("idle"/"recording"/"transcribing") son protocolo
 interno compartido con app.py; se mantienen en inglés a propósito.
 """
 
-import threading
 import time
+
+from .estado_ui import EstadoInterfaz
 
 COLORES = {
     "idle": "#6b7280",
@@ -44,8 +45,7 @@ class Indicador:
         self.canvas.pack()
         self.punto = self.canvas.create_oval(5, 5, tam - 5, tam - 5,
                                              fill=COLORES["idle"], outline="")
-        self._estado = "idle"
-        self._lock = threading.Lock()
+        self._estado_ui = EstadoInterfaz()
         self._salir = False
         if al_click:
             self.canvas.bind("<Button-1>", lambda e: al_click())
@@ -63,8 +63,13 @@ class Indicador:
         self.root.geometry(f"+{x}+{y}")
 
     def fijar_estado(self, estado: str):
-        with self._lock:
-            self._estado = estado
+        self._estado_ui.fijar_operativo(estado)
+
+    def fijar_continuo(self, activo: bool):
+        self._estado_ui.fijar_continuo(activo)
+
+    def snapshot_ui(self):
+        return self._estado_ui.snapshot()
 
     def cerrar(self):
         self._salir = True
@@ -73,8 +78,7 @@ class Indicador:
         if self._salir:
             self.root.destroy()
             return
-        with self._lock:
-            estado = self._estado
+        estado = self._estado_ui.snapshot().operativo
         self.canvas.itemconfig(self.punto, fill=COLORES.get(estado, COLORES["idle"]))
         self.root.after(120, self._sondear)
 
@@ -87,9 +91,16 @@ class BucleSinUI:
 
     def __init__(self):
         self._salir = False
+        self._estado_ui = EstadoInterfaz()
 
     def fijar_estado(self, estado: str):
-        pass
+        self._estado_ui.fijar_operativo(estado)
+
+    def fijar_continuo(self, activo: bool):
+        self._estado_ui.fijar_continuo(activo)
+
+    def snapshot_ui(self):
+        return self._estado_ui.snapshot()
 
     def cerrar(self):
         self._salir = True
