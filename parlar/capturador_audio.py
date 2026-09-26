@@ -193,9 +193,11 @@ class Segmentador:
 class CapturadorMic:
     """Captura continua del micrófono en una cola acotada de frames tamaño VAD."""
 
-    def __init__(self, sample_rate: int, frame_samples: int, max_cola: int = 500):
+    def __init__(self, sample_rate: int, frame_samples: int, max_cola: int = 500,
+                 *, input_device: int | None = None):
         self.sample_rate = sample_rate
         self.frame_samples = frame_samples
+        self.input_device = input_device
         self.capacidad = max_cola
         self.q: "queue.Queue[FrameAudio]" = queue.Queue(maxsize=max_cola)
         self._stream = None
@@ -297,7 +299,7 @@ class CapturadorMic:
             import sounddevice as sd  # import diferido para testear sin hardware
             with self._callback_lock:
                 self._preparar_generacion(generacion)
-            stream = sd.RawInputStream(
+            argumentos_stream = dict(
                 samplerate=self.sample_rate,
                 channels=1,
                 dtype="int16",
@@ -305,6 +307,9 @@ class CapturadorMic:
                 callback=lambda indata, frames, time_info, status: self._callback(
                     generacion, indata, frames, time_info, status),
             )
+            if self.input_device is not None:
+                argumentos_stream["device"] = self.input_device
+            stream = sd.RawInputStream(**argumentos_stream)
             stream.start()
         except BaseException:
             with self._callback_lock:

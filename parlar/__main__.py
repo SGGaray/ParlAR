@@ -14,6 +14,7 @@ import threading
 from .config import CONFIG_FILE, Config, ErrorConfiguracion
 from .control import GuardiaInstancia, InstanciaActivaError
 from .runtime_nvidia import preparar_runtime_nvidia
+from .settings_backend import ErrorInicializacionAudio
 
 _ALIAS_MODO = {"frase": "utterance"}
 _ALIAS_REESCRITURA = {"ninguna": "none", "conciso": "concise", "correo": "email"}
@@ -193,6 +194,9 @@ def main():
     except InstanciaActivaError:
         print("ParlAR ya está ejecutándose.", file=sys.stderr)
         raise SystemExit(_CODIGO_INSTANCIA_ACTIVA)
+    except ErrorInicializacionAudio as e:
+        print(f"[audio] no se pudo iniciar: {e}", file=sys.stderr)
+        raise SystemExit(1)
     finally:
         if guardia is not None:
             guardia.liberar()

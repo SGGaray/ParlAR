@@ -81,6 +81,10 @@ class ErrorDispositivosAudio(RuntimeError):
     """No fue posible obtener un inventario confiable de entradas de audio."""
 
 
+class ErrorInicializacionAudio(ErrorDispositivosAudio):
+    """La entrada configurada no pudo resolverse de forma segura al iniciar."""
+
+
 def cargar_configuracion_actual() -> Config:
     """Carga la base persistida sin exponer ``Config`` a la capa de UI."""
     return Config.load()

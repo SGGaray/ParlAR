@@ -30,6 +30,39 @@ from .daemon_atajos import DaemonAtajos
 from .indicador import crear_ui
 from .motor_transcripcion import MotorWhisper, TranscriptorFrase, TranscriptorStreaming
 from .procesador_texto import ProcesadorTexto
+from .settings_backend import (
+    ErrorDispositivosAudio,
+    ErrorInicializacionAudio,
+    listar_dispositivos_entrada,
+    resolver_dispositivo_entrada,
+)
+
+
+def resolver_entrada_productiva(
+        preferencia: str, *, listar_entradas=None, resolver_entrada=None):
+    """Resuelve una preferencia persistida al índice PortAudio de este inicio."""
+    listar = listar_entradas or listar_dispositivos_entrada
+    resolver = resolver_entrada or resolver_dispositivo_entrada
+    try:
+        inventario = listar()
+    except ErrorDispositivosAudio as exc:
+        raise ErrorInicializacionAudio(
+            f"no se pudo obtener el inventario de entradas: {exc}"
+        ) from exc
+
+    resolucion = resolver(preferencia, inventario)
+    if resolucion.indice is None:
+        motivo = resolucion.motivo or "sin_motivo"
+        if "inventario_vacio" in motivo:
+            detalle = "no hay dispositivos de entrada disponibles"
+        elif "default_ambiguo" in motivo:
+            detalle = "el dispositivo de entrada predeterminado es ambiguo"
+        elif "default_no_disponible" in motivo:
+            detalle = "no hay un dispositivo de entrada predeterminado"
+        else:
+            detalle = "la entrada configurada no pudo resolverse"
+        raise ErrorInicializacionAudio(f"{detalle} (motivo: {motivo})")
+    return resolucion
 
 
 class EstadoApp(str, Enum):
@@ -46,7 +79,8 @@ class App:
     def __init__(self, cfg: Config, *, motor=None, frases=None, streaming=None,
                  proc=None, inyector=None, guionar=None, sesion=None, mic=None,
                  ui=None, control=None, atajos=None, guardia_instancia=None,
-                 vad_factory=crear_vad, segmentador_factory=Segmentador):
+                 vad_factory=crear_vad, segmentador_factory=Segmentador,
+                 listar_entradas=None, resolver_entrada=None):
         cfg.validate()
         self.cfg = cfg
         self.grabando = threading.Event()
@@ -80,6 +114,33 @@ class App:
         print("ParlAR: dictado local, sin telemetría.")
         print("=" * 60)
 
+        self.resolucion_entrada = None
+        mic_productivo = mic
+        if mic_productivo is None:
+            self.resolucion_entrada = resolver_entrada_productiva(
+                cfg.audio_input_device,
+                listar_entradas=listar_entradas,
+                resolver_entrada=resolver_entrada,
+            )
+            if self.resolucion_entrada.usando_fallback:
+                dispositivo = self.resolucion_entrada.dispositivo
+                nombre = (
+                    dispositivo.nombre
+                    if dispositivo is not None
+                    else "desconocido"
+                )
+                print(
+                    "[audio] la entrada configurada no está disponible; "
+                    f"se usará la predeterminada {nombre!r} "
+                    f"(motivo: {self.resolucion_entrada.motivo})",
+                    file=sys.stderr,
+                )
+            mic_productivo = CapturadorMic(
+                cfg.sample_rate,
+                cfg.frame_samples,
+                input_device=self.resolucion_entrada.indice,
+            )
+
         if motor is None and (frases is None or streaming is None):
             motor = MotorWhisper(
                 cfg.model_size,
@@ -104,7 +165,7 @@ class App:
         )
         if cfg.guionar:
             print(f"[guionar] integración activa (socket: {self.guionar.ruta})")
-        self.mic = mic or CapturadorMic(cfg.sample_rate, cfg.frame_samples)
+        self.mic = mic_productivo
         self.ui = ui or crear_ui(cfg.overlay, al_click=self.alternar)
         self.control = control or ServidorControl(
             self._atender_comando, guardia_instancia=guardia_instancia)
