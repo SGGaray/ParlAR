@@ -111,6 +111,12 @@ class App:
         self.gesto_dictado = ControlGestoDictado(
             self.iniciar_grabacion,
             self.detener_grabacion,
+            al_presionado=getattr(
+                self.ui, "fijar_presionado", None
+            ),
+            al_continuo=getattr(
+                self.ui, "fijar_continuo", None
+            ),
         )
         self.atajos = atajos or DaemonAtajos(
             cfg.hotkey_toggle,

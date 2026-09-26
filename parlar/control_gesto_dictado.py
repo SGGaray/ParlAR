@@ -27,9 +27,13 @@ class ControlGestoDictado:
         *,
         reloj: Callable[[], float] | None = None,
         timer_factory=None,
+        al_presionado: Callable[[bool], object] | None = None,
+        al_continuo: Callable[[bool], object] | None = None,
     ):
         self.al_iniciar = al_iniciar
         self.al_detener = al_detener
+        self.al_presionado = al_presionado
+        self.al_continuo = al_continuo
 
         self._reloj = (
             reloj
@@ -113,6 +117,16 @@ class ControlGestoDictado:
         if PROGRAMAR_STOP in acciones:
             self._programar_timer_locked()
 
+    @staticmethod
+    def _notificar(callback, activo: bool) -> None:
+        if callback is None:
+            return
+        try:
+            callback(activo)
+        except Exception:
+            # La presentación no puede romper el gesto de dictado.
+            pass
+
     def _ejecutar(
         self,
         acciones: tuple[str, ...],
@@ -134,11 +148,13 @@ class ControlGestoDictado:
                 self.al_detener()
 
             elif accion == CONTINUO_ON:
+                self._notificar(self.al_continuo, True)
                 print(
                     "[atajos] modo continuo activado"
                 )
 
             elif accion == CONTINUO_OFF:
+                self._notificar(self.al_continuo, False)
                 print(
                     "[atajos] modo continuo desactivado"
                 )
@@ -156,6 +172,7 @@ class ControlGestoDictado:
                     acciones
                 )
 
+            self._notificar(self.al_presionado, True)
             self._ejecutar(acciones)
 
     def soltar(self) -> None:
@@ -171,6 +188,7 @@ class ControlGestoDictado:
                     acciones
                 )
 
+            self._notificar(self.al_presionado, False)
             self._ejecutar(acciones)
 
     def _vencer_stop_pendiente(
@@ -209,6 +227,9 @@ class ControlGestoDictado:
 
                 self._cancelar_timer_locked()
                 self._gestor.reiniciar()
+
+            self._notificar(self.al_presionado, False)
+            self._notificar(self.al_continuo, False)
 
     def cerrar(self) -> None:
         """Cancela timers y evita callbacks posteriores al shutdown."""

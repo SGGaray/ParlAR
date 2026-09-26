@@ -14,6 +14,11 @@ class EstadoUI:
 
     operativo: str = "idle"
     continuo_activo: bool = False
+    presionado: bool = False
+
+    @property
+    def visible(self) -> bool:
+        return self.presionado or self.continuo_activo
 
 
 class EstadoInterfaz:
@@ -33,6 +38,7 @@ class EstadoInterfaz:
             self._estado = EstadoUI(
                 operativo=operativo,
                 continuo_activo=actual.continuo_activo,
+                presionado=actual.presionado,
             )
 
     def fijar_continuo(self, activo: bool) -> None:
@@ -41,4 +47,14 @@ class EstadoInterfaz:
             self._estado = EstadoUI(
                 operativo=actual.operativo,
                 continuo_activo=bool(activo),
+                presionado=actual.presionado,
+            )
+
+    def fijar_presionado(self, activo: bool) -> None:
+        with self._lock:
+            actual = self._estado
+            self._estado = EstadoUI(
+                operativo=actual.operativo,
+                continuo_activo=actual.continuo_activo,
+                presionado=bool(activo),
             )

@@ -1,4 +1,4 @@
-"""Indicador mínimo: un puntito sin bordes, siempre visible.
+"""Indicador mínimo: un puntito sin bordes, visible sólo durante el dictado.
 
 gris    = inactivo
 rojo    = grabando
@@ -46,6 +46,7 @@ class Indicador:
         self.punto = self.canvas.create_oval(5, 5, tam - 5, tam - 5,
                                              fill=COLORES["idle"], outline="")
         self._estado_ui = EstadoInterfaz()
+        self.root.withdraw()
         self._salir = False
         if al_click:
             self.canvas.bind("<Button-1>", lambda e: al_click())
@@ -68,6 +69,9 @@ class Indicador:
     def fijar_continuo(self, activo: bool):
         self._estado_ui.fijar_continuo(activo)
 
+    def fijar_presionado(self, activo: bool):
+        self._estado_ui.fijar_presionado(activo)
+
     def snapshot_ui(self):
         return self._estado_ui.snapshot()
 
@@ -78,8 +82,15 @@ class Indicador:
         if self._salir:
             self.root.destroy()
             return
-        estado = self._estado_ui.snapshot().operativo
-        self.canvas.itemconfig(self.punto, fill=COLORES.get(estado, COLORES["idle"]))
+        snapshot = self._estado_ui.snapshot()
+        if snapshot.visible:
+            self.root.deiconify()
+            self.canvas.itemconfig(
+                self.punto,
+                fill=COLORES.get(snapshot.operativo, COLORES["idle"]),
+            )
+        else:
+            self.root.withdraw()
         self.root.after(120, self._sondear)
 
     def ejecutar(self):
@@ -98,6 +109,9 @@ class BucleSinUI:
 
     def fijar_continuo(self, activo: bool):
         self._estado_ui.fijar_continuo(activo)
+
+    def fijar_presionado(self, activo: bool):
+        self._estado_ui.fijar_presionado(activo)
 
     def snapshot_ui(self):
         return self._estado_ui.snapshot()

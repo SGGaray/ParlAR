@@ -68,5 +68,45 @@ class PruebasBucleSinUI(unittest.TestCase):
         )
 
 
+
+class PruebasContratoBucleSinUI(unittest.TestCase):
+    def test_presionado_usa_el_mismo_modelo_de_visibilidad(self):
+        ui = BucleSinUI()
+
+        ui.fijar_presionado(True)
+
+        snapshot = ui.snapshot_ui()
+        self.assertTrue(snapshot.presionado)
+        self.assertTrue(snapshot.visible)
+
+
+
+class PruebasVisibilidadUI(unittest.TestCase):
+    def test_ptt_presionado_hace_visible(self):
+        estado = EstadoInterfaz()
+
+        estado.fijar_presionado(True)
+
+        self.assertTrue(estado.snapshot().visible)
+
+    def test_ptt_suelto_oculta_si_no_hay_continuo(self):
+        estado = EstadoInterfaz()
+        estado.fijar_presionado(True)
+
+        estado.fijar_presionado(False)
+
+        self.assertFalse(estado.snapshot().visible)
+
+    def test_continuo_mantiene_visible_sin_tecla_presionada(self):
+        estado = EstadoInterfaz()
+        estado.fijar_continuo(True)
+
+        self.assertTrue(estado.snapshot().visible)
+
+        estado.fijar_presionado(True)
+        estado.fijar_presionado(False)
+
+        self.assertTrue(estado.snapshot().visible)
+
 if __name__ == "__main__":
     unittest.main()
