@@ -1,9 +1,9 @@
-"""Indicador mínimo: un puntito sin bordes, visible sólo durante el dictado.
+"""Indicador mínimo: waveform sin bordes, visible sólo durante el dictado.
 
-gris    = inactivo
-rojo    = grabando
-ámbar   = transcribiendo/deteniendo
-magenta = error operativo
+gris  = inactivo
+rojo  = grabando
+ámbar = transcribiendo/deteniendo
+rosa  = error operativo
 
 tkinter corre en el hilo PRINCIPAL (requisito de tk); los hilos de trabajo
 empujan cambios de estado a través de una variable protegida, sondeada con
@@ -15,15 +15,66 @@ interno compartido con app.py; se mantienen en inglés a propósito.
 """
 
 import time
+from dataclasses import dataclass
 
 from .estado_ui import EstadoInterfaz
 
+ANCHO_INDICADOR = 70
+ALTO_INDICADOR = 28
+MARGEN_INFERIOR = 12
+INTERVALO_ANIMACION_MS = 90
+FONDO = "#15171a"
+
 COLORES = {
-    "idle": "#6b7280",
-    "recording": "#dc2626",
+    "idle": "#9ca3af",
+    "recording": "#ef4444",
     "transcribing": "#f59e0b",
-    "error": "#db2777",
+    "error": "#e11d48",
 }
+
+_PATRONES = {
+    "idle": (
+        (4, 6, 8, 10, 8, 6, 4),
+    ),
+    "recording": (
+        (4, 8, 12, 18, 12, 8, 4),
+        (6, 12, 16, 10, 16, 12, 6),
+        (10, 16, 8, 14, 8, 16, 10),
+        (12, 8, 14, 18, 14, 8, 12),
+        (8, 14, 18, 10, 18, 14, 8),
+        (6, 10, 14, 16, 14, 10, 6),
+    ),
+    "transcribing": (
+        (4, 6, 8, 10, 8, 6, 4),
+        (4, 7, 9, 12, 9, 7, 4),
+        (5, 8, 10, 12, 10, 8, 5),
+        (4, 7, 9, 11, 9, 7, 4),
+    ),
+    "error": (
+        (6, 10, 14, 18, 14, 10, 6),
+    ),
+}
+
+
+@dataclass(frozen=True, slots=True)
+class FrameWaveform:
+    alturas: tuple[int, ...]
+    color: str
+
+
+def calcular_frame_waveform(operativo: str, fase: int) -> FrameWaveform:
+    """Devuelve un frame visual puro; no consulta ni modifica EstadoUI."""
+    estado = operativo if operativo in _PATRONES else "idle"
+    patrones = _PATRONES[estado]
+    alturas = patrones[fase % len(patrones)]
+    return FrameWaveform(alturas=alturas, color=COLORES[estado])
+
+
+def calcular_posicion(ancho_pantalla: int, alto_pantalla: int) -> tuple[int, int]:
+    """Centra el indicador y conserva un margen corto sobre el borde inferior."""
+    x = max(0, (ancho_pantalla - ANCHO_INDICADOR) // 2)
+    y = max(0, alto_pantalla - ALTO_INDICADOR - MARGEN_INFERIOR)
+    return x, y
 
 
 class Indicador:
@@ -34,26 +85,47 @@ class Indicador:
         self.root.overrideredirect(True)
         self.root.attributes("-topmost", True)
         try:
-            self.root.attributes("-alpha", 0.85)
+            self.root.attributes("-alpha", 0.92)
         except Exception:
             pass
-        tam = 26
         sw = self.root.winfo_screenwidth()
-        self.root.geometry(f"{tam}x{tam}+{sw - tam - 16}+16")
-        self.canvas = tk.Canvas(self.root, width=tam, height=tam,
-                                highlightthickness=0, bg="#111111")
+        sh = self.root.winfo_screenheight()
+        x, y = calcular_posicion(sw, sh)
+        self.root.geometry(
+            f"{ANCHO_INDICADOR}x{ALTO_INDICADOR}+{x}+{y}")
+        self.canvas = tk.Canvas(
+            self.root,
+            width=ANCHO_INDICADOR,
+            height=ALTO_INDICADOR,
+            highlightthickness=0,
+            borderwidth=0,
+            bg=FONDO,
+        )
         self.canvas.pack()
-        self.punto = self.canvas.create_oval(5, 5, tam - 5, tam - 5,
-                                             fill=COLORES["idle"], outline="")
+        centro_y = ALTO_INDICADOR // 2
+        self._barras = [
+            self.canvas.create_line(
+                11 + indice * 8,
+                centro_y - 2,
+                11 + indice * 8,
+                centro_y + 2,
+                fill=COLORES["idle"],
+                width=4,
+                capstyle=tk.ROUND,
+            )
+            for indice in range(7)
+        ]
+        self._fase = 0
         self._estado_ui = EstadoInterfaz()
+        self._ventana_visible = False
         self.root.withdraw()
         self._salir = False
         if al_click:
             self.canvas.bind("<Button-1>", lambda e: al_click())
-        # permite arrastrar el punto por la pantalla
+        # Permite apartar temporalmente la waveform si cubre contenido.
         self.canvas.bind("<Button-3>", self._arrastre_inicio)
         self.canvas.bind("<B3-Motion>", self._arrastre_mover)
-        self.root.after(100, self._sondear)
+        self.root.after(INTERVALO_ANIMACION_MS, self._sondear)
 
     def _arrastre_inicio(self, e):
         self._dx, self._dy = e.x, e.y
@@ -78,20 +150,27 @@ class Indicador:
     def cerrar(self):
         self._salir = True
 
+    def _renderizar(self, operativo: str):
+        frame = calcular_frame_waveform(operativo, self._fase)
+        for barra, altura in zip(self._barras, frame.alturas):
+            x, _, _, _ = self.canvas.coords(barra)
+            y_inicial = (ALTO_INDICADOR - altura) // 2
+            self.canvas.coords(barra, x, y_inicial, x, y_inicial + altura)
+            self.canvas.itemconfig(barra, fill=frame.color)
+        self._fase += 1
+
     def _sondear(self):
         if self._salir:
             self.root.destroy()
             return
         snapshot = self._estado_ui.snapshot()
         if snapshot.visible:
+            self._renderizar(snapshot.operativo)
             self.root.deiconify()
-            self.canvas.itemconfig(
-                self.punto,
-                fill=COLORES.get(snapshot.operativo, COLORES["idle"]),
-            )
         else:
+            self._fase = 0
             self.root.withdraw()
-        self.root.after(120, self._sondear)
+        self.root.after(INTERVALO_ANIMACION_MS, self._sondear)
 
     def ejecutar(self):
         self.root.mainloop()

@@ -2,7 +2,13 @@ import unittest
 from dataclasses import FrozenInstanceError
 
 from parlar.estado_ui import EstadoInterfaz, EstadoUI
-from parlar.indicador import BucleSinUI
+from parlar.indicador import (
+    ALTO_INDICADOR,
+    ANCHO_INDICADOR,
+    BucleSinUI,
+    calcular_frame_waveform,
+    calcular_posicion,
+)
 
 
 class PruebasEstadoInterfaz(unittest.TestCase):
@@ -66,6 +72,70 @@ class PruebasBucleSinUI(unittest.TestCase):
                 continuo_activo=True,
             ),
         )
+
+    def test_conserva_contrato_completo_de_presentacion(self):
+        ui = BucleSinUI()
+
+        ui.fijar_estado("recording")
+        ui.fijar_continuo(True)
+        ui.fijar_presionado(True)
+
+        self.assertEqual(
+            ui.snapshot_ui(),
+            EstadoUI(
+                operativo="recording",
+                continuo_activo=True,
+                presionado=True,
+            ),
+        )
+
+
+class PruebasWaveform(unittest.TestCase):
+    def test_frame_es_determinista(self):
+        primero = calcular_frame_waveform("recording", fase=3)
+        segundo = calcular_frame_waveform("recording", fase=3)
+
+        self.assertEqual(primero, segundo)
+
+    def test_barras_y_geometria_tienen_dimensiones_validas(self):
+        for estado in ("idle", "recording", "transcribing", "error"):
+            with self.subTest(estado=estado):
+                frame = calcular_frame_waveform(estado, fase=5)
+                self.assertEqual(len(frame.alturas), 7)
+                self.assertTrue(all(
+                    isinstance(altura, int) and 4 <= altura <= 18
+                    for altura in frame.alturas
+                ))
+
+        self.assertEqual(
+            calcular_posicion(1920, 1080),
+            ((1920 - ANCHO_INDICADOR) // 2,
+             1080 - ALTO_INDICADOR - 12),
+        )
+
+    def test_recording_y_error_tienen_frames_diferentes(self):
+        recording = calcular_frame_waveform("recording", fase=2)
+        error = calcular_frame_waveform("error", fase=2)
+
+        self.assertNotEqual(recording.alturas, error.alturas)
+        self.assertNotEqual(recording.color, error.color)
+
+    def test_error_es_estatico_entre_fases(self):
+        primero = calcular_frame_waveform("error", fase=0)
+        despues = calcular_frame_waveform("error", fase=137)
+
+        self.assertEqual(primero, despues)
+
+    def test_calculo_visual_no_modifica_visibilidad(self):
+        estado = EstadoInterfaz()
+        estado.fijar_presionado(True)
+        antes = estado.snapshot()
+
+        calcular_frame_waveform(antes.operativo, fase=4)
+
+        despues = estado.snapshot()
+        self.assertEqual(despues, antes)
+        self.assertTrue(despues.visible)
 
 
 
