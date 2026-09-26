@@ -215,27 +215,19 @@ class ConfigTemporal(unittest.TestCase):
                 with self.assertRaisesRegex(ErrorConfiguracion, "ollama_url"):
                     Config(ollama_url=url).validate()
 
-    def test_fallback_ollama_cubre_request_urlopen_y_parseo(self):
-        class RespuestaRota:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *args):
-                return False
-
-            def read(self):
-                return b"{"
-
+    def test_fallback_ollama_cubre_preparacion_transporte_y_resultado(self):
         casos = (
-            ("request",
-             mock.patch("urllib.request.Request",
-                        side_effect=ValueError("URL mutada"))),
-            ("urlopen",
-             mock.patch("urllib.request.urlopen",
-                        side_effect=OSError("offline"))),
-            ("parseo",
-             mock.patch("urllib.request.urlopen",
-                        return_value=RespuestaRota())),
+            ("preparacion",
+             mock.patch("json.dumps",
+                        side_effect=ValueError("request inválida"))),
+            ("transporte",
+             mock.patch(
+                 "parlar.procesador_texto._ejecutar_ollama_aislado",
+                 side_effect=OSError("offline"))),
+            ("resultado",
+             mock.patch(
+                 "parlar.procesador_texto._ejecutar_ollama_aislado",
+                 return_value=None)),
         )
         for nombre, parche in casos:
             with self.subTest(nombre=nombre), parche, \
@@ -251,7 +243,7 @@ class ConfigTemporal(unittest.TestCase):
             mutado = ProcesadorTexto(
                 rewrite_mode="formal", ollama_model="modelo", ollama_url=":")
             self.assertEqual(mutado.procesar_frase("ok").texto, "De acuerdo")
-        self.assertIn("ValueError", diagnostico.getvalue())
+        self.assertIn("OSError", diagnostico.getvalue())
 
     def test_guardado_atomico_y_permisos_bajo_umask_cero(self):
         reemplazo_real = os.replace

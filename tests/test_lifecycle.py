@@ -518,6 +518,43 @@ class PruebasApp(unittest.TestCase):
         self.assertFalse(hilo.is_alive())
         self.assertTrue(guionar.cerrado.is_set())
 
+    def test_cancel_espera_entrega_en_curso_y_restart_queda_intacto(self):
+        inyector = SalidaFalsa(bloquear=True)
+        app, mic, _, _, _, guionar, sesion, _ = self.app(
+            inyector=inyector)
+        self.assertTrue(app.iniciar_grabacion())
+        mic.enviar(11)
+        mic.enviar(0)
+        self.assertTrue(inyector.escritura_iniciada.wait(2))
+
+        cancel_iniciado = threading.Event()
+        cancel_terminado = threading.Event()
+
+        def cancelar():
+            cancel_iniciado.set()
+            app.cancelar_grabacion()
+            cancel_terminado.set()
+
+        hilo = threading.Thread(target=cancelar)
+        hilo.start()
+        self.assertTrue(cancel_iniciado.wait(2))
+        self.assertFalse(cancel_terminado.wait(0.05))
+
+        inyector.liberar_escritura.set()
+        hilo.join(2)
+        self.assertFalse(hilo.is_alive())
+        self.assertEqual(inyector.textos, ["U:11"])
+        self.assertEqual(guionar.textos, ["U:11"])
+        self.assertEqual(sesion.textos, ["U:11"])
+        self.assertEqual(app.estado, EstadoApp.IDLE)
+
+        sesion.escrito.clear()
+        self.assertTrue(app.iniciar_grabacion())
+        mic.enviar(101)
+        mic.enviar(0)
+        self.assertTrue(sesion.escrito.wait(2))
+        self.assertEqual(sesion.textos, ["U:11", "U:101"])
+
     def test_shutdown_doble_start_posterior_y_cero_output(self):
         app, mic, _, _, _, _, sesion, _ = self.app()
         app.iniciar_grabacion()

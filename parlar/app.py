@@ -22,17 +22,14 @@ from enum import Enum
 from typing import Optional
 
 from .capturador_audio import CapturadorMic, Segmentador, crear_vad
-from .cliente_guionar import crear_cliente
+from .coordinador_salida import crear_coordinador_salida
 from .config import Config
 from .control import ServidorControl, normalizar_comando
 from .control_gesto_dictado import ControlGestoDictado
 from .daemon_atajos import DaemonAtajos
-from .entrega import EstadoEntrega, ResultadoDistribucion, ResultadoSink
 from .indicador import crear_ui
-from .inyector_salida import Inyector
 from .motor_transcripcion import MotorWhisper, TranscriptorFrase, TranscriptorStreaming
 from .procesador_texto import ProcesadorTexto
-from .sesion import crear_salida_sesion
 
 
 class EstadoApp(str, Enum):
@@ -54,8 +51,6 @@ class App:
         self.cfg = cfg
         self.grabando = threading.Event()
         self.saliendo = threading.Event()
-        self._necesita_espacio = False
-        self.ultima_entrega = ResultadoDistribucion.omitido()
 
         self._transicion_lock = threading.Lock()
         self._estado_cv = threading.Condition()
@@ -101,11 +96,12 @@ class App:
         self.proc = proc or ProcesadorTexto(
             cfg.remove_fillers, cfg.voice_commands, cfg.rewrite_mode,
             cfg.ollama_model, cfg.ollama_url, cfg.comando_enviar)
-        self.inyector = inyector or Inyector(
-            cfg.injector, cfg.type_delay_ms, cfg.notify, cfg.comando_enviar)
-        self.guionar = guionar or crear_cliente(cfg.guionar, cfg.guionar_socket)
-        self.sesion = sesion or crear_salida_sesion(cfg.guardar_sesion)
-        self.salidas = [self.inyector, self.guionar, self.sesion]
+        self.salida = crear_coordinador_salida(
+            cfg,
+            inyector=inyector,
+            guionar=guionar,
+            sesion=sesion,
+        )
         if cfg.guionar:
             print(f"[guionar] integración activa (socket: {self.guionar.ruta})")
         self.mic = mic or CapturadorMic(cfg.sample_rate, cfg.frame_samples)
@@ -131,6 +127,26 @@ class App:
     def estado(self) -> EstadoApp:
         with self._estado_cv:
             return self._estado
+
+    @property
+    def inyector(self):
+        return self.salida.inyector
+
+    @property
+    def guionar(self):
+        return self.salida.guionar
+
+    @property
+    def sesion(self):
+        return self.salida.sesion
+
+    @property
+    def ultima_entrega(self):
+        return self.salida.ultima_entrega
+
+    @property
+    def _necesita_espacio(self):
+        return self.salida.necesita_espacio
 
     @property
     def generacion_activa(self) -> Optional[int]:
@@ -225,9 +241,8 @@ class App:
                     self._estado_cv.notify_all()
                 if anterior is not None:
                     self.mic.descartar_pendientes(anterior)
-                    self.guionar.enviar_parcial("")
-                self.inyector.reiniciar_registro()
-                self._necesita_espacio = False
+                self.salida.iniciar_generacion(
+                    limpiar_parcial=anterior is not None)
 
             try:
                 abierta = self.mic.iniciar(generacion)
@@ -389,15 +404,7 @@ class App:
                     self._estado_cv.notify_all()
 
             if not ya_detenido:
-                self.guionar.enviar_parcial("")
-
-                cancelar_unidad = getattr(
-                    self.inyector,
-                    "cancelar_unidad",
-                    None,
-                )
-                if cancelar_unidad:
-                    cancelar_unidad()
+                self.salida.cancelar_generacion()
 
         # También elimina continuo/doble-tap/timers pendientes.
         gesto = getattr(
@@ -551,21 +558,21 @@ class App:
                 except BaseException as exc:
                     self._registrar_error_shutdown("worker", exc)
 
-            recursos = [
+            recursos = (
                 ("control", self.control.detener),
                 ("hotkeys", self.atajos.detener),
-            ]
-            recursos.extend(
-                (nombre, salida.cerrar)
-                for nombre, salida in zip(
-                    ("inyector", "guionar", "sesion"), self.salidas)
             )
-            recursos.append(("ui", self.ui.cerrar))
             for nombre, cerrar in recursos:
                 try:
                     cerrar()
                 except BaseException as exc:
                     self._registrar_error_shutdown(nombre, exc)
+            for nombre, exc in self.salida.cerrar():
+                self._registrar_error_shutdown(nombre, exc)
+            try:
+                self.ui.cerrar()
+            except BaseException as exc:
+                self._registrar_error_shutdown("ui", exc)
         finally:
             with self._estado_cv:
                 if self._shutdown_errores:
@@ -669,9 +676,7 @@ class App:
                     if evento.tipo == "inicio_voz":
                         modo_unidad = modo_entre_unidades
                         self._iniciar_contexto_texto()
-                        iniciar_unidad = getattr(self.inyector, "iniciar_unidad", None)
-                        if iniciar_unidad:
-                            iniciar_unidad(generacion)
+                        self.salida.iniciar_unidad(generacion)
                         self._evento_vad(True, generacion)
                     elif evento.tipo == "frame_voz" and modo_unidad == "streaming":
                         self.streaming.aceptar_audio(evento.audio)
@@ -715,10 +720,8 @@ class App:
         self._reiniciar_streaming()
         with self._salida_lock:
             if self._puede_emit(generacion):
-                self.guionar.enviar_parcial("")
-                cancelar = getattr(self.inyector, "cancelar_unidad", None)
-                if cancelar:
-                    cancelar()
+                self.salida.enviar_parcial("")
+                self.salida.cancelar_unidad()
         return None, self._modo_de(generacion)
 
     def _cerrar_unidad(self, audio, modo: Optional[str], generacion: int):
@@ -731,9 +734,7 @@ class App:
             try:
                 self._finalizar_contexto_texto()
             finally:
-                finalizar = getattr(self.inyector, "finalizar_unidad", None)
-                if finalizar:
-                    finalizar()
+                self.salida.finalizar_unidad()
 
     def _atender_frase(self, audio, generacion: int):
         self._estado_visual_si_vigente("transcribing", generacion)
@@ -769,7 +770,7 @@ class App:
         parcial = self.streaming.hipotesis_pendiente()
         with self._salida_lock:
             if self._puede_emit(generacion):
-                self.guionar.enviar_parcial(parcial)
+                self.salida.enviar_parcial(parcial)
 
     def _vaciar_streaming(self, generacion: int):
         antes = self._snapshot_streaming()
@@ -786,7 +787,7 @@ class App:
             if not self._puede_emit(generacion):
                 print(f"[app] resultado stale descartado (sesión {generacion})")
                 return
-            self.guionar.enviar_parcial("")
+            self.salida.enviar_parcial("")
             if cola:
                 texto = self.proc.procesar_fragmento(cola)
                 if texto:
@@ -801,51 +802,7 @@ class App:
             return True
 
     def _escribir_en_todas_bajo_lock(self, texto: str):
-        return self._distribuir_texto(texto, texto, registrar=False)
-
-    @staticmethod
-    def _resultado_inyector(valor) -> EstadoEntrega:
-        if isinstance(valor, ResultadoSink):
-            return valor.estado
-        return EstadoEntrega.INSERTED if valor else EstadoEntrega.FAILED
-
-    @staticmethod
-    def _intentar_sink(funcion, exito: EstadoEntrega) -> EstadoEntrega:
-        try:
-            resultado = funcion()
-            if isinstance(resultado, ResultadoSink):
-                return resultado.estado
-            return exito if resultado is not False else EstadoEntrega.FAILED
-        except Exception as exc:
-            print(f"[app] salida {exito.value} falló: {type(exc).__name__}",
-                  file=sys.stderr)
-            return EstadoEntrega.FAILED
-
-    def _distribuir_texto(self, texto_inyector: str, texto_confirmado: str,
-                          *, registrar: bool = True) -> ResultadoDistribucion:
-        try:
-            inyector = self._resultado_inyector(
-                self.inyector.escribir_texto(texto_inyector, registrar=registrar))
-        except Exception as exc:
-            print(f"[app] salida inserted falló: {type(exc).__name__}",
-                  file=sys.stderr)
-            inyector = EstadoEntrega.FAILED
-        guionar = (EstadoEntrega.SKIPPED if getattr(self.guionar, "es_nulo", False)
-                   else self._intentar_sink(
-                       lambda: self.guionar.escribir_texto(texto_confirmado),
-                       EstadoEntrega.MIRRORED))
-        sesion = (EstadoEntrega.SKIPPED if getattr(self.sesion, "es_nulo", False)
-                  else self._intentar_sink(
-                      lambda: self.sesion.escribir_texto(texto_confirmado),
-                      EstadoEntrega.PERSISTED))
-        resultado = ResultadoDistribucion(inyector, guionar, sesion)
-        self.ultima_entrega = resultado
-        return resultado
-
-    @staticmethod
-    def _admite_separador_prosa(texto: str) -> bool:
-        """Limita el espacio automático a texto lineal, no estructurado."""
-        return not any(marca in texto for marca in ("\n", "\r", "\t"))
+        return self.salida.entregar_fragmento(texto)
 
     # ------------------------------------------------------------ emisión
 
@@ -856,37 +813,24 @@ class App:
         with self._salida_lock:
             if not self._puede_emit(generacion):
                 print(f"[app] resultado stale descartado (sesión {generacion})")
-                self.ultima_entrega = ResultadoDistribucion.omitido()
-                return self.ultima_entrega
+                return self.salida.omitir()
             if p.comando == "nueva_linea":
                 if not self.cfg.comando_enviar:
-                    self.ultima_entrega = ResultadoDistribucion.omitido()
-                    return self.ultima_entrega
+                    return self.salida.omitir()
                 cantidad = p.carga.count("\n") if p.carga else 1
-                self.inyector.nueva_linea(cantidad)
-                self._necesita_espacio = False
+                self.salida.nueva_linea(cantidad)
                 return
             if p.comando == "borrar_ultima":
-                if not self.inyector.borrar_ultima_oracion():
+                if not self.salida.borrar_ultima_oracion():
                     print("[app] no hay nada para borrar")
                 return
             if p.comando == "enviar":
                 if not self.cfg.comando_enviar:
-                    self.ultima_entrega = ResultadoDistribucion.omitido()
-                    return self.ultima_entrega
-                self.inyector.presionar_enter()
-                self._necesita_espacio = False
+                    return self.salida.omitir()
+                self.salida.presionar_enter()
                 return
             if p.texto:
-                agregar_espacio = (
-                    self._necesita_espacio
-                    and self._admite_separador_prosa(p.texto)
-                )
-                salida = (" " + p.texto) if agregar_espacio else p.texto
-                resultado = self._distribuir_texto(salida, p.texto)
-                if resultado.inyector == EstadoEntrega.INSERTED:
-                    self._necesita_espacio = True
-                return resultado
+                return self.salida.entregar_texto(p.texto)
 
     # ------------------------------------------------------------ estado interno
 
@@ -1029,8 +973,7 @@ class App:
         with self._salida_lock:
             if not self._puede_emit(generacion):
                 return
-            for salida in self.salidas:
-                salida.evento_vad(hablando)
+            self.salida.evento_vad(hablando)
             self.ui.fijar_estado("recording")
 
     def _estado_visual_si_vigente(self, estado: str, generacion: int):

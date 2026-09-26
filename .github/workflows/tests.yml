@@ -6,20 +6,82 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
-  test:
+  gate:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.14"]
+
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: python -m pip install --disable-pip-version-check -r requirements.txt
 
       - name: Run the same quality gate as local development
         env:
           PARLAR_PYTHON: python
         run: ./scripts/check.sh
+
+  wheel-contract:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install pinned wheel build toolchain
+        run: >-
+          python -m pip install --disable-pip-version-check
+          setuptools==84.0.0 wheel==0.48.0
+
+      - name: Build and inspect wheel
+        run: |
+          WHEEL_DIR="$RUNNER_TEMP/parlar-dist"
+          mkdir -p "$WHEEL_DIR"
+          SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
+          export SOURCE_DATE_EPOCH
+          echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH"
+          python -m pip wheel \
+            --no-deps \
+            --no-build-isolation \
+            --wheel-dir "$WHEEL_DIR" \
+            .
+          python scripts/check_wheel_contract.py \
+            wheel "$WHEEL_DIR" pyproject.toml
+
+      - name: Install the built wheel in a clean venv
+        run: |
+          WHEEL_DIR="$RUNNER_TEMP/parlar-dist"
+          SMOKE_VENV="$RUNNER_TEMP/parlar-wheel-smoke"
+          python -m venv "$SMOKE_VENV"
+          "$SMOKE_VENV/bin/python" -m pip install \
+            --disable-pip-version-check \
+            "$WHEEL_DIR"/parlar-*.whl
+
+      - name: Smoke installed artifact outside the checkout
+        run: |
+          SMOKE_VENV="$RUNNER_TEMP/parlar-wheel-smoke"
+          SMOKE_DIR="$RUNNER_TEMP/parlar-smoke"
+          mkdir -p "$SMOKE_DIR"
+          cp scripts/check_wheel_contract.py \
+            "$RUNNER_TEMP/check_wheel_contract.py"
+          cd "$SMOKE_DIR"
+          unset PYTHONPATH
+          "$SMOKE_VENV/bin/python" \
+            "$RUNNER_TEMP/check_wheel_contract.py" \
+            installed "$GITHUB_WORKSPACE/pyproject.toml" "$GITHUB_WORKSPACE"
+          "$SMOKE_VENV/bin/parlar" --help
+          "$SMOKE_VENV/bin/parlarctl" --help

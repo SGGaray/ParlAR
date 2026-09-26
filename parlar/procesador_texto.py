@@ -11,11 +11,20 @@ voz son español-primero, con equivalentes en inglés como respaldo.
 """
 
 import json
+import os
 import re
+import subprocess
 import sys
+import time
 import urllib.request
 from dataclasses import dataclass
 from typing import Optional
+
+# Una request real de 2.000 caracteres ronda 2,2 KiB. 64 KiB deja margen
+# holgado para la respuesta de una utterance acotada a 30 s, sin aceptar MB.
+_OLLAMA_MAX_RESPONSE_BYTES = 64 * 1024
+_OLLAMA_DEADLINE_S = 20.0
+_OLLAMA_READ_CHUNK_BYTES = 8 * 1024
 
 MULETILLAS = re.compile(
     r"\b(um+|uh+|erm+|hmm+|eh+|este{2,}|em|mmm+|ehm)\b[,.]?\s*", re.IGNORECASE
@@ -76,6 +85,108 @@ class _EstadoLiteral:
 
     cierre: Optional[str] = None
     escapado: bool = False
+
+
+def _socket_respuesta_http(respuesta):
+    """Obtiene el socket stdlib para acotar cada lectura al tiempo restante."""
+    fp = getattr(respuesta, "fp", None)
+    raw = getattr(fp, "raw", None)
+    return getattr(raw, "_sock", None) or getattr(fp, "_sock", None)
+
+
+def _leer_json_ollama(respuesta, deadline: float):
+    """Lee un JSON acotado sin permitir que el progreso reinicie el deadline."""
+    headers = getattr(respuesta, "headers", None)
+    declarado = headers.get("Content-Length") if headers is not None else None
+    cantidad_declarada = None
+    if declarado is not None:
+        cantidad_declarada = int(declarado)
+        if (cantidad_declarada < 0
+                or cantidad_declarada > _OLLAMA_MAX_RESPONSE_BYTES):
+            raise ValueError("respuesta Ollama excede el límite")
+
+    leer = getattr(respuesta, "read1", None)
+    if not callable(leer):
+        leer = respuesta.read
+    sock = _socket_respuesta_http(respuesta)
+    cuerpo = bytearray()
+
+    while True:
+        restante = deadline - time.monotonic()
+        if restante <= 0:
+            raise TimeoutError("deadline total de Ollama agotado")
+        if sock is not None:
+            sock.settimeout(restante)
+        faltante = _OLLAMA_MAX_RESPONSE_BYTES + 1 - len(cuerpo)
+        trozo = leer(min(_OLLAMA_READ_CHUNK_BYTES, faltante))
+        if time.monotonic() > deadline:
+            raise TimeoutError("deadline total de Ollama agotado")
+        if not trozo:
+            if (cantidad_declarada is not None
+                    and len(cuerpo) != cantidad_declarada):
+                raise ValueError("respuesta Ollama truncada")
+            break
+        cuerpo.extend(trozo)
+        if len(cuerpo) > _OLLAMA_MAX_RESPONSE_BYTES:
+            raise ValueError("respuesta Ollama excede el límite")
+        if (cantidad_declarada is not None
+                and len(cuerpo) == cantidad_declarada):
+            break
+
+    data = json.loads(bytes(cuerpo).decode("utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("respuesta Ollama no es un objeto JSON")
+    return data
+
+
+def _ejecutar_ollama_aislado(
+        url: str, cuerpo: bytes, deadline: float) -> str:
+    """Ejecuta urllib fuera del worker y garantiza kill+reap al deadline."""
+    restante = deadline - time.monotonic()
+    if restante <= 0:
+        raise TimeoutError("deadline total de Ollama agotado")
+
+    entrada = url.encode("utf-8") + b"\n" + cuerpo
+    entorno = os.environ.copy()
+    # El cache alternativo del proceso principal puede estar vacío (como en
+    # el gate) y consumir todo un deadline corto recompilando stdlib. El hijo
+    # puede leer el __pycache__ normal sin alterar proxy/TLS ni otras vars.
+    entorno.pop("PYTHONPYCACHEPREFIX", None)
+    proceso = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "parlar.ollama_transport",
+            repr(restante),
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        env=entorno,
+    )
+    try:
+        restante = deadline - time.monotonic()
+        if restante <= 0:
+            raise subprocess.TimeoutExpired(proceso.args, 0)
+        salida, _ = proceso.communicate(entrada, timeout=restante)
+    except subprocess.TimeoutExpired as exc:
+        proceso.kill()
+        proceso.communicate()
+        raise TimeoutError("deadline total de Ollama agotado") from exc
+    except BaseException:
+        if proceso.poll() is None:
+            proceso.kill()
+        proceso.communicate()
+        raise
+
+    if time.monotonic() > deadline:
+        raise TimeoutError("deadline total de Ollama agotado")
+    if proceso.returncode != 0:
+        raise OSError("transporte Ollama aislado falló")
+    if len(salida) > _OLLAMA_MAX_RESPONSE_BYTES:
+        raise ValueError("respuesta Ollama excede el límite")
+    return salida.decode("utf-8")
 
 
 def _normalizar_espaciado(texto: str) -> str:
@@ -471,20 +582,17 @@ class ProcesadorTexto:
         prompt = prompts.get(self.rewrite_mode)
         if not prompt:
             return None
-        cuerpo = json.dumps({
-            "model": self.ollama_model,
-            "prompt": f"{prompt}\n\nTexto: {texto}",
-            "stream": False,
-            "options": {"temperature": 0.2},
-        }).encode()
         try:
-            req = urllib.request.Request(
-                f"{self.ollama_url}/api/generate", data=cuerpo,
-                headers={"Content-Type": "application/json"},
-            )
-            with urllib.request.urlopen(req, timeout=20) as resp:
-                data = json.loads(resp.read())
-            return data.get("response", "").strip() or None
+            deadline = time.monotonic() + _OLLAMA_DEADLINE_S
+            cuerpo = json.dumps({
+                "model": self.ollama_model,
+                "prompt": f"{prompt}\n\nTexto: {texto}",
+                "stream": False,
+                "options": {"temperature": 0.2},
+            }).encode()
+            respuesta = _ejecutar_ollama_aislado(
+                f"{self.ollama_url}/api/generate", cuerpo, deadline)
+            return respuesta.strip() or None
         except Exception as exc:
             print(
                 f"[procesador] Ollama no disponible ({type(exc).__name__}); "

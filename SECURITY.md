@@ -1,8 +1,27 @@
 # Política de seguridad de ParlAR
 
+## Versiones soportadas
+
+| Versión | Soporte de seguridad |
+| --- | --- |
+| Release pública más reciente (`v1.0.1`) | Sí |
+| Releases anteriores | No, salvo indicación explícita |
+| `main` y otras ramas de desarrollo | No son releases soportadas |
+
+ParlAR es un proyecto personal en evolución. Las correcciones de seguridad se
+dirigen a la release pública más reciente.
+
 ## Modelo de amenaza
 
-ParlAR escucha el micrófono de forma continua mientras está grabando e inyecta el texto transcripto en la ventana que tenga el foco del sistema. Esto significa que el atacante relevante no es "alguien en la red" (nada de ParlAR escucha en la red, todo es local), sino **audio ambiente que termina convirtiéndose en texto o en una acción sobre la ventana enfocada**.
+ParlAR escucha el micrófono de forma continua mientras está grabando e inyecta
+el texto transcripto en la ventana que tenga el foco del sistema. Es un
+producto local-first: no expone un listener de red y la captura y transcripción
+son locales por defecto. No se presenta como 100 % offline porque la
+reescritura con Ollama puede apuntar a un servicio remoto configurado por el
+usuario y la instalación puede descargar paquetes y modelos.
+
+El riesgo principal es el audio ambiente que termina convertido en texto o en
+una acción sobre la ventana enfocada.
 
 Ejemplos concretos del riesgo:
 - Una radio, un video, o una conversación de fondo capturados por el micrófono mientras ParlAR está grabando.
@@ -45,9 +64,10 @@ reescribe sale de la máquina hacia ese servicio. ParlAR no promete privacidad
 ni tratamiento local para un endpoint configurado por el usuario.
 
 La instalación y el provisioning pueden descargar dependencias y modelos.
-GuionAR se comunica por IPC Unix local. El portapapeles y la aplicación destino
-son procesos externos: ParlAR no controla cómo persisten o sincronizan el texto
-que reciben.
+GuionAR se comunica por IPC Unix local y valida que el peer use el mismo UID.
+Para este modelo, los procesos del mismo UID forman parte del mismo dominio de
+confianza. El portapapeles y la aplicación destino son procesos externos:
+ParlAR no controla cómo persisten o sincronizan el texto que reciben.
 
 En X11, un exit code exitoso de `xclip` y del Ctrl+V sintético de `xdotool` no
 confirma que la aplicación enfocada haya insertado el texto. Esa ruta se trata
@@ -113,6 +133,35 @@ ParlAR queda `0700`.
 - El filtro de alucinaciones es heurístico, no elimina el riesgo, lo reduce.
 - Si grabás en un ambiente con audio de terceros (oficina, videollamada), ParlAR va a transcribir e inyectar esa voz igual que la tuya. La responsabilidad de cuándo grabar es del usuario.
 
-## Reportar un problema
+## Reportar una vulnerabilidad
 
-Si encontrás un problema de seguridad, abrí un issue en el repositorio describiendo el escenario. Al ser un proyecto personal sin usuarios más allá de quien lo instale, no hay un proceso formal de disclosure todavía.
+Usá [GitHub Private Vulnerability Reporting](https://github.com/SGGaray/ParlAR/security/advisories/new)
+como canal primario. El reporte y sus comentarios quedan disponibles para el
+responsable del repositorio y las personas incorporadas al advisory.
+
+Como canal privado alternativo, podés escribir a
+[security@sggaray.com](mailto:security@sggaray.com).
+
+No publiques vulnerabilidades ni detalles sensibles en un issue. Los issues
+públicos quedan reservados para bugs ordinarios que no expongan información
+confidencial ni instrucciones de explotación.
+
+### Qué incluir
+
+- Versión instalada o commit afectado.
+- Sistema operativo y entorno gráfico relevante.
+- Precondiciones y pasos mínimos para reproducir el problema.
+- Impacto observado.
+- Logs sanitizados.
+- Una prueba de concepto con datos sintéticos, cuando sea posible.
+
+### Qué no incluir
+
+Usá sentinels y datos sintéticos si permiten reproducir el problema. No envíes
+audio real, transcripts reales, texto dictado privado, API keys, tokens,
+credenciales ni datos personales.
+
+ParlAR no tiene bug bounty ni ofrece recompensas. Tampoco hay un SLA
+contractual de respuesta. El responsable del repositorio intentará acusar
+recibo y coordinar la divulgación, pero no se compromete a plazos fijos. Esta
+política no implica que el proyecto esté auditado o certificado.

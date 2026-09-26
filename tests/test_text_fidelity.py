@@ -55,7 +55,7 @@ def transcribir(*segmentos):
 
 class RespuestaOllamaFalsa:
     def __init__(self, texto):
-        self.texto = texto
+        self.data = json.dumps({"response": texto}).encode()
 
     def __enter__(self):
         return self
@@ -63,8 +63,9 @@ class RespuestaOllamaFalsa:
     def __exit__(self, *args):
         return False
 
-    def read(self):
-        return json.dumps({"response": self.texto}).encode()
+    def read1(self, cantidad):
+        trozo, self.data = self.data[:cantidad], self.data[cantidad:]
+        return trozo
 
 
 class PruebasLiteral(unittest.TestCase):
@@ -264,14 +265,15 @@ class PruebasRewrite(unittest.TestCase):
             rewrite_mode="formal", ollama_model="modelo-falso",
             voice_commands=False)
         with mock.patch(
-                "urllib.request.urlopen",
-                return_value=RespuestaOllamaFalsa("Texto transformado")):
+                "parlar.procesador_texto._ejecutar_ollama_aislado",
+                return_value="Texto transformado"):
             self.assertEqual(
                 procesador.procesar_frase("texto original").texto,
                 "Texto transformado",
             )
         with mock.patch(
-                "urllib.request.urlopen", side_effect=OSError("offline")):
+                "parlar.procesador_texto._ejecutar_ollama_aislado",
+                side_effect=OSError("offline")):
             self.assertEqual(
                 procesador.procesar_frase("ok porfa").texto,
                 "De acuerdo por favor",

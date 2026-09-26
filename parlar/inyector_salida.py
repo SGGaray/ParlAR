@@ -375,7 +375,8 @@ class Inyector:
     def _copiar_con(herramienta: List[str], texto: str) -> bool:
         try:
             subprocess.run(
-                herramienta, input=texto.encode(), check=True, timeout=5)
+                herramienta, input=texto.encode(), check=True, timeout=5,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception as e:
             print(f"[inyector] portapapeles falló: {type(e).__name__}",
                   file=sys.stderr)

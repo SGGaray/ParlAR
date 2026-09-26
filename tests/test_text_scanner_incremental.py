@@ -6,6 +6,7 @@ import unittest
 from types import SimpleNamespace
 
 from parlar.app import App
+from parlar.coordinador_salida import CoordinadorSalida
 from parlar.procesador_texto import (
     ProcesadorTexto, _proteger_regiones_citadas,
 )
@@ -57,11 +58,9 @@ class SinkTexto:
 def app_efectos():
     app = App.__new__(App)
     app._salida_lock = threading.RLock()
-    app._necesita_espacio = False
     app.cfg = SimpleNamespace(comando_enviar=True)
-    app.inyector = InyectorEfectos()
-    app.guionar = SinkTexto()
-    app.sesion = SinkTexto()
+    app.salida = CoordinadorSalida(
+        InyectorEfectos(), SinkTexto(), SinkTexto())
     app._puede_emit = lambda generacion: generacion == 1
     app.stops = 0
     app.detener_grabacion = (

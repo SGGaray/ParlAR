@@ -14,7 +14,7 @@ from parlar.procesador_texto import ProcesadorTexto
 
 class RespuestaOllamaFalsa:
     def __init__(self, texto):
-        self.texto = texto
+        self.data = json.dumps({"response": texto}).encode()
 
     def __enter__(self):
         return self
@@ -22,8 +22,9 @@ class RespuestaOllamaFalsa:
     def __exit__(self, *args):
         return False
 
-    def read(self):
-        return json.dumps({"response": self.texto}).encode()
+    def read1(self, cantidad):
+        trozo, self.data = self.data[:cantidad], self.data[cantidad:]
+        return trozo
 
 
 class PruebasReturnFisico(unittest.TestCase):
@@ -170,8 +171,8 @@ class PruebasReturnFisico(unittest.TestCase):
             rewrite_mode="formal", ollama_model="modelo-falso",
             voice_commands=False)
         with mock.patch(
-                "urllib.request.urlopen",
-                return_value=RespuestaOllamaFalsa("Hola.\nSaludos.")):
+                "parlar.procesador_texto._ejecutar_ollama_aislado",
+                return_value="Hola.\nSaludos."):
             texto = procesador.procesar_frase("hola").texto
         self.assertEqual(texto, "Hola.\nSaludos.")
 
@@ -196,7 +197,8 @@ class PruebasReturnFisico(unittest.TestCase):
         for permitir in (False, True):
             with self.subTest(permitir=permitir):
                 cfg = Config(comando_enviar=permitir)
-                with mock.patch("parlar.app.Inyector") as constructor:
+                with mock.patch(
+                        "parlar.coordinador_salida.Inyector") as constructor:
                     App(cfg, motor=object(), **dependencias)
                 constructor.assert_called_once_with(
                     cfg.injector, cfg.type_delay_ms, cfg.notify, permitir)

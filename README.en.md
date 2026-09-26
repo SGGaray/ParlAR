@@ -267,6 +267,8 @@ Normal logs contain states, timings, and error types, not dictated audio or
 text. `--save-session` is opt-in and writes `0600` plaintext under
 `$XDG_DATA_HOME/parlar/sesiones/`. ParlAR neither encrypts nor deletes those
 files. See [SECURITY.md](SECURITY.md) for the complete threat model.
+Use the private channel documented there to report a vulnerability. Do not put
+sensitive details in a public issue.
 
 ## Troubleshooting
 

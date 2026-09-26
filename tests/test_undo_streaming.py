@@ -8,6 +8,7 @@ from unittest import mock
 import numpy as np
 
 from parlar.app import App
+from parlar.coordinador_salida import CoordinadorSalida
 from parlar.entrega import EstadoEntrega
 from parlar.inyector_salida import Inyector
 from parlar.motor_transcripcion import TranscriptorStreaming
@@ -22,11 +23,8 @@ class SinkNulo:
 def app_minima(inyector):
     app = App.__new__(App)
     app._salida_lock = threading.RLock()
-    app._necesita_espacio = False
     app.cfg = SimpleNamespace(comando_enviar=False)
-    app.inyector = inyector
-    app.guionar = SinkNulo()
-    app.sesion = SinkNulo()
+    app.salida = CoordinadorSalida(inyector, SinkNulo(), SinkNulo())
     app.proc = ProcesadorTexto()
     app._puede_emit = lambda generacion: generacion == 1
     return app
