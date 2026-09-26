@@ -6,18 +6,26 @@ los cambios se escriben para el próximo inicio mediante ``settings_backend``.
 """
 
 import dataclasses
+import queue
 import sys
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from .audio_test import PruebaMicrofono
 from .settings_backend import (
+    DispositivoEntrada,
+    ErrorDispositivosAudio,
+    ResolucionEntrada,
     ResultadoPersistencia,
     SettingsCapabilities,
     SettingsSnapshot,
     cargar_configuracion_actual,
     construir_configuracion_candidata,
+    listar_dispositivos_entrada,
     obtener_capacidades,
     persistir_configuracion,
+    resolver_dispositivo_entrada,
     requiere_reinicio,
     snapshot_configuracion,
 )
@@ -38,6 +46,281 @@ class ValoresFormulario:
     guionar: bool
     guionar_socket: str
     guardar_sesion: bool
+    audio_input_device: str = "default"
+
+
+@dataclass(frozen=True, slots=True)
+class OpcionEntrada:
+    valor: str
+    etiqueta: str
+    disponible: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ResultadoInventario:
+    dispositivos: tuple[DispositivoEntrada, ...]
+    error: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class EstadoControlPrueba:
+    fase: str
+    nivel: float
+    error: str | None
+    indice: int | None
+    seleccion: str | None
+
+
+def cargar_inventario_entradas(
+        listar: Callable = listar_dispositivos_entrada) -> ResultadoInventario:
+    """Enumera sin impedir que Settings abra si PortAudio no está disponible."""
+    try:
+        return ResultadoInventario(tuple(listar()), None)
+    except ErrorDispositivosAudio as exc:
+        return ResultadoInventario((), str(exc))
+
+
+def _etiqueta_dispositivo(dispositivo: DispositivoEntrada) -> str:
+    if dispositivo.host_api:
+        return f"{dispositivo.nombre} — {dispositivo.host_api}"
+    return dispositivo.nombre
+
+
+def construir_opciones_entrada(
+        seleccion: str,
+        inventario: tuple[DispositivoEntrada, ...],
+) -> tuple[OpcionEntrada, ...]:
+    """Mapea identidad persistible a etiquetas; nunca publica índices."""
+    opciones = [OpcionEntrada(
+        valor="default",
+        etiqueta="Predeterminado del sistema",
+        disponible=True,
+    )]
+    agrupados: dict[str, list[DispositivoEntrada]] = {}
+    for dispositivo in inventario:
+        agrupados.setdefault(dispositivo.identidad, []).append(dispositivo)
+    for identidad, dispositivos in agrupados.items():
+        etiqueta = _etiqueta_dispositivo(dispositivos[0])
+        if len(dispositivos) > 1:
+            etiqueta += f" (ambigua: {len(dispositivos)} dispositivos)"
+        opciones.append(OpcionEntrada(
+            valor=identidad,
+            etiqueta=etiqueta,
+            disponible=len(dispositivos) == 1,
+        ))
+    if seleccion != "default" and seleccion not in agrupados:
+        opciones.insert(1, OpcionEntrada(
+            valor=seleccion,
+            etiqueta="Micrófono guardado no disponible",
+            disponible=False,
+        ))
+    return tuple(opciones)
+
+
+def _indice_opcion_audio(
+        opciones: tuple[OpcionEntrada, ...], valor: str) -> int:
+    return next(
+        (indice for indice, opcion in enumerate(opciones)
+         if opcion.valor == valor),
+        -1,
+    )
+
+
+def mensaje_resolucion_entrada(
+        resolucion: ResolucionEntrada,
+        *,
+        error_inventario: str | None = None,
+) -> str:
+    if error_inventario:
+        return f"No se pudo obtener el inventario de micrófonos: {error_inventario}"
+    if resolucion.usando_fallback and resolucion.dispositivo is not None:
+        if resolucion.motivo == "seleccion_ambigua":
+            causa = "La selección coincide con varios dispositivos"
+        else:
+            causa = "El micrófono guardado no está disponible"
+        return (
+            f"{causa}. La prueba usará temporalmente "
+            f"{_etiqueta_dispositivo(resolucion.dispositivo)}."
+        )
+    mensajes = {
+        "inventario_vacio": "No se detectaron dispositivos de entrada.",
+        "default_no_disponible": (
+            "No hay un dispositivo de entrada predeterminado disponible."),
+        "default_ambiguo": (
+            "El dispositivo predeterminado es ambiguo y no puede probarse."),
+        "seleccion_ausente_inventario_vacio": (
+            "El micrófono guardado no está disponible y no se detectaron entradas."),
+        "seleccion_ausente_default_no_disponible": (
+            "El micrófono guardado no está disponible y no hay un default válido."),
+        "seleccion_ambigua_default_no_disponible": (
+            "La selección es ambigua y no hay un default válido."),
+    }
+    return mensajes.get(resolucion.motivo, "")
+
+
+def guardado_habilitado(
+        *, sucio: bool, fase_audio: str, cerrando: bool = False) -> bool:
+    """Permite guardar con prueba activa, no durante transiciones o cierre."""
+    return (
+        sucio
+        and not cerrando
+        and fase_audio not in {"starting", "stopping", "closing", "closed"}
+    )
+
+
+class ControlPruebaMicrofono:
+    """Serializa PortAudio en un worker y sólo publica estado thread-safe."""
+
+    def __init__(
+            self,
+            inventario: tuple[DispositivoEntrada, ...],
+            *,
+            prueba=None,
+            resolver: Callable = resolver_dispositivo_entrada):
+        self.inventario = tuple(inventario)
+        self._prueba = prueba or PruebaMicrofono()
+        self._resolver = resolver
+        self._cv = threading.Condition()
+        self._comandos = queue.Queue()
+        self._fase = "idle"
+        self._nivel = 0.0
+        self._error: str | None = None
+        self._indice: int | None = None
+        self._seleccion: str | None = None
+        self._cerrada = threading.Event()
+        self._worker = threading.Thread(
+            target=self._ejecutar,
+            name="settings-audio-test",
+            daemon=True,
+        )
+        self._worker.start()
+
+    def iniciar(self, seleccion: str) -> bool:
+        with self._cv:
+            if self._fase != "idle":
+                return False
+        resolucion = self._resolver(seleccion, self.inventario)
+        with self._cv:
+            if self._fase != "idle":
+                return False
+            if resolucion.indice is None:
+                self._error = (
+                    "No hay un dispositivo de entrada resoluble para la prueba "
+                    f"({resolucion.motivo or 'sin detalle'})."
+                )
+                self._cv.notify_all()
+                return False
+            self._fase = "starting"
+            self._nivel = 0.0
+            self._error = None
+            self._indice = resolucion.indice
+            self._seleccion = seleccion
+            self._comandos.put(("start", resolucion.indice))
+            self._cv.notify_all()
+            return True
+
+    def detener(self) -> bool:
+        with self._cv:
+            if self._fase not in {"starting", "active"}:
+                return False
+            self._fase = "stopping"
+            self._comandos.put(("stop", None))
+            self._cv.notify_all()
+            return True
+
+    def cerrar(self) -> bool:
+        with self._cv:
+            if self._fase in {"closing", "closed"}:
+                return False
+            self._fase = "closing"
+            self._comandos.put(("close", None))
+            self._cv.notify_all()
+            return True
+
+    def estado(self) -> EstadoControlPrueba:
+        try:
+            estado_prueba = self._prueba.estado()
+        except Exception as exc:
+            estado_prueba = None
+            error_estado = f"No se pudo consultar la prueba: {exc}"
+        else:
+            error_estado = None
+        with self._cv:
+            if self._fase == "active" and estado_prueba is not None:
+                self._nivel = estado_prueba.nivel
+                if not estado_prueba.activo:
+                    self._fase = "idle"
+                    self._error = estado_prueba.error
+                    self._indice = None
+                    self._seleccion = None
+                    self._cv.notify_all()
+            if error_estado is not None:
+                self._error = error_estado
+            return EstadoControlPrueba(
+                fase=self._fase,
+                nivel=self._nivel,
+                error=self._error,
+                indice=self._indice,
+                seleccion=self._seleccion,
+            )
+
+    def esperar_fase(self, fase: str, timeout: float = 2.0) -> bool:
+        with self._cv:
+            return self._cv.wait_for(lambda: self._fase == fase, timeout)
+
+    def esperar_cierre(self, timeout: float = 2.0) -> bool:
+        return self._cerrada.wait(timeout)
+
+    def _ejecutar(self):
+        while True:
+            operacion, indice = self._comandos.get()
+            if operacion == "start":
+                self._iniciar_worker(indice)
+                continue
+            if operacion == "stop":
+                self._detener_worker(cerrando=False)
+                continue
+            self._detener_worker(cerrando=True)
+            return
+
+    def _iniciar_worker(self, indice: int):
+        try:
+            iniciada = self._prueba.iniciar(indice)
+            if iniciada is False:
+                raise RuntimeError("la prueba de micrófono ya estaba activa")
+        except Exception as exc:
+            with self._cv:
+                if self._fase != "closing":
+                    self._fase = "idle"
+                self._error = f"No se pudo iniciar la prueba: {exc}"
+                self._indice = None
+                self._seleccion = None
+                self._cv.notify_all()
+            return
+        with self._cv:
+            if self._fase == "starting":
+                self._fase = "active"
+            self._cv.notify_all()
+
+    def _detener_worker(self, *, cerrando: bool):
+        error = None
+        try:
+            self._prueba.detener()
+        except Exception as exc:
+            error = f"No se pudo detener la prueba: {exc}"
+        with self._cv:
+            self._nivel = 0.0
+            self._indice = None
+            self._seleccion = None
+            if error is not None:
+                self._error = error
+            if cerrando:
+                self._fase = "closed"
+            elif self._fase != "closing":
+                self._fase = "idle"
+            self._cv.notify_all()
+        if cerrando:
+            self._cerrada.set()
 
 
 def parsear_context_terms(texto: str) -> tuple[str, ...]:
@@ -64,6 +347,7 @@ def valores_desde_snapshot(snapshot: SettingsSnapshot) -> ValoresFormulario:
         guionar=snapshot.guionar,
         guionar_socket=snapshot.guionar_socket,
         guardar_sesion=snapshot.guardar_sesion,
+        audio_input_device=snapshot.audio_input_device,
     )
 
 
@@ -128,7 +412,11 @@ class VentanaSettings:
             self,
             root,
             control: ControlSettings,
-            capacidades: SettingsCapabilities):
+            capacidades: SettingsCapabilities,
+            *,
+            inventario: tuple[DispositivoEntrada, ...] = (),
+            error_inventario: str | None = None,
+            control_prueba: ControlPruebaMicrofono | None = None):
         import tkinter as tk
         from tkinter import ttk
 
@@ -137,11 +425,26 @@ class VentanaSettings:
         self.root = root
         self.control = control
         self.capacidades = capacidades
+        self.inventario = tuple(inventario)
+        self.error_inventario = error_inventario
+        self.control_prueba = control_prueba or ControlPruebaMicrofono(
+            self.inventario)
         self._creando = True
+        self._cerrando = False
+        self._poll_audio_id = None
+
+        self.opciones_audio = construir_opciones_entrada(
+            control.snapshot_inicial.audio_input_device,
+            self.inventario,
+        )
+        self._indice_audio_inicial = _indice_opcion_audio(
+            self.opciones_audio,
+            control.snapshot_inicial.audio_input_device,
+        )
 
         self.root.title("ParlAR Settings")
-        self.root.geometry("680x720")
-        self.root.minsize(680, 720)
+        self.root.geometry("700x700")
+        self.root.minsize(640, 600)
         self.root.protocol("WM_DELETE_WINDOW", self._cancelar)
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
@@ -152,7 +455,9 @@ class VentanaSettings:
         self._crear_contenido()
         self._conectar_cambios()
         self._creando = False
+        self._actualizar_audio()
         self._actualizar_sucio()
+        self._programar_poll_audio()
 
     def _configurar_estilos(self):
         estilo = self.ttk.Style(self.root)
@@ -177,13 +482,42 @@ class VentanaSettings:
             "guardar_sesion": tk.BooleanVar(value=valores.guardar_sesion),
         }
         self.estado = tk.StringVar(value="")
+        self.audio_seleccion = tk.StringVar(value="")
+        self.estado_audio = tk.StringVar(value="")
         self._contexto_inicial = valores.context_terms
 
     def _crear_contenido(self):
         ttk = self.ttk
-        contenedor = ttk.Frame(self.root, padding=16)
-        contenedor.grid(row=0, column=0, sticky="nsew")
+        zona_scroll = ttk.Frame(self.root)
+        zona_scroll.grid(row=0, column=0, sticky="nsew")
+        zona_scroll.columnconfigure(0, weight=1)
+        zona_scroll.rowconfigure(0, weight=1)
+
+        self.canvas_contenido = self.tk.Canvas(
+            zona_scroll,
+            borderwidth=0,
+            highlightthickness=0,
+        )
+        barra_vertical = ttk.Scrollbar(
+            zona_scroll,
+            orient="vertical",
+            command=self.canvas_contenido.yview,
+        )
+        self.canvas_contenido.configure(
+            yscrollcommand=barra_vertical.set)
+        self.canvas_contenido.grid(row=0, column=0, sticky="nsew")
+        barra_vertical.grid(row=0, column=1, sticky="ns")
+
+        contenedor = ttk.Frame(self.canvas_contenido, padding=16)
         contenedor.columnconfigure(0, weight=1)
+        self._ventana_contenido = self.canvas_contenido.create_window(
+            (0, 0),
+            window=contenedor,
+            anchor="nw",
+        )
+        contenedor.bind("<Configure>", self._actualizar_region_scroll)
+        self.canvas_contenido.bind(
+            "<Configure>", self._ajustar_ancho_contenido)
 
         general = ttk.LabelFrame(contenedor, text="General", padding=10)
         general.grid(row=0, column=0, sticky="ew")
@@ -205,8 +539,41 @@ class VentanaSettings:
             general, "Reescritura", "rewrite_mode", 2, 2,
             opciones=self.capacidades.rewrite_modes)
 
+        audio = ttk.LabelFrame(contenedor, text="Entrada de audio", padding=10)
+        audio.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        audio.columnconfigure(1, weight=1)
+        ttk.Label(audio, text="Micrófono").grid(
+            row=0, column=0, padx=(0, 12), sticky="w")
+        self.selector_audio = ttk.Combobox(
+            audio,
+            textvariable=self.audio_seleccion,
+            values=tuple(opcion.etiqueta for opcion in self.opciones_audio),
+            state="readonly",
+        )
+        self.selector_audio.grid(row=0, column=1, sticky="ew")
+        if self._indice_audio_inicial >= 0:
+            self.selector_audio.current(self._indice_audio_inicial)
+        self.boton_prueba = ttk.Button(
+            audio,
+            text="Probar micrófono",
+            command=self._alternar_prueba_audio,
+        )
+        self.boton_prueba.grid(row=0, column=2, padx=(10, 0))
+        self.medidor_audio = ttk.Progressbar(
+            audio, maximum=100, mode="determinate", length=140)
+        self.medidor_audio.grid(
+            row=1, column=0, columnspan=3, sticky="ew", pady=(10, 0))
+        self.etiqueta_estado_audio = ttk.Label(
+            audio,
+            textvariable=self.estado_audio,
+            style="Status.TLabel",
+            wraplength=620,
+        )
+        self.etiqueta_estado_audio.grid(
+            row=2, column=0, columnspan=3, sticky="w", pady=(6, 0))
+
         salida = ttk.LabelFrame(contenedor, text="Salida", padding=10)
-        salida.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        salida.grid(row=2, column=0, sticky="ew", pady=(10, 0))
         salida.columnconfigure(1, weight=1)
         self._campo(
             salida, "Inyector", "injector", 0, 0,
@@ -221,14 +588,14 @@ class VentanaSettings:
         ).grid(row=0, column=3, padx=(18, 0), sticky="w")
 
         interfaz = ttk.LabelFrame(contenedor, text="Interfaz", padding=10)
-        interfaz.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+        interfaz.grid(row=3, column=0, sticky="ew", pady=(10, 0))
         ttk.Checkbutton(
             interfaz, text="Mostrar overlay de dictado",
             variable=self.variables["overlay"],
         ).grid(row=0, column=0, sticky="w")
 
         atajo = ttk.LabelFrame(contenedor, text="Atajo", padding=10)
-        atajo.grid(row=3, column=0, sticky="ew", pady=(10, 0))
+        atajo.grid(row=4, column=0, sticky="ew", pady=(10, 0))
         atajo.columnconfigure(1, weight=1)
         ttk.Label(atajo, text="Combinación").grid(
             row=0, column=0, padx=(0, 12), sticky="w")
@@ -242,7 +609,7 @@ class VentanaSettings:
         ).grid(row=1, column=1, pady=(6, 0), sticky="w")
 
         contexto = ttk.LabelFrame(contenedor, text="Contexto", padding=10)
-        contexto.grid(row=4, column=0, sticky="nsew", pady=(10, 0))
+        contexto.grid(row=5, column=0, sticky="nsew", pady=(10, 0))
         contexto.columnconfigure(0, weight=1)
         ttk.Label(
             contexto,
@@ -263,7 +630,7 @@ class VentanaSettings:
 
         socket = ttk.LabelFrame(
             contenedor, text="Socket GuionAR", padding=10)
-        socket.grid(row=5, column=0, sticky="ew", pady=(10, 0))
+        socket.grid(row=6, column=0, sticky="ew", pady=(10, 0))
         socket.columnconfigure(1, weight=1)
         ttk.Label(socket, text="Ruta").grid(
             row=0, column=0, padx=(0, 12), sticky="w")
@@ -272,7 +639,7 @@ class VentanaSettings:
         ).grid(row=0, column=1, sticky="ew")
 
         pie = ttk.Frame(contenedor)
-        pie.grid(row=6, column=0, sticky="ew", pady=(14, 0))
+        pie.grid(row=7, column=0, sticky="ew", pady=(14, 0))
         pie.columnconfigure(0, weight=1)
         self.etiqueta_estado = ttk.Label(
             pie,
@@ -281,12 +648,24 @@ class VentanaSettings:
             wraplength=400,
         )
         self.etiqueta_estado.grid(row=0, column=0, sticky="w")
-        ttk.Button(
+        self.boton_cancelar = ttk.Button(
             pie, text="Cancelar", command=self._cancelar,
-        ).grid(row=0, column=1, padx=(12, 8))
+        )
+        self.boton_cancelar.grid(row=0, column=1, padx=(12, 8))
         self.boton_guardar = ttk.Button(
             pie, text="Guardar", command=self._guardar)
         self.boton_guardar.grid(row=0, column=2)
+
+    def _actualizar_region_scroll(self, _evento=None):
+        region = self.canvas_contenido.bbox("all")
+        if region is not None:
+            self.canvas_contenido.configure(scrollregion=region)
+
+    def _ajustar_ancho_contenido(self, evento):
+        self.canvas_contenido.itemconfigure(
+            self._ventana_contenido,
+            width=evento.width,
+        )
 
     def _campo(
             self, padre, etiqueta, nombre, fila, columna, *, opciones=None):
@@ -309,9 +688,15 @@ class VentanaSettings:
     def _conectar_cambios(self):
         for variable in self.variables.values():
             variable.trace_add("write", self._al_cambiar)
+        self.selector_audio.bind(
+            "<<ComboboxSelected>>", self._al_cambiar_audio)
         self.contexto.bind("<<Modified>>", self._al_modificar_contexto)
 
     def _al_cambiar(self, *_args):
+        self._actualizar_sucio()
+
+    def _al_cambiar_audio(self, *_args):
+        self._actualizar_audio()
         self._actualizar_sucio()
 
     def _al_modificar_contexto(self, _evento):
@@ -334,17 +719,107 @@ class VentanaSettings:
             guionar=self.variables["guionar"].get(),
             guionar_socket=self.variables["guionar_socket"].get(),
             guardar_sesion=self.variables["guardar_sesion"].get(),
+            audio_input_device=self._audio_actual(),
         )
+
+    def _audio_actual(self) -> str:
+        indice = self.selector_audio.current()
+        if 0 <= indice < len(self.opciones_audio):
+            return self.opciones_audio[indice].valor
+        return self.control.snapshot_inicial.audio_input_device
+
+    def _resolucion_audio(self) -> ResolucionEntrada:
+        return resolver_dispositivo_entrada(
+            self._audio_actual(), self.inventario)
 
     def _actualizar_sucio(self):
         if self._creando:
             return
-        if self.control.esta_sucio(self._valores()):
+        fase = self.control_prueba.estado().fase
+        if guardado_habilitado(
+                sucio=self.control.esta_sucio(self._valores()),
+                fase_audio=fase,
+                cerrando=self._cerrando):
             self.boton_guardar.state(["!disabled"])
         else:
             self.boton_guardar.state(["disabled"])
 
+    def _actualizar_audio(self):
+        estado = self.control_prueba.estado()
+        self.medidor_audio["value"] = estado.nivel * 100
+        ocupado = estado.fase in {
+            "starting", "active", "stopping", "closing", "closed"
+        }
+        self.selector_audio.configure(
+            state="disabled" if ocupado else "readonly")
+
+        if self._cerrando:
+            self.boton_prueba.configure(text="Probar micrófono")
+            self.boton_prueba.state(["disabled"])
+            mensaje = "Cerrando la prueba de audio…"
+            estilo = "Status.TLabel"
+        elif estado.fase == "active":
+            self.boton_prueba.configure(text="Detener prueba")
+            self.boton_prueba.state(["!disabled"])
+            mensaje = "Prueba activa. El audio no se guarda."
+            estilo = "Status.TLabel"
+        elif estado.fase in {"starting", "stopping"}:
+            texto_boton = (
+                "Iniciando…" if estado.fase == "starting" else "Deteniendo…")
+            self.boton_prueba.configure(text=texto_boton)
+            self.boton_prueba.state(["disabled"])
+            mensaje = (
+                "Abriendo el dispositivo de entrada…"
+                if estado.fase == "starting"
+                else "Cerrando el dispositivo de entrada…"
+            )
+            estilo = "Status.TLabel"
+        elif estado.fase in {"closing", "closed"}:
+            self.boton_prueba.configure(text="Probar micrófono")
+            self.boton_prueba.state(["disabled"])
+            mensaje = "Cerrando la prueba de audio…"
+            estilo = "Status.TLabel"
+        else:
+            resolucion = self._resolucion_audio()
+            self.boton_prueba.configure(text="Probar micrófono")
+            if resolucion.indice is None or self.error_inventario:
+                self.boton_prueba.state(["disabled"])
+            else:
+                self.boton_prueba.state(["!disabled"])
+            mensaje = mensaje_resolucion_entrada(
+                resolucion, error_inventario=self.error_inventario)
+            estilo = "Status.TLabel"
+
+        if estado.error:
+            mensaje = estado.error
+            estilo = "Error.Status.TLabel"
+        self.estado_audio.set(mensaje)
+        self.etiqueta_estado_audio.configure(style=estilo)
+        self._actualizar_sucio()
+
+    def _alternar_prueba_audio(self):
+        estado = self.control_prueba.estado()
+        if estado.fase == "active":
+            self.control_prueba.detener()
+        elif estado.fase == "idle":
+            self.control_prueba.iniciar(self._audio_actual())
+        self._actualizar_audio()
+
+    def _programar_poll_audio(self):
+        self._poll_audio_id = self.root.after(100, self._poll_audio)
+
+    def _poll_audio(self):
+        self._poll_audio_id = None
+        self._actualizar_audio()
+        if self._cerrando and self.control_prueba.estado().fase == "closed":
+            self.control.cancelar(self.root.destroy)
+            return
+        self._programar_poll_audio()
+
     def _guardar(self):
+        if self.control_prueba.estado().fase in {
+                "starting", "stopping", "closing", "closed"}:
+            return
         if not self.control.esta_sucio(self._valores()):
             return
         try:
@@ -358,7 +833,12 @@ class VentanaSettings:
         self._actualizar_sucio()
 
     def _cancelar(self):
-        self.control.cancelar(self.root.destroy)
+        if self._cerrando:
+            return
+        self._cerrando = True
+        self.boton_cancelar.state(["disabled"])
+        self.control_prueba.cerrar()
+        self._actualizar_audio()
 
 
 def main() -> int:
@@ -366,6 +846,7 @@ def main() -> int:
         base = cargar_configuracion_actual()
         snapshot = snapshot_configuracion(base)
         capacidades = obtener_capacidades()
+        inventario = cargar_inventario_entradas()
     except Exception as exc:
         print(f"[settings] no se pudo cargar la configuración: {exc}",
               file=sys.stderr)
@@ -379,7 +860,13 @@ def main() -> int:
               file=sys.stderr)
         return 1
 
-    VentanaSettings(root, ControlSettings(base, snapshot), capacidades)
+    VentanaSettings(
+        root,
+        ControlSettings(base, snapshot),
+        capacidades,
+        inventario=inventario.dispositivos,
+        error_inventario=inventario.error,
+    )
     root.mainloop()
     return 0
 
