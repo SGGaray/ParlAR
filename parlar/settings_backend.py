@@ -65,6 +65,11 @@ class ErrorDispositivosAudio(RuntimeError):
     """No fue posible obtener un inventario confiable de entradas de audio."""
 
 
+def cargar_configuracion_actual() -> Config:
+    """Carga la base persistida sin exponer ``Config`` a la capa de UI."""
+    return Config.load()
+
+
 def snapshot_configuracion(cfg: Config) -> SettingsSnapshot:
     """Copia sólo opciones públicas; nunca retiene listas mutables de ``cfg``."""
     return SettingsSnapshot(
