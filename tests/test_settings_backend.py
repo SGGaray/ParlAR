@@ -13,13 +13,17 @@ from unittest import mock
 import parlar.config as config_mod
 from parlar.config import Config, ErrorConfiguracion
 from parlar.settings_backend import (
+    DispositivoEntrada,
     ErrorDispositivosAudio,
+    ResolucionEntrada,
     SettingsSnapshot,
     construir_configuracion_candidata,
+    crear_identidad_entrada,
     listar_dispositivos_entrada,
     normalizar_dispositivos_entrada,
     obtener_capacidades,
     persistir_configuracion,
+    resolver_dispositivo_entrada,
     requiere_reinicio,
     snapshot_configuracion,
 )
@@ -38,6 +42,7 @@ class PruebasSettingsBackend(unittest.TestCase):
         self.assertIsInstance(snapshot, SettingsSnapshot)
         self.assertEqual(snapshot.model_size, "base")
         self.assertEqual(snapshot.context_terms, ("COBIT", "OWASP"))
+        self.assertEqual(snapshot.audio_input_device, "default")
         campos = {campo.name for campo in dataclasses.fields(snapshot)}
         self.assertNotIn("ollama_url", campos)
         with self.assertRaises(dataclasses.FrozenInstanceError):
@@ -53,6 +58,7 @@ class PruebasSettingsBackend(unittest.TestCase):
             snapshot_configuracion(original),
             model_size="medium",
             context_terms=("Nuevo",),
+            audio_input_device="audio-input:ALSA:Mic%20USB",
         )
 
         candidata = construir_configuracion_candidata(original, editado)
@@ -61,6 +67,11 @@ class PruebasSettingsBackend(unittest.TestCase):
         self.assertEqual(original.context_terms, ["Original"])
         self.assertEqual(candidata.model_size, "medium")
         self.assertEqual(candidata.context_terms, ["Nuevo"])
+        self.assertEqual(
+            candidata.audio_input_device,
+            "audio-input:ALSA:Mic%20USB",
+        )
+        self.assertEqual(original.audio_input_device, "default")
         self.assertEqual(candidata.beam_size, 7)
         self.assertEqual(candidata.extras, {"futura": {"valor": 1}})
         candidata.extras["futura"]["valor"] = 2
@@ -109,12 +120,16 @@ class PruebasSettingsBackend(unittest.TestCase):
 
     def test_normaliza_y_filtra_dispositivos_de_entrada_sinteticos(self):
         dispositivos = [
-            {"name": "Mic USB", "max_input_channels": 2},
-            {"name": "Salida HDMI", "max_input_channels": 0},
-            {"name": "Mic interno", "max_input_channels": 1},
+            {"name": "Mic USB", "max_input_channels": 2, "hostapi": 4},
+            {"name": "Salida HDMI", "max_input_channels": 0, "hostapi": 4},
+            {"name": "Mic interno", "max_input_channels": 1, "hostapi": 8},
         ]
 
-        resultado = normalizar_dispositivos_entrada(dispositivos, 2)
+        resultado = normalizar_dispositivos_entrada(
+            dispositivos,
+            2,
+            {4: "ALSA", 8: "PipeWire"},
+        )
 
         self.assertEqual([item.indice for item in resultado], [0, 2])
         self.assertEqual(
@@ -123,12 +138,24 @@ class PruebasSettingsBackend(unittest.TestCase):
         )
         self.assertEqual([item.canales_entrada for item in resultado], [2, 1])
         self.assertEqual([item.predeterminado for item in resultado], [False, True])
+        self.assertEqual(
+            [item.host_api for item in resultado],
+            ["ALSA", "PipeWire"],
+        )
+        self.assertEqual(
+            [item.identidad for item in resultado],
+            [
+                "audio-input:ALSA:Mic%20USB",
+                "audio-input:PipeWire:Mic%20interno",
+            ],
+        )
 
     def test_listado_usa_sounddevice_inyectado_sin_abrir_stream(self):
         modulo = SimpleNamespace(
             query_devices=mock.Mock(return_value=[
-                {"name": "Mic", "max_input_channels": 1},
+                {"name": "Mic", "max_input_channels": 1, "hostapi": 0},
             ]),
+            query_hostapis=mock.Mock(return_value=[{"name": "ALSA"}]),
             default=SimpleNamespace(device=(0, 4)),
             RawInputStream=mock.Mock(side_effect=AssertionError("no abrir stream")),
         )
@@ -137,7 +164,10 @@ class PruebasSettingsBackend(unittest.TestCase):
 
         self.assertEqual(len(resultado), 1)
         self.assertTrue(resultado[0].predeterminado)
+        self.assertEqual(resultado[0].host_api, "ALSA")
+        self.assertEqual(resultado[0].identidad, "audio-input:ALSA:Mic")
         modulo.query_devices.assert_called_once_with()
+        modulo.query_hostapis.assert_called_once_with()
         modulo.RawInputStream.assert_not_called()
 
     def test_default_de_entrada_acepta_indice_escalar(self):
@@ -162,6 +192,138 @@ class PruebasSettingsBackend(unittest.TestCase):
         with self.assertRaisesRegex(
                 ErrorDispositivosAudio, "enumerar dispositivos de entrada"):
             listar_dispositivos_entrada(modulo)
+
+    @staticmethod
+    def _inventario(*datos):
+        return tuple(
+            DispositivoEntrada(
+                indice=indice,
+                nombre=nombre,
+                canales_entrada=1,
+                predeterminado=predeterminado,
+                host_api=host_api,
+                identidad=crear_identidad_entrada(nombre, host_api),
+            )
+            for indice, nombre, host_api, predeterminado in datos
+        )
+
+    def test_resuelve_seleccion_default(self):
+        inventario = self._inventario(
+            (3, "Mic interno", "ALSA", True),
+            (8, "Mic USB", "ALSA", False),
+        )
+
+        resultado = resolver_dispositivo_entrada("default", inventario)
+
+        self.assertIsInstance(resultado, ResolucionEntrada)
+        self.assertEqual(resultado.indice, 3)
+        self.assertFalse(resultado.usando_fallback)
+        self.assertIsNone(resultado.motivo)
+
+    def test_resuelve_dispositivo_existente_por_identidad(self):
+        inventario = self._inventario(
+            (3, "Mic interno", "ALSA", True),
+            (8, "Mic USB", "PipeWire", False),
+        )
+        seleccion = crear_identidad_entrada("Mic USB", "PipeWire")
+
+        resultado = resolver_dispositivo_entrada(seleccion, inventario)
+
+        self.assertEqual(resultado.indice, 8)
+        self.assertEqual(resultado.identidad_resuelta, seleccion)
+        self.assertFalse(resultado.usando_fallback)
+        self.assertIsNone(resultado.motivo)
+
+    def test_dispositivo_ausente_usa_default_sin_mutar_seleccion(self):
+        seleccion = crear_identidad_entrada("Mic USB", "ALSA")
+        inventario = self._inventario(
+            (2, "Mic interno", "PipeWire", True),
+        )
+
+        resultado = resolver_dispositivo_entrada(seleccion, inventario)
+
+        self.assertEqual(resultado.indice, 2)
+        self.assertEqual(resultado.seleccion_solicitada, seleccion)
+        self.assertTrue(resultado.usando_fallback)
+        self.assertEqual(resultado.motivo, "seleccion_ausente")
+
+    def test_nombres_duplicados_se_desambiguan_por_host_api(self):
+        inventario = self._inventario(
+            (1, "Mic USB", "ALSA", True),
+            (9, "Mic USB", "PipeWire", False),
+        )
+        seleccion = crear_identidad_entrada("Mic USB", "PipeWire")
+
+        resultado = resolver_dispositivo_entrada(seleccion, inventario)
+
+        self.assertEqual(resultado.indice, 9)
+        self.assertFalse(resultado.usando_fallback)
+
+    def test_identidad_duplicada_no_se_resuelve_silenciosamente(self):
+        inventario = self._inventario(
+            (1, "Mic USB", "ALSA", False),
+            (7, "Mic USB", "ALSA", False),
+            (4, "Mic interno", "PipeWire", True),
+        )
+        seleccion = crear_identidad_entrada("Mic USB", "ALSA")
+
+        resultado = resolver_dispositivo_entrada(seleccion, inventario)
+
+        self.assertEqual(resultado.indice, 4)
+        self.assertTrue(resultado.usando_fallback)
+        self.assertEqual(resultado.motivo, "seleccion_ambigua")
+
+    def test_inventario_vacio_es_explicito(self):
+        default = resolver_dispositivo_entrada("default", ())
+        ausente = resolver_dispositivo_entrada(
+            crear_identidad_entrada("Mic", "ALSA"), ())
+
+        self.assertIsNone(default.indice)
+        self.assertEqual(default.motivo, "inventario_vacio")
+        self.assertFalse(default.usando_fallback)
+        self.assertIsNone(ausente.indice)
+        self.assertEqual(
+            ausente.motivo,
+            "seleccion_ausente_inventario_vacio",
+        )
+
+    def test_seleccion_ausente_sin_default_no_inventa_dispositivo(self):
+        seleccion = crear_identidad_entrada("Mic USB", "ALSA")
+        inventario = self._inventario(
+            (5, "Mic interno", "PipeWire", False),
+        )
+
+        resultado = resolver_dispositivo_entrada(
+            seleccion,
+            inventario,
+        )
+
+        self.assertIsNone(resultado.indice)
+        self.assertIsNone(resultado.dispositivo)
+        self.assertIsNone(resultado.identidad_resuelta)
+        self.assertEqual(
+            resultado.seleccion_solicitada,
+            seleccion,
+        )
+        self.assertFalse(resultado.usando_fallback)
+        self.assertEqual(
+            resultado.motivo,
+            "seleccion_ausente_default_no_disponible",
+        )
+
+    def test_cambio_de_indice_conserva_dispositivo_logico(self):
+        seleccion = crear_identidad_entrada("Mic USB", "ALSA")
+        primero = self._inventario((2, "Mic USB", "ALSA", False))
+        segundo = self._inventario((11, "Mic USB", "ALSA", False))
+
+        self.assertEqual(
+            resolver_dispositivo_entrada(seleccion, primero).indice,
+            2,
+        )
+        self.assertEqual(
+            resolver_dispositivo_entrada(seleccion, segundo).indice,
+            11,
+        )
 
     def test_capabilities_no_detecta_cuda_ni_importa_runtime(self):
         capacidades = obtener_capacidades({"XDG_SESSION_TYPE": "wayland"})

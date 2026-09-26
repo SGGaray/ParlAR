@@ -32,6 +32,9 @@ class ErrorConfiguracion(ValueError):
 @dataclass
 class Config:
     SCHEMA_VERSION: ClassVar[int] = 1
+    AUDIO_INPUT_DEFAULT: ClassVar[str] = "default"
+    AUDIO_INPUT_PREFIX: ClassVar[str] = "audio-input:"
+    MAX_AUDIO_INPUT_DEVICE_CHARS: ClassVar[int] = 1024
     MODOS: ClassVar[frozenset[str]] = frozenset({"utterance", "streaming"})
     DISPOSITIVOS: ClassVar[frozenset[str]] = frozenset({"auto", "cpu", "cuda"})
     COMPUTE_TYPES: ClassVar[frozenset[str]] = frozenset(
@@ -65,6 +68,9 @@ class Config:
     mode: str = "utterance"            # utterance | streaming
 
     # --- Audio / VAD ---
+    # "default" usa la entrada predeterminada del sistema. Una selección
+    # concreta guarda identidad estable (host API + nombre), nunca el índice.
+    audio_input_device: str = AUDIO_INPUT_DEFAULT
     sample_rate: int = 16000
     frame_ms: int = 20                 # webrtcvad soporta 10/20/30
     vad_aggressiveness: int = 2        # 0..3
@@ -177,6 +183,16 @@ class Config:
             )
 
         migrados = dict(data)
+        extras = migrados.get("extras")
+        if (type(extras) is dict
+                and "audio_input_device" in extras):
+            # Una versión anterior trataría el campo aditivo como desconocido
+            # y lo preservaría en extras. Recuperarlo mantiene rollback seguro.
+            extras_migrados = dict(extras)
+            preservada = extras_migrados.pop("audio_input_device")
+            if "audio_input_device" not in migrados:
+                migrados["audio_input_device"] = preservada
+            migrados["extras"] = extras_migrados
         while version < cls.SCHEMA_VERSION:
             if version == 0:
                 # El formato sin versión no registraba si hotkey_toggle era
@@ -252,6 +268,14 @@ class Config:
         enum("mode", self.MODOS)
         enum("rewrite_mode", self.REESCRITURAS)
         enum("injector", self.INYECTORES)
+
+        if (type(self.audio_input_device) is str
+                and not self.preferencia_entrada_valida(
+                    self.audio_input_device)):
+            errores.append(
+                f"'audio_input_device'={self.audio_input_device!r}: debe ser "
+                "'default' o una identidad canónica de dispositivo de entrada"
+            )
 
         if self.schema_version != self.SCHEMA_VERSION:
             errores.append(
@@ -396,6 +420,38 @@ class Config:
     def _nombre_tipo(tipo) -> str:
         return {str: "texto", int: "entero", float: "número decimal",
                 bool: "booleano"}.get(tipo, tipo.__name__)
+
+    @classmethod
+    def preferencia_entrada_valida(cls, valor) -> bool:
+        """Valida el formato persistido sin consultar hardware de audio."""
+        if type(valor) is not str:
+            return False
+        if valor == cls.AUDIO_INPUT_DEFAULT:
+            return True
+        if (len(valor) > cls.MAX_AUDIO_INPUT_DEVICE_CHARS
+                or not valor.startswith(cls.AUDIO_INPUT_PREFIX)):
+            return False
+
+        componentes = valor[len(cls.AUDIO_INPUT_PREFIX):].split(":", 1)
+        if len(componentes) != 2:
+            return False
+        host_codificado, nombre_codificado = componentes
+        try:
+            host_api = urllib.parse.unquote(host_codificado, errors="strict")
+            nombre = urllib.parse.unquote(nombre_codificado, errors="strict")
+        except UnicodeError:
+            return False
+        if (not nombre or nombre != nombre.strip()
+                or host_api != host_api.strip()
+                or any(ord(caracter) < 32 for caracter in host_api + nombre)):
+            return False
+        canonica = (
+            cls.AUDIO_INPUT_PREFIX
+            + urllib.parse.quote(host_api, safe="")
+            + ":"
+            + urllib.parse.quote(nombre, safe="")
+        )
+        return valor == canonica
 
     @staticmethod
     def _url_ollama_valida(valor: str) -> bool:

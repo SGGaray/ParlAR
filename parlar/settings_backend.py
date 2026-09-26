@@ -5,11 +5,12 @@ inicio. No conoce ``App`` ni aplica cambios sobre una sesión activa.
 """
 
 import os
+import urllib.parse
 from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from .config import Config
+from .config import Config, ErrorConfiguracion
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,6 +30,7 @@ class SettingsSnapshot:
     guionar: bool
     guionar_socket: str
     guardar_sesion: bool
+    audio_input_device: str = Config.AUDIO_INPUT_DEFAULT
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +49,20 @@ class DispositivoEntrada:
     nombre: str
     canales_entrada: int
     predeterminado: bool
+    host_api: str = ""
+    identidad: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ResolucionEntrada:
+    """Resultado observable de resolver una preferencia contra el inventario."""
+
+    indice: int | None
+    seleccion_solicitada: str
+    identidad_resuelta: str | None
+    dispositivo: DispositivoEntrada | None
+    usando_fallback: bool
+    motivo: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +102,7 @@ def snapshot_configuracion(cfg: Config) -> SettingsSnapshot:
         guionar=cfg.guionar,
         guionar_socket=cfg.guionar_socket,
         guardar_sesion=cfg.guardar_sesion,
+        audio_input_device=cfg.audio_input_device,
     )
 
 
@@ -122,8 +139,10 @@ def persistir_configuracion(
 def normalizar_dispositivos_entrada(
         dispositivos: Iterable[Mapping[str, Any]],
         indice_predeterminado: int | None = None,
+        host_apis: Mapping[int, str] | None = None,
 ) -> tuple[DispositivoEntrada, ...]:
     """Normaliza datos de ``query_devices`` sin acceder a hardware."""
+    nombres_host = {} if host_apis is None else host_apis
     resultado = []
     for posicion, datos in enumerate(dispositivos):
         if not isinstance(datos, Mapping):
@@ -139,13 +158,60 @@ def normalizar_dispositivos_entrada(
         if canales <= 0:
             continue
         nombre = str(datos.get("name", "")).strip() or f"Dispositivo {indice}"
+        host_api = ""
+        if datos.get("hostapi") is not None:
+            try:
+                indice_host = int(datos["hostapi"])
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ErrorDispositivosAudio(
+                    "sounddevice devolvió un host API inválido"
+                ) from exc
+            host_api = str(nombres_host.get(indice_host, "")).strip()
         resultado.append(DispositivoEntrada(
             indice=indice,
             nombre=nombre,
             canales_entrada=canales,
             predeterminado=indice == indice_predeterminado,
+            host_api=host_api,
+            identidad=crear_identidad_entrada(nombre, host_api),
         ))
     return tuple(resultado)
+
+
+def crear_identidad_entrada(nombre: str, host_api: str) -> str:
+    """Crea la clave persistible canónica sin incorporar índices PortAudio."""
+    nombre_limpio = str(nombre).strip()
+    host_limpio = str(host_api).strip()
+    if not nombre_limpio:
+        raise ErrorDispositivosAudio(
+            "el dispositivo de entrada debe tener un nombre")
+    identidad = (
+        Config.AUDIO_INPUT_PREFIX
+        + urllib.parse.quote(host_limpio, safe="")
+        + ":"
+        + urllib.parse.quote(nombre_limpio, safe="")
+    )
+    if not Config.preferencia_entrada_valida(identidad):
+        raise ErrorDispositivosAudio(
+            "la identidad del dispositivo de entrada no es persistible")
+    return identidad
+
+
+def _normalizar_host_apis(
+        host_apis: Iterable[Mapping[str, Any]]) -> dict[int, str]:
+    resultado = {}
+    for posicion, datos in enumerate(host_apis):
+        if not isinstance(datos, Mapping):
+            raise ErrorDispositivosAudio(
+                "sounddevice devolvió un host API con formato inválido")
+        try:
+            indice = int(datos.get("index", posicion))
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ErrorDispositivosAudio(
+                "sounddevice devolvió un índice de host API inválido"
+            ) from exc
+        resultado[indice] = str(datos.get("name", "")).strip()
+    return resultado
 
 
 def _indice_entrada_predeterminado(sounddevice) -> int | None:
@@ -176,13 +242,96 @@ def listar_dispositivos_entrada(
             sounddevice = sounddevice_runtime
         dispositivos = sounddevice.query_devices()
         predeterminado = _indice_entrada_predeterminado(sounddevice)
-        return normalizar_dispositivos_entrada(dispositivos, predeterminado)
+        consultar_host_apis = getattr(sounddevice, "query_hostapis", None)
+        host_apis = (
+            _normalizar_host_apis(consultar_host_apis())
+            if callable(consultar_host_apis)
+            else {}
+        )
+        return normalizar_dispositivos_entrada(
+            dispositivos, predeterminado, host_apis)
     except ErrorDispositivosAudio:
         raise
     except Exception as exc:
         raise ErrorDispositivosAudio(
             "no se pudieron enumerar dispositivos de entrada con sounddevice"
         ) from exc
+
+
+def _identidad_dispositivo(dispositivo: DispositivoEntrada) -> str:
+    return dispositivo.identidad or crear_identidad_entrada(
+        dispositivo.nombre, dispositivo.host_api)
+
+
+def _resolver_predeterminado(
+        inventario: tuple[DispositivoEntrada, ...],
+        seleccion: str,
+        motivo_fallback: str | None = None,
+) -> ResolucionEntrada:
+    predeterminados = tuple(
+        dispositivo for dispositivo in inventario
+        if dispositivo.predeterminado
+    )
+    if len(predeterminados) == 1:
+        dispositivo = predeterminados[0]
+        return ResolucionEntrada(
+            indice=dispositivo.indice,
+            seleccion_solicitada=seleccion,
+            identidad_resuelta=_identidad_dispositivo(dispositivo),
+            dispositivo=dispositivo,
+            usando_fallback=motivo_fallback is not None,
+            motivo=motivo_fallback,
+        )
+
+    if not inventario:
+        motivo_default = "inventario_vacio"
+    elif len(predeterminados) > 1:
+        motivo_default = "default_ambiguo"
+    else:
+        motivo_default = "default_no_disponible"
+    motivo = (
+        f"{motivo_fallback}_{motivo_default}"
+        if motivo_fallback is not None
+        else motivo_default
+    )
+    return ResolucionEntrada(
+        indice=None,
+        seleccion_solicitada=seleccion,
+        identidad_resuelta=None,
+        dispositivo=None,
+        usando_fallback=False,
+        motivo=motivo,
+    )
+
+
+def resolver_dispositivo_entrada(
+        seleccion: str,
+        inventario: Iterable[DispositivoEntrada],
+) -> ResolucionEntrada:
+    """Resuelve una identidad persistida sin modificarla ni elegir al azar."""
+    if not Config.preferencia_entrada_valida(seleccion):
+        raise ErrorConfiguracion(
+            "'audio_input_device' no contiene una identidad válida")
+    disponibles = tuple(inventario)
+    if seleccion == Config.AUDIO_INPUT_DEFAULT:
+        return _resolver_predeterminado(disponibles, seleccion)
+
+    coincidencias = tuple(
+        dispositivo for dispositivo in disponibles
+        if _identidad_dispositivo(dispositivo) == seleccion
+    )
+    if len(coincidencias) == 1:
+        dispositivo = coincidencias[0]
+        return ResolucionEntrada(
+            indice=dispositivo.indice,
+            seleccion_solicitada=seleccion,
+            identidad_resuelta=_identidad_dispositivo(dispositivo),
+            dispositivo=dispositivo,
+            usando_fallback=False,
+            motivo=None,
+        )
+    motivo = "seleccion_ausente" if not coincidencias else "seleccion_ambigua"
+    return _resolver_predeterminado(disponibles, seleccion, motivo)
 
 
 def obtener_capacidades(
