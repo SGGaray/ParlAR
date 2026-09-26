@@ -265,14 +265,15 @@ class PruebasRewrite(unittest.TestCase):
             rewrite_mode="formal", ollama_model="modelo-falso",
             voice_commands=False)
         with mock.patch(
-                "urllib.request.urlopen",
-                return_value=RespuestaOllamaFalsa("Texto transformado")):
+                "parlar.procesador_texto._ejecutar_ollama_aislado",
+                return_value="Texto transformado"):
             self.assertEqual(
                 procesador.procesar_frase("texto original").texto,
                 "Texto transformado",
             )
         with mock.patch(
-                "urllib.request.urlopen", side_effect=OSError("offline")):
+                "parlar.procesador_texto._ejecutar_ollama_aislado",
+                side_effect=OSError("offline")):
             self.assertEqual(
                 procesador.procesar_frase("ok porfa").texto,
                 "De acuerdo por favor",

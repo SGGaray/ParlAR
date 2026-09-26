@@ -171,8 +171,8 @@ class PruebasReturnFisico(unittest.TestCase):
             rewrite_mode="formal", ollama_model="modelo-falso",
             voice_commands=False)
         with mock.patch(
-                "urllib.request.urlopen",
-                return_value=RespuestaOllamaFalsa("Hola.\nSaludos.")):
+                "parlar.procesador_texto._ejecutar_ollama_aislado",
+                return_value="Hola.\nSaludos."):
             texto = procesador.procesar_frase("hola").texto
         self.assertEqual(texto, "Hola.\nSaludos.")
 

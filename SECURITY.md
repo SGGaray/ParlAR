@@ -139,6 +139,9 @@ Usá [GitHub Private Vulnerability Reporting](https://github.com/SGGaray/ParlAR/
 como canal primario. El reporte y sus comentarios quedan disponibles para el
 responsable del repositorio y las personas incorporadas al advisory.
 
+Como canal privado alternativo, podés escribir a
+[security@sggaray.com](mailto:security@sggaray.com).
+
 No publiques vulnerabilidades ni detalles sensibles en un issue. Los issues
 públicos quedan reservados para bugs ordinarios que no expongan información
 confidencial ni instrucciones de explotación.
