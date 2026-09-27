@@ -27,6 +27,7 @@ from .config import Config
 from .control import ServidorControl, normalizar_comando
 from .control_gesto_dictado import ControlGestoDictado
 from .daemon_atajos import DaemonAtajos
+from .estado_ui import EstadoInterfaz
 from .indicador import crear_ui
 from .motor_transcripcion import MotorWhisper, TranscriptorFrase, TranscriptorStreaming
 from .procesador_texto import ProcesadorTexto
@@ -114,6 +115,7 @@ class App:
         print("ParlAR: dictado local, sin telemetría.")
         print("=" * 60)
 
+        estado_interfaz = EstadoInterfaz()
         self.resolucion_entrada = None
         mic_productivo = mic
         if mic_productivo is None:
@@ -139,6 +141,9 @@ class App:
                 cfg.sample_rate,
                 cfg.frame_samples,
                 input_device=self.resolucion_entrada.indice,
+                publicar_nivel_visual=estado_interfaz.fijar_nivel_visual,
+                publicar_descriptor_visual=(
+                    estado_interfaz.fijar_descriptor_visual),
             )
 
         if motor is None and (frases is None or streaming is None):
@@ -166,7 +171,11 @@ class App:
         if cfg.guionar:
             print(f"[guionar] integración activa (socket: {self.guionar.ruta})")
         self.mic = mic_productivo
-        self.ui = ui or crear_ui(cfg.overlay, al_click=self.alternar)
+        self.ui = ui or crear_ui(
+            cfg.overlay,
+            estado_ui=estado_interfaz,
+            overlay_position=cfg.overlay_position,
+        )
         self.control = control or ServidorControl(
             self._atender_comando, guardia_instancia=guardia_instancia)
         self.gesto_dictado = ControlGestoDictado(
@@ -266,9 +275,56 @@ class App:
             controles = (
                 "Usá `parlarctl iniciar`, `detener`, `cancelar` o `alternar`"
             )
-        if self.cfg.overlay:
-            controles += "; también podés hacer click en el indicador"
         return controles + "."
+
+    def _ui_preparar_generacion(self, generacion: int):
+        publicar = getattr(self.ui, "preparar_generacion", None)
+        return publicar(generacion) if publicar else True
+
+    def _ui_iniciar_captura(self, generacion: int):
+        publicar = getattr(self.ui, "iniciar_captura", None)
+        if publicar:
+            return publicar(generacion)
+        self.ui.fijar_estado("recording")
+        return True
+
+    def _ui_cerrar_captura(self, generacion: int):
+        publicar = getattr(self.ui, "cerrar_captura", None)
+        if publicar:
+            return publicar(generacion, trabajo_pendiente=True)
+        self.ui.fijar_estado("transcribing")
+        return True
+
+    def _ui_iniciar_trabajo(self, generacion: int):
+        publicar = getattr(self.ui, "iniciar_trabajo", None)
+        if publicar:
+            return publicar(generacion)
+        if self.estado != EstadoApp.RECORDING:
+            self.ui.fijar_estado("transcribing")
+        return True
+
+    def _ui_finalizar_trabajo(self, generacion: int):
+        publicar = getattr(self.ui, "finalizar_trabajo", None)
+        if publicar:
+            return publicar(generacion)
+        if self.estado == EstadoApp.RECORDING:
+            self.ui.fijar_estado("recording")
+        return True
+
+    def _ui_invalidar_generacion(self, generacion: int):
+        publicar = getattr(self.ui, "invalidar_generacion", None)
+        if publicar:
+            return publicar(generacion)
+        self.ui.fijar_estado("idle")
+        return True
+
+    def _ui_completar_generacion(
+            self, generacion: int, *, con_error: bool = False):
+        publicar = getattr(self.ui, "completar_generacion", None)
+        if publicar:
+            return publicar(generacion, con_error=con_error)
+        self.ui.fijar_estado("error" if con_error else "idle")
+        return True
 
     def alternar(self):
         estado = self.estado
@@ -306,6 +362,7 @@ class App:
                     self._sesion_activa = generacion
                     self._modo_por_sesion = {generacion: self._modo_solicitado}
                     self._estado_cv.notify_all()
+                self._ui_preparar_generacion(generacion)
                 if anterior is not None:
                     self.mic.descartar_pendientes(anterior)
                 self.salida.iniciar_generacion(
@@ -379,7 +436,7 @@ class App:
                 return False
 
             self.grabando.set()
-            self._estado_visual_si_vigente("recording", generacion)
+            self._ui_iniciar_captura(generacion)
             print(f"[app] ● grabando (sesión {generacion})")
             return True
 
@@ -409,6 +466,12 @@ class App:
                 error = exc
                 print(f"[app] falló el cierre del micrófono: {exc}", file=sys.stderr)
 
+            if generacion is not None:
+                # La barrera visual se instala antes de habilitar al worker a
+                # completar STOP: así listening->processing nunca pasa por
+                # hidden y una finalización rápida no puede resucitar estado.
+                self._ui_cerrar_captura(generacion)
+
             with self._estado_cv:
                 cancelada = (
                     self._estado != EstadoApp.STOPPING
@@ -422,7 +485,6 @@ class App:
                 self._estado_cv.notify_all()
             if cancelada:
                 return error is None
-            self._estado_visual_si_vigente("transcribing", generacion)
             print(f"[app] ◌ deteniendo (sesión {generacion})")
             return error is None
 
@@ -469,6 +531,9 @@ class App:
                     self._ultimo_error = ""
                     self.grabando.clear()
                     self._estado_cv.notify_all()
+
+                    if generacion is not None:
+                        self._ui_invalidar_generacion(generacion)
 
             if not ya_detenido:
                 self.salida.cancelar_generacion()
@@ -591,11 +656,14 @@ class App:
             if propietario:
                 with self._salida_lock:
                     with self._estado_cv:
+                        generacion = self._sesion_activa
                         self._sesion_activa = None
                         self._modo_por_sesion.clear()
                         self._stops_listos.clear()
                         self._errores_stop.clear()
                         self._estado_cv.notify_all()
+                    if generacion is not None:
+                        self._ui_invalidar_generacion(generacion)
                 try:
                     self.mic.detener(vaciar=True)
                 except BaseException as exc:
@@ -792,6 +860,7 @@ class App:
         return None, self._modo_de(generacion)
 
     def _cerrar_unidad(self, audio, modo: Optional[str], generacion: int):
+        self._ui_iniciar_trabajo(generacion)
         try:
             if modo == "streaming":
                 self._vaciar_streaming(generacion)
@@ -801,10 +870,12 @@ class App:
             try:
                 self._finalizar_contexto_texto()
             finally:
-                self.salida.finalizar_unidad()
+                try:
+                    self.salida.finalizar_unidad()
+                finally:
+                    self._ui_finalizar_trabajo(generacion)
 
     def _atender_frase(self, audio, generacion: int):
-        self._estado_visual_si_vigente("transcribing", generacion)
         t0 = time.time()
         try:
             crudo = self.frases.transcribir(audio)
@@ -818,7 +889,6 @@ class App:
             print(f"[app] transcripción lista en {dt:.2f}s")
             procesado = self.proc.procesar_frase(crudo)
             self._emitir(procesado, generacion)
-        self._estado_visual_si_vigente("recording", generacion)
 
     def _paso_streaming(self, generacion: int):
         antes = self._snapshot_streaming()
@@ -1041,12 +1111,6 @@ class App:
             if not self._puede_emit(generacion):
                 return
             self.salida.evento_vad(hablando)
-            self.ui.fijar_estado("recording")
-
-    def _estado_visual_si_vigente(self, estado: str, generacion: int):
-        with self._salida_lock:
-            if self._puede_emit(generacion):
-                self.ui.fijar_estado(estado)
 
     def _estado_visual_terminal_si_vigente(
             self, estado: str, estado_app: EstadoApp, generacion: int) -> bool:
@@ -1059,17 +1123,18 @@ class App:
                     and self._estado == estado_app
                 )
             if vigente:
-                # Indicador.fijar_estado solo actualiza una variable protegida;
-                # no ejecuta callbacks Tk ni lifecycle bajo esta barrera.
-                self.ui.fijar_estado(estado)
+                self._ui_completar_generacion(
+                    generacion, con_error=estado == "error")
             return vigente
 
     def _registrar_fallo_worker(self, exc: Exception):
         print(f"[app] fallo inesperado del worker: {type(exc).__name__}",
               file=sys.stderr)
+        generacion = None
         with self._transicion_lock:
             with self._salida_lock:
                 with self._estado_cv:
+                    generacion = self._sesion_activa or self._generacion
                     if self._estado not in (EstadoApp.SHUTTING_DOWN, EstadoApp.CLOSED):
                         self._estado = EstadoApp.ERROR
                         self._ultimo_error = f"worker: {type(exc).__name__}"
@@ -1082,7 +1147,8 @@ class App:
                 self.mic.detener(vaciar=True)
             except Exception:
                 pass
-        self.ui.fijar_estado("error")
+        self._estado_visual_terminal_si_vigente(
+            "error", EstadoApp.ERROR, generacion)
 
     # ------------------------------------------------------------ control
 

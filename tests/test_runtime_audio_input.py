@@ -55,6 +55,20 @@ def _crear_app(cfg, inventario, constructor_mic):
         )
 
 
+def _afirmar_constructor_visual(constructor, indice):
+    constructor.assert_called_once()
+    args = constructor.call_args.args
+    kwargs = constructor.call_args.kwargs
+    if args != (16000, 320):
+        raise AssertionError(f"argumentos de captura inesperados: {args!r}")
+    if kwargs.get("input_device") != indice:
+        raise AssertionError(f"índice de captura inesperado: {kwargs!r}")
+    if not callable(kwargs.get("publicar_nivel_visual")):
+        raise AssertionError("falta el publicador escalar de nivel visual")
+    if not callable(kwargs.get("publicar_descriptor_visual")):
+        raise AssertionError("falta el publicador de envolvente visual")
+
+
 class PruebasResolucionProductiva(unittest.TestCase):
     def test_default_usa_el_marcado_en_inventario_y_no_el_indice_cero(self):
         inventario = (
@@ -65,7 +79,7 @@ class PruebasResolucionProductiva(unittest.TestCase):
 
         app = _crear_app(Config(), inventario, constructor)
 
-        constructor.assert_called_once_with(16000, 320, input_device=7)
+        _afirmar_constructor_visual(constructor, 7)
         self.assertEqual(app.resolucion_entrada.indice, 7)
 
     def test_identidad_persistida_resuelve_su_indice_actual(self):
@@ -75,7 +89,7 @@ class PruebasResolucionProductiva(unittest.TestCase):
 
         _crear_app(cfg, (mic,), constructor)
 
-        constructor.assert_called_once_with(16000, 320, input_device=12)
+        _afirmar_constructor_visual(constructor, 12)
 
     def test_identidad_estable_puede_cambiar_de_indice_entre_inicios(self):
         primero = _dispositivo(3, "Mic estable")
@@ -103,7 +117,7 @@ class PruebasResolucionProductiva(unittest.TestCase):
         self.assertEqual(app.resolucion_entrada.motivo, "seleccion_ausente")
         self.assertIn("predeterminada", errores.getvalue())
         self.assertIn("seleccion_ausente", errores.getvalue())
-        constructor.assert_called_once_with(16000, 320, input_device=6)
+        _afirmar_constructor_visual(constructor, 6)
 
     def test_identidad_ambigua_hace_fallback_al_default_unico(self):
         duplicado_a = _dispositivo(2, "Mic duplicado")
@@ -167,8 +181,55 @@ class PruebasResolucionProductiva(unittest.TestCase):
                 cfg = Config(device=dispositivo_whisper)
                 constructor = mock.Mock(return_value=object())
                 _crear_app(cfg, (mic,), constructor)
-                constructor.assert_called_once_with(
-                    16000, 320, input_device=11)
+                _afirmar_constructor_visual(constructor, 11)
+
+    def test_app_comparte_boundary_visual_y_pasa_posicion_a_ui(self):
+        mic = _dispositivo(7, "Mic", predeterminado=True)
+        constructor = mock.Mock(return_value=object())
+        ui = object()
+        fabrica_ui = mock.Mock(return_value=ui)
+        salida = SimpleNamespace(
+            inyector=object(),
+            guionar=object(),
+            sesion=object(),
+            ultima_entrega=None,
+            necesita_espacio=False,
+        )
+        cfg = Config(overlay=True, overlay_position="top-right")
+
+        with (
+            mock.patch("parlar.app.CapturadorMic", constructor),
+            mock.patch("parlar.app.crear_ui", fabrica_ui),
+            mock.patch(
+                "parlar.app.crear_coordinador_salida", return_value=salida),
+        ):
+            app = App(
+                cfg,
+                motor=object(),
+                frases=object(),
+                streaming=object(),
+                proc=object(),
+                control=object(),
+                atajos=object(),
+                listar_entradas=lambda: (mic,),
+            )
+
+        self.assertIs(app.ui, ui)
+        _afirmar_constructor_visual(constructor, 7)
+        estado = fabrica_ui.call_args.kwargs["estado_ui"]
+        publicador = constructor.call_args.kwargs["publicar_nivel_visual"]
+        publicador_descriptor = constructor.call_args.kwargs[
+            "publicar_descriptor_visual"]
+        self.assertIs(publicador.__self__, estado)
+        self.assertIs(publicador_descriptor.__self__, estado)
+        publicador(0.37)
+        self.assertEqual(estado.snapshot().nivel_visual, 0.37)
+        forma = tuple(indice / 16 for indice in range(17))
+        publicador_descriptor(0.41, forma)
+        self.assertEqual(estado.snapshot().nivel_visual, 0.41)
+        self.assertEqual(estado.snapshot().envolvente_visual, forma)
+        self.assertEqual(
+            fabrica_ui.call_args.kwargs["overlay_position"], "top-right")
 
 
 class PruebasCapturadorConDispositivo(unittest.TestCase):

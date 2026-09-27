@@ -47,6 +47,7 @@ class ValoresFormulario:
     guionar_socket: str
     guardar_sesion: bool
     audio_input_device: str = "default"
+    overlay_position: str = "bottom-center"
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +55,14 @@ class OpcionEntrada:
     valor: str
     etiqueta: str
     disponible: bool
+
+
+@dataclass(frozen=True, slots=True)
+class OpcionSelector:
+    """Valor persistible y texto visible de un selector cerrado."""
+
+    valor: str
+    etiqueta: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,6 +78,101 @@ class EstadoControlPrueba:
     error: str | None
     indice: int | None
     seleccion: str | None
+
+
+_ETIQUETAS_SELECTORES = {
+    "device": {
+        "auto": "Automático",
+        "cpu": "CPU",
+        "cuda": "NVIDIA CUDA",
+    },
+    "compute_type": {
+        "auto": "Automático",
+        "int8": "Enteros de 8 bits (int8)",
+        "float16": "Coma flotante de 16 bits (float16)",
+        "int8_float16": "Int8 con float16",
+    },
+    "mode": {
+        "utterance": "Por frases",
+        "streaming": "Continuo (streaming)",
+    },
+    "rewrite_mode": {
+        "none": "Sin reescritura",
+        "formal": "Formal",
+        "concise": "Conciso",
+        "email": "Correo",
+    },
+    "injector": {
+        "auto": "Automático",
+        "xdotool": "X11 (xdotool)",
+        "wtype": "Wayland (wtype)",
+        "ydotool": "Teclado virtual (ydotool)",
+        "clipboard": "Portapapeles",
+    },
+    "overlay_position": {
+        "top-left": "Arriba · Izquierda",
+        "top-center": "Arriba · Centro",
+        "top-right": "Arriba · Derecha",
+        "middle-left": "Centro · Izquierda",
+        "middle-right": "Centro · Derecha",
+        "bottom-left": "Abajo · Izquierda",
+        "bottom-center": "Abajo · Centro",
+        "bottom-right": "Abajo · Derecha",
+    },
+}
+
+
+def construir_opciones_selector(
+        nombre: str, valores: tuple[str, ...]) -> tuple[OpcionSelector, ...]:
+    """Humaniza capacidades reales sin convertir el label en identidad."""
+    etiquetas = _ETIQUETAS_SELECTORES.get(nombre, {})
+    return tuple(
+        OpcionSelector(valor, etiquetas.get(valor, valor))
+        for valor in valores
+    )
+
+
+def construir_selectores(
+        capacidades: SettingsCapabilities,
+) -> dict[str, tuple[OpcionSelector, ...]]:
+    return {
+        "device": construir_opciones_selector(
+            "device", capacidades.devices),
+        "compute_type": construir_opciones_selector(
+            "compute_type", capacidades.compute_types),
+        "mode": construir_opciones_selector(
+            "mode", capacidades.modes),
+        "rewrite_mode": construir_opciones_selector(
+            "rewrite_mode", capacidades.rewrite_modes),
+        "injector": construir_opciones_selector(
+            "injector", capacidades.injectors),
+        "overlay_position": construir_opciones_selector(
+            "overlay_position", capacidades.overlay_positions),
+    }
+
+
+def indice_opcion_selector(
+        opciones: tuple[OpcionSelector, ...], valor: str) -> int:
+    return next(
+        (indice for indice, opcion in enumerate(opciones)
+         if opcion.valor == valor),
+        -1,
+    )
+
+
+def valor_opcion_selector(
+        opciones: tuple[OpcionSelector, ...],
+        indice: int,
+        valor_original: str,
+) -> str:
+    """Traduce por posición; un índice inválido conserva el valor original."""
+    if 0 <= indice < len(opciones):
+        return opciones[indice].valor
+    return valor_original
+
+
+def mensaje_reinicio_previo() -> str:
+    return "Los cambios de configuración se aplican al reiniciar ParlAR."
 
 
 def cargar_inventario_entradas(
@@ -348,6 +452,7 @@ def valores_desde_snapshot(snapshot: SettingsSnapshot) -> ValoresFormulario:
         guionar_socket=snapshot.guionar_socket,
         guardar_sesion=snapshot.guardar_sesion,
         audio_input_device=snapshot.audio_input_device,
+        overlay_position=snapshot.overlay_position,
     )
 
 
@@ -441,6 +546,8 @@ class VentanaSettings:
             self.opciones_audio,
             control.snapshot_inicial.audio_input_device,
         )
+        self.opciones_selectores = construir_selectores(capacidades)
+        self.selectores = {}
 
         self.root.title("ParlAR Settings")
         self.root.geometry("700x700")
@@ -480,6 +587,8 @@ class VentanaSettings:
             "guionar": tk.BooleanVar(value=valores.guionar),
             "guionar_socket": tk.StringVar(value=valores.guionar_socket),
             "guardar_sesion": tk.BooleanVar(value=valores.guardar_sesion),
+            "overlay_position": tk.StringVar(
+                value=valores.overlay_position),
         }
         self.estado = tk.StringVar(value="")
         self.audio_seleccion = tk.StringVar(value="")
@@ -524,20 +633,28 @@ class VentanaSettings:
         for columna in (1, 3):
             general.columnconfigure(columna, weight=1)
 
-        self._campo(general, "Modelo", "model_size", 0, 0)
         self._campo(
-            general, "Dispositivo", "device", 0, 2,
-            opciones=self.capacidades.devices)
+            general, "Modelo Whisper", "model_size", 0, 0,
+            ayuda="Nombre del modelo de transcripción, por ejemplo small o medium.")
         self._campo(
-            general, "Tipo de cómputo", "compute_type", 1, 0,
-            opciones=self.capacidades.compute_types)
-        self._campo(general, "Idioma", "language", 1, 2)
+            general, "Acelerador", "device", 0, 2,
+            opciones=self.opciones_selectores["device"],
+            ayuda="Dónde se ejecutará Whisper; Automático elige al iniciar.")
         self._campo(
-            general, "Modo", "mode", 2, 0,
-            opciones=self.capacidades.modes)
+            general, "Formato de cálculo", "compute_type", 2, 0,
+            opciones=self.opciones_selectores["compute_type"],
+            ayuda="Precisión numérica usada por el motor de transcripción.")
         self._campo(
-            general, "Reescritura", "rewrite_mode", 2, 2,
-            opciones=self.capacidades.rewrite_modes)
+            general, "Idioma de dictado", "language", 2, 2,
+            ayuda="Código de idioma, por ejemplo es o en; vacío detecta automáticamente.")
+        self._campo(
+            general, "Transcripción", "mode", 4, 0,
+            opciones=self.opciones_selectores["mode"],
+            ayuda="Por frases espera una pausa; Continuo actualiza mientras hablás.")
+        self._campo(
+            general, "Estilo del texto", "rewrite_mode", 4, 2,
+            opciones=self.opciones_selectores["rewrite_mode"],
+            ayuda="Ajusta el texto reconocido sin modificar el audio.")
 
         audio = ttk.LabelFrame(contenedor, text="Entrada de audio", padding=10)
         audio.grid(row=1, column=0, sticky="ew", pady=(10, 0))
@@ -576,8 +693,9 @@ class VentanaSettings:
         salida.grid(row=2, column=0, sticky="ew", pady=(10, 0))
         salida.columnconfigure(1, weight=1)
         self._campo(
-            salida, "Inyector", "injector", 0, 0,
-            opciones=self.capacidades.injectors)
+            salida, "Método de escritura", "injector", 0, 0,
+            opciones=self.opciones_selectores["injector"],
+            ayuda="Cómo se entrega el texto a la aplicación con foco.")
         ttk.Checkbutton(
             salida, text="Usar GuionAR",
             variable=self.variables["guionar"],
@@ -587,12 +705,23 @@ class VentanaSettings:
             variable=self.variables["guardar_sesion"],
         ).grid(row=0, column=3, padx=(18, 0), sticky="w")
 
-        interfaz = ttk.LabelFrame(contenedor, text="Interfaz", padding=10)
+        interfaz = ttk.LabelFrame(
+            contenedor, text="Interfaz / Indicador", padding=10)
         interfaz.grid(row=3, column=0, sticky="ew", pady=(10, 0))
+        interfaz.columnconfigure(1, weight=1)
         ttk.Checkbutton(
             interfaz, text="Mostrar overlay de dictado",
             variable=self.variables["overlay"],
         ).grid(row=0, column=0, sticky="w")
+        self._campo(
+            interfaz,
+            "Posición del indicador",
+            "overlay_position",
+            1,
+            0,
+            opciones=self.opciones_selectores["overlay_position"],
+            ayuda="Se aplica al reiniciar ParlAR.",
+        )
 
         atajo = ttk.LabelFrame(contenedor, text="Atajo", padding=10)
         atajo.grid(row=4, column=0, sticky="ew", pady=(10, 0))
@@ -604,7 +733,7 @@ class VentanaSettings:
         ).grid(row=0, column=1, sticky="ew")
         ttk.Label(
             atajo,
-            text="Edición textual; no captura teclas globales.",
+            text="Formato textual del atajo actual; todavía no captura teclas.",
             style="Status.TLabel",
         ).grid(row=1, column=1, pady=(6, 0), sticky="w")
 
@@ -613,8 +742,12 @@ class VentanaSettings:
         contexto.columnconfigure(0, weight=1)
         ttk.Label(
             contexto,
-            text="Un término por línea. Las líneas vacías se ignoran.",
+            text=(
+                "Un término por línea. Se usan como contexto para mejorar "
+                "el reconocimiento; las líneas vacías se ignoran."
+            ),
             style="Status.TLabel",
+            wraplength=600,
         ).grid(row=0, column=0, sticky="w")
         self.contexto = self.tk.Text(
             contexto,
@@ -641,20 +774,27 @@ class VentanaSettings:
         pie = ttk.Frame(contenedor)
         pie.grid(row=7, column=0, sticky="ew", pady=(14, 0))
         pie.columnconfigure(0, weight=1)
+        ttk.Label(
+            pie,
+            text=mensaje_reinicio_previo(),
+            style="Status.TLabel",
+            wraplength=500,
+        ).grid(row=0, column=0, columnspan=3, sticky="w")
         self.etiqueta_estado = ttk.Label(
             pie,
             textvariable=self.estado,
             style="Status.TLabel",
             wraplength=400,
         )
-        self.etiqueta_estado.grid(row=0, column=0, sticky="w")
+        self.etiqueta_estado.grid(row=1, column=0, sticky="w", pady=(8, 0))
         self.boton_cancelar = ttk.Button(
             pie, text="Cancelar", command=self._cancelar,
         )
-        self.boton_cancelar.grid(row=0, column=1, padx=(12, 8))
+        self.boton_cancelar.grid(
+            row=1, column=1, padx=(12, 8), pady=(8, 0))
         self.boton_guardar = ttk.Button(
             pie, text="Guardar", command=self._guardar)
-        self.boton_guardar.grid(row=0, column=2)
+        self.boton_guardar.grid(row=1, column=2, pady=(8, 0))
 
     def _actualizar_region_scroll(self, _evento=None):
         region = self.canvas_contenido.bbox("all")
@@ -668,7 +808,8 @@ class VentanaSettings:
         )
 
     def _campo(
-            self, padre, etiqueta, nombre, fila, columna, *, opciones=None):
+            self, padre, etiqueta, nombre, fila, columna, *, opciones=None,
+            ayuda=None):
         self.ttk.Label(padre, text=etiqueta).grid(
             row=fila, column=columna, padx=(0, 8), pady=5, sticky="w")
         if opciones is None:
@@ -678,12 +819,37 @@ class VentanaSettings:
             widget = self.ttk.Combobox(
                 padre,
                 textvariable=self.variables[nombre],
-                values=opciones,
+                values=tuple(opcion.etiqueta for opcion in opciones),
                 state="readonly",
             )
+            indice = indice_opcion_selector(
+                opciones, self.variables[nombre].get())
+            if indice >= 0:
+                widget.current(indice)
+            self.selectores[nombre] = (widget, opciones)
         widget.grid(
             row=fila, column=columna + 1,
             padx=(0, 14), pady=5, sticky="ew")
+        if ayuda:
+            self.ttk.Label(
+                padre,
+                text=ayuda,
+                style="Status.TLabel",
+                wraplength=270,
+            ).grid(
+                row=fila + 1,
+                column=columna,
+                columnspan=2,
+                padx=(0, 14),
+                pady=(0, 5),
+                sticky="nw",
+            )
+
+    def _valor_selector_actual(self, nombre: str) -> str:
+        selector, opciones = self.selectores[nombre]
+        original = getattr(self.control.snapshot_inicial, nombre)
+        return valor_opcion_selector(
+            opciones, selector.current(), original)
 
     def _conectar_cambios(self):
         for variable in self.variables.values():
@@ -707,19 +873,21 @@ class VentanaSettings:
     def _valores(self) -> ValoresFormulario:
         return ValoresFormulario(
             model_size=self.variables["model_size"].get(),
-            device=self.variables["device"].get(),
-            compute_type=self.variables["compute_type"].get(),
+            device=self._valor_selector_actual("device"),
+            compute_type=self._valor_selector_actual("compute_type"),
             language=self.variables["language"].get(),
             context_terms=self.contexto.get("1.0", "end-1c"),
-            mode=self.variables["mode"].get(),
-            rewrite_mode=self.variables["rewrite_mode"].get(),
-            injector=self.variables["injector"].get(),
+            mode=self._valor_selector_actual("mode"),
+            rewrite_mode=self._valor_selector_actual("rewrite_mode"),
+            injector=self._valor_selector_actual("injector"),
             hotkey_toggle=self.variables["hotkey_toggle"].get(),
             overlay=self.variables["overlay"].get(),
             guionar=self.variables["guionar"].get(),
             guionar_socket=self.variables["guionar_socket"].get(),
             guardar_sesion=self.variables["guardar_sesion"].get(),
             audio_input_device=self._audio_actual(),
+            overlay_position=self._valor_selector_actual(
+                "overlay_position"),
         )
 
     def _audio_actual(self) -> str:

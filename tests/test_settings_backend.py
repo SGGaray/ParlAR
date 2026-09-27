@@ -43,6 +43,7 @@ class PruebasSettingsBackend(unittest.TestCase):
         self.assertEqual(snapshot.model_size, "base")
         self.assertEqual(snapshot.context_terms, ("COBIT", "OWASP"))
         self.assertEqual(snapshot.audio_input_device, "default")
+        self.assertEqual(snapshot.overlay_position, "bottom-center")
         campos = {campo.name for campo in dataclasses.fields(snapshot)}
         self.assertNotIn("ollama_url", campos)
         with self.assertRaises(dataclasses.FrozenInstanceError):
@@ -117,6 +118,27 @@ class PruebasSettingsBackend(unittest.TestCase):
             actual,
             dataclasses.replace(actual, overlay=False),
         ))
+        self.assertTrue(requiere_reinicio(
+            actual,
+            dataclasses.replace(actual, overlay_position="top-right"),
+        ))
+
+    def test_persistencia_aislada_incluye_posicion_de_overlay(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ruta = Path(tmp) / "parlar" / "config.json"
+            original = Config()
+            editado = dataclasses.replace(
+                snapshot_configuracion(original),
+                overlay_position="bottom-right",
+            )
+
+            with mock.patch.object(config_mod, "CONFIG_FILE", ruta):
+                resultado = persistir_configuracion(original, editado)
+                cargada = Config.load()
+
+            self.assertTrue(resultado.requires_restart)
+            self.assertEqual(cargada.overlay_position, "bottom-right")
+            self.assertEqual(original.overlay_position, "bottom-center")
 
     def test_normaliza_y_filtra_dispositivos_de_entrada_sinteticos(self):
         dispositivos = [

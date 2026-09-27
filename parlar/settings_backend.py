@@ -31,6 +31,7 @@ class SettingsSnapshot:
     guionar_socket: str
     guardar_sesion: bool
     audio_input_device: str = Config.AUDIO_INPUT_DEFAULT
+    overlay_position: str = "bottom-center"
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +76,8 @@ class SettingsCapabilities:
     rewrite_modes: tuple[str, ...]
     injectors: tuple[str, ...]
     session_type: str
+    overlay_positions: tuple[str, ...] = tuple(
+        sorted(Config.OVERLAY_POSITIONS))
 
 
 class ErrorDispositivosAudio(RuntimeError):
@@ -107,6 +110,7 @@ def snapshot_configuracion(cfg: Config) -> SettingsSnapshot:
         guionar_socket=cfg.guionar_socket,
         guardar_sesion=cfg.guardar_sesion,
         audio_input_device=cfg.audio_input_device,
+        overlay_position=cfg.overlay_position,
     )
 
 
@@ -350,4 +354,5 @@ def obtener_capacidades(
         rewrite_modes=tuple(sorted(Config.REESCRITURAS)),
         injectors=tuple(sorted(Config.INYECTORES)),
         session_type=sesion,
+        overlay_positions=tuple(sorted(Config.OVERLAY_POSITIONS)),
     )

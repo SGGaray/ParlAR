@@ -61,8 +61,47 @@ class ConfigTemporal(unittest.TestCase):
         cfg = Config.load()
 
         self.assertEqual(cfg.audio_input_device, "default")
+        self.assertEqual(cfg.overlay_position, "bottom-center")
         self.assertEqual(cfg.device, "cpu")
         self.assertEqual(Config.SCHEMA_VERSION, 1)
+
+    def test_config_historica_usa_bottom_center_sin_bump_de_schema(self):
+        self.escribir({
+            "schema_version": Config.SCHEMA_VERSION,
+            "overlay": True,
+        })
+
+        cfg = Config.load()
+
+        self.assertEqual(cfg.overlay_position, "bottom-center")
+        self.assertEqual(Config.SCHEMA_VERSION, 1)
+
+    def test_overlay_position_valida_persiste_y_hace_roundtrip(self):
+        for posicion in Config.OVERLAY_POSITIONS:
+            with self.subTest(posicion=posicion):
+                Config(overlay_position=posicion).save()
+                self.assertEqual(Config.load().overlay_position, posicion)
+
+    def test_overlay_position_invalida_falla_validacion(self):
+        for posicion in ("middle-center", "arriba", "", None):
+            with self.subTest(posicion=posicion):
+                with self.assertRaisesRegex(
+                        ErrorConfiguracion, "overlay_position"):
+                    Config(overlay_position=posicion).validate()
+
+    def test_recupera_overlay_position_preservada_en_extras(self):
+        self.escribir({
+            "schema_version": Config.SCHEMA_VERSION,
+            "extras": {
+                "overlay_position": "top-right",
+                "futura": True,
+            },
+        })
+
+        cfg = Config.load()
+
+        self.assertEqual(cfg.overlay_position, "top-right")
+        self.assertEqual(cfg.extras, {"futura": True})
 
     def test_preferencia_entrada_roundtrip_sin_confundir_device(self):
         identidad = "audio-input:ALSA:Micr%C3%B3fono%20USB"
@@ -176,6 +215,7 @@ class ConfigTemporal(unittest.TestCase):
             ("mode", Config.MODOS),
             ("rewrite_mode", Config.REESCRITURAS),
             ("injector", Config.INYECTORES),
+            ("overlay_position", Config.OVERLAY_POSITIONS),
         ):
             for opcion in opciones:
                 with self.subTest(campo=campo, opcion=opcion):

@@ -13,6 +13,7 @@ from parlar.settings_backend import (
     DispositivoEntrada,
     ErrorDispositivosAudio,
     ResultadoPersistencia,
+    SettingsCapabilities,
     crear_identidad_entrada,
     resolver_dispositivo_entrada,
     snapshot_configuracion,
@@ -21,16 +22,21 @@ from parlar.settings_window import (
     ControlPruebaMicrofono,
     ControlSettings,
     OpcionEntrada,
+    OpcionSelector,
     ValoresFormulario,
     VentanaSettings,
     _indice_opcion_audio,
     cargar_inventario_entradas,
     construir_opciones_entrada,
+    construir_selectores,
     guardado_habilitado,
+    indice_opcion_selector,
+    mensaje_reinicio_previo,
     mensaje_resolucion_entrada,
     mensaje_persistencia,
     parsear_context_terms,
     snapshot_desde_valores,
+    valor_opcion_selector,
     valores_desde_snapshot,
 )
 
@@ -93,6 +99,7 @@ class PruebasLogicaSettings(unittest.TestCase):
             guionar_socket="/tmp/guionar.sock",
             guardar_sesion=True,
             audio_input_device=self.identidad_audio,
+            overlay_position="top-right",
         )
         self.snapshot = snapshot_configuracion(self.base)
 
@@ -105,6 +112,7 @@ class PruebasLogicaSettings(unittest.TestCase):
         self.assertFalse(valores.overlay)
         self.assertTrue(valores.guionar)
         self.assertEqual(valores.audio_input_device, self.identidad_audio)
+        self.assertEqual(valores.overlay_position, "top-right")
 
     def test_formulario_se_mapea_a_snapshot_sin_mutar_inicial(self):
         valores = dataclasses.replace(
@@ -113,6 +121,7 @@ class PruebasLogicaSettings(unittest.TestCase):
             context_terms="OWASP\nParlAR",
             overlay=True,
             audio_input_device="default",
+            overlay_position="bottom-left",
         )
 
         candidata = snapshot_desde_valores(self.snapshot, valores)
@@ -121,9 +130,11 @@ class PruebasLogicaSettings(unittest.TestCase):
         self.assertEqual(candidata.context_terms, ("OWASP", "ParlAR"))
         self.assertTrue(candidata.overlay)
         self.assertEqual(candidata.audio_input_device, "default")
+        self.assertEqual(candidata.overlay_position, "bottom-left")
         self.assertEqual(self.snapshot.language, "es")
         self.assertEqual(
             self.snapshot.audio_input_device, self.identidad_audio)
+        self.assertEqual(self.snapshot.overlay_position, "top-right")
 
     def test_context_terms_usa_un_termino_por_linea(self):
         self.assertEqual(
@@ -203,6 +214,200 @@ class PruebasLogicaSettings(unittest.TestCase):
 
         cerrar.assert_called_once_with()
         persistir.assert_not_called()
+
+
+class PruebasSelectoresHumanos(unittest.TestCase):
+    def setUp(self):
+        self.capacidades = SettingsCapabilities(
+            devices=tuple(sorted(Config.DISPOSITIVOS)),
+            compute_types=tuple(sorted(Config.COMPUTE_TYPES)),
+            modes=tuple(sorted(Config.MODOS)),
+            rewrite_modes=tuple(sorted(Config.REESCRITURAS)),
+            injectors=tuple(sorted(Config.INYECTORES)),
+            session_type="x11",
+            overlay_positions=tuple(sorted(Config.OVERLAY_POSITIONS)),
+        )
+        self.selectores = construir_selectores(self.capacidades)
+
+    def test_cada_selector_hace_roundtrip_de_todos_sus_valores(self):
+        for nombre, opciones in self.selectores.items():
+            with self.subTest(selector=nombre):
+                for indice, opcion in enumerate(opciones):
+                    self.assertEqual(
+                        valor_opcion_selector(
+                            opciones, indice, "valor-original"),
+                        opcion.valor,
+                    )
+
+    def test_el_label_humano_no_se_convierte_en_valor_persistido(self):
+        opciones = self.selectores["device"]
+        indice = indice_opcion_selector(opciones, "cuda")
+
+        self.assertEqual(opciones[indice].etiqueta, "NVIDIA CUDA")
+        self.assertEqual(
+            valor_opcion_selector(opciones, indice, "cpu"), "cuda")
+        self.assertNotEqual(opciones[indice].etiqueta, "cuda")
+
+    def test_seleccion_inicial_se_busca_por_valor_interno(self):
+        opciones = self.selectores["mode"]
+
+        indice = indice_opcion_selector(opciones, "streaming")
+
+        self.assertGreaterEqual(indice, 0)
+        self.assertEqual(opciones[indice].etiqueta, "Continuo (streaming)")
+
+    def test_indice_invalido_conserva_valor_original(self):
+        opciones = self.selectores["rewrite_mode"]
+
+        self.assertEqual(
+            valor_opcion_selector(opciones, -1, "formal"), "formal")
+        self.assertEqual(
+            valor_opcion_selector(opciones, len(opciones), "formal"),
+            "formal",
+        )
+
+    def test_labels_duplicados_siguen_resolviendose_por_indice(self):
+        opciones = (
+            OpcionSelector("interno-a", "Mismo label"),
+            OpcionSelector("interno-b", "Mismo label"),
+        )
+
+        self.assertEqual(
+            valor_opcion_selector(opciones, 0, "original"), "interno-a")
+        self.assertEqual(
+            valor_opcion_selector(opciones, 1, "original"), "interno-b")
+
+    def test_posicion_overlay_usa_label_humano_pero_persiste_valor(self):
+        opciones = self.selectores["overlay_position"]
+        indice = indice_opcion_selector(opciones, "bottom-center")
+
+        self.assertEqual(opciones[indice].etiqueta, "Abajo · Centro")
+        self.assertEqual(
+            valor_opcion_selector(opciones, indice, "top-left"),
+            "bottom-center",
+        )
+        self.assertNotEqual(opciones[indice].etiqueta, "bottom-center")
+
+    def test_posicion_overlay_con_labels_duplicados_conserva_indice(self):
+        opciones = (
+            OpcionSelector("top-left", "Misma posición"),
+            OpcionSelector("bottom-right", "Misma posición"),
+        )
+
+        self.assertEqual(
+            valor_opcion_selector(opciones, 0, "bottom-center"),
+            "top-left",
+        )
+        self.assertEqual(
+            valor_opcion_selector(opciones, 1, "bottom-center"),
+            "bottom-right",
+        )
+
+    def test_device_y_audio_input_device_permanecen_independientes(self):
+        inicial = snapshot_configuracion(Config())
+        valores = dataclasses.replace(
+            valores_desde_snapshot(inicial),
+            device="cuda",
+            audio_input_device="audio-input:ALSA:Mic%20USB",
+        )
+
+        candidata = snapshot_desde_valores(inicial, valores)
+
+        self.assertEqual(candidata.device, "cuda")
+        self.assertEqual(
+            candidata.audio_input_device, "audio-input:ALSA:Mic%20USB")
+
+    def test_compute_type_conserva_valor_real(self):
+        opciones = self.selectores["compute_type"]
+        indice = indice_opcion_selector(opciones, "int8_float16")
+
+        self.assertEqual(
+            valor_opcion_selector(opciones, indice, "auto"), "int8_float16")
+
+    def test_mode_conserva_valor_real(self):
+        opciones = self.selectores["mode"]
+        indice = indice_opcion_selector(opciones, "utterance")
+
+        self.assertEqual(
+            valor_opcion_selector(opciones, indice, "streaming"), "utterance")
+
+    def test_rewrite_mode_conserva_valor_real(self):
+        opciones = self.selectores["rewrite_mode"]
+        indice = indice_opcion_selector(opciones, "concise")
+
+        self.assertEqual(
+            valor_opcion_selector(opciones, indice, "none"), "concise")
+
+    def test_language_conserva_codigo_editable(self):
+        inicial = snapshot_configuracion(Config(language="es"))
+        valores = dataclasses.replace(
+            valores_desde_snapshot(inicial), language="en")
+
+        candidata = snapshot_desde_valores(inicial, valores)
+
+        self.assertEqual(candidata.language, "en")
+
+    def test_injector_conserva_valor_real(self):
+        opciones = self.selectores["injector"]
+        indice = indice_opcion_selector(opciones, "clipboard")
+
+        self.assertEqual(
+            valor_opcion_selector(opciones, indice, "auto"), "clipboard")
+
+    def test_snapshot_formulario_roundtrip_sigue_estable(self):
+        inicial = snapshot_configuracion(Config(
+            device="cpu",
+            compute_type="int8",
+            mode="streaming",
+            rewrite_mode="email",
+            injector="wtype",
+            overlay_position="middle-right",
+        ))
+
+        reconstruido = snapshot_desde_valores(
+            inicial, valores_desde_snapshot(inicial))
+
+        self.assertEqual(reconstruido, inicial)
+
+    def test_mensaje_de_reinicio_es_modelable_sin_tk(self):
+        self.assertEqual(
+            mensaje_reinicio_previo(),
+            "Los cambios de configuración se aplican al reiniciar ParlAR.",
+        )
+
+    def test_model_size_sigue_siendo_texto_libre(self):
+        inicial = snapshot_configuracion(Config(model_size="small"))
+        valores = dataclasses.replace(
+            valores_desde_snapshot(inicial), model_size="modelo-local")
+
+        candidata = snapshot_desde_valores(inicial, valores)
+
+        self.assertEqual(candidata.model_size, "modelo-local")
+
+    def test_opciones_salen_solo_de_capacidades_reales(self):
+        for nombre, valores in (
+            ("device", self.capacidades.devices),
+            ("compute_type", self.capacidades.compute_types),
+            ("mode", self.capacidades.modes),
+            ("rewrite_mode", self.capacidades.rewrite_modes),
+            ("injector", self.capacidades.injectors),
+            ("overlay_position", self.capacidades.overlay_positions),
+        ):
+            self.assertEqual(
+                tuple(opcion.valor for opcion in self.selectores[nombre]),
+                valores,
+            )
+
+    def test_ventana_traduce_el_indice_y_no_el_texto_visible(self):
+        ventana = object.__new__(VentanaSettings)
+        opciones = self.selectores["device"]
+        selector = mock.Mock()
+        selector.current.return_value = indice_opcion_selector(opciones, "cpu")
+        ventana.selectores = {"device": (selector, opciones)}
+        ventana.control = mock.Mock()
+        ventana.control.snapshot_inicial.device = "auto"
+
+        self.assertEqual(ventana._valor_selector_actual("device"), "cpu")
 
 
 class PruebasSelectorYPruebaAudio(unittest.TestCase):

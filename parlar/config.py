@@ -50,6 +50,11 @@ class Config:
     INYECTORES: ClassVar[frozenset[str]] = frozenset(
         {"auto", "xdotool", "wtype", "ydotool", "clipboard"}
     )
+    OVERLAY_POSITIONS: ClassVar[frozenset[str]] = frozenset({
+        "top-left", "top-center", "top-right",
+        "middle-left", "middle-right",
+        "bottom-left", "bottom-center", "bottom-right",
+    })
     CAMPOS_DINAMICOS: ClassVar[frozenset[str]] = frozenset(
         {"mode", "rewrite_mode"}
     )
@@ -104,6 +109,7 @@ class Config:
 
     # --- UI ---
     overlay: bool = True
+    overlay_position: str = "bottom-center"
     notify: bool = True                # notificaciones de escritorio vía notify-send
 
     # --- GuionAR (teleprompter, opcional) ---
@@ -184,14 +190,16 @@ class Config:
 
         migrados = dict(data)
         extras = migrados.get("extras")
-        if (type(extras) is dict
-                and "audio_input_device" in extras):
-            # Una versión anterior trataría el campo aditivo como desconocido
-            # y lo preservaría en extras. Recuperarlo mantiene rollback seguro.
+        if type(extras) is dict:
+            # Una versión anterior trataría campos aditivos como desconocidos
+            # y los preservaría en extras. Recuperarlos mantiene rollback seguro.
             extras_migrados = dict(extras)
-            preservada = extras_migrados.pop("audio_input_device")
-            if "audio_input_device" not in migrados:
-                migrados["audio_input_device"] = preservada
+            for nombre in ("audio_input_device", "overlay_position"):
+                if nombre not in extras_migrados:
+                    continue
+                preservada = extras_migrados.pop(nombre)
+                if nombre not in migrados:
+                    migrados[nombre] = preservada
             migrados["extras"] = extras_migrados
         while version < cls.SCHEMA_VERSION:
             if version == 0:
@@ -268,6 +276,7 @@ class Config:
         enum("mode", self.MODOS)
         enum("rewrite_mode", self.REESCRITURAS)
         enum("injector", self.INYECTORES)
+        enum("overlay_position", self.OVERLAY_POSITIONS)
 
         if (type(self.audio_input_device) is str
                 and not self.preferencia_entrada_valida(

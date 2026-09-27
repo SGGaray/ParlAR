@@ -1,5 +1,6 @@
 """Regresiones de cotas por frame y descarte explícito al detener captura."""
 
+import builtins
 import sys
 import threading
 import unittest
@@ -9,7 +10,12 @@ from unittest import mock
 import numpy as np
 
 from parlar.app import App, EstadoApp
-from parlar.capturador_audio import CapturadorMic, Segmentador
+from parlar.capturador_audio import (
+    CapturadorMic,
+    Segmentador,
+    calcular_nivel_visual_pcm,
+    extraer_envolvente_visual,
+)
 from parlar.config import Config
 
 
@@ -212,6 +218,181 @@ class PruebasRestoParcial(unittest.TestCase):
         respuesta = app._respuesta_estado()
         self.assertIn("audio=saludable", respuesta)
         self.assertIn("partial_samples_discarded=319", respuesta)
+
+
+class PruebasNivelVisualProductivo(unittest.TestCase):
+    def test_envolvente_retorna_exactamente_diecisiete_bins(self):
+        audio = np.arange(320, dtype=np.int16).tobytes()
+
+        envolvente = extraer_envolvente_visual(audio)
+
+        self.assertEqual(len(envolvente), 17)
+
+    def test_envolvente_de_silencio_es_cero(self):
+        envolvente = extraer_envolvente_visual(
+            np.zeros(320, dtype=np.int16).tobytes())
+
+        self.assertEqual(envolvente, (0.0,) * 17)
+
+    def test_senal_constante_produce_bins_uniformes(self):
+        envolvente = extraer_envolvente_visual(
+            np.full(320, 8192, dtype=np.int16).tobytes())
+
+        self.assertTrue(all(
+            abs(valor - 0.25) < 1e-6 for valor in envolvente))
+
+    def test_pulso_inicial_domina_primeras_barras(self):
+        pcm = np.zeros(320, dtype=np.int16)
+        pcm[:50] = 12000
+
+        envolvente = extraer_envolvente_visual(pcm.tobytes())
+
+        self.assertGreater(sum(envolvente[:3]), sum(envolvente[-3:]))
+
+    def test_pulso_central_domina_barras_centrales(self):
+        pcm = np.zeros(320, dtype=np.int16)
+        pcm[130:190] = 12000
+
+        envolvente = extraer_envolvente_visual(pcm.tobytes())
+
+        self.assertGreater(sum(envolvente[6:11]), sum(envolvente[:5]))
+        self.assertGreater(sum(envolvente[6:11]), sum(envolvente[-5:]))
+
+    def test_pulso_final_domina_ultimas_barras(self):
+        pcm = np.zeros(320, dtype=np.int16)
+        pcm[-50:] = 12000
+
+        envolvente = extraer_envolvente_visual(pcm.tobytes())
+
+        self.assertGreater(sum(envolvente[-3:]), sum(envolvente[:3]))
+
+    def test_dos_regiones_producen_dos_zonas_visuales(self):
+        pcm = np.zeros(320, dtype=np.int16)
+        pcm[20:60] = 10000
+        pcm[255:300] = 14000
+
+        envolvente = extraer_envolvente_visual(pcm.tobytes())
+
+        self.assertGreater(max(envolvente[:4]), max(envolvente[7:10]))
+        self.assertGreater(max(envolvente[-4:]), max(envolvente[7:10]))
+
+    def test_envolvente_siempre_permanece_en_cero_uno(self):
+        pcm = np.asarray(
+            [-32768, 32767] * 160,
+            dtype=np.int16,
+        )
+
+        envolvente = extraer_envolvente_visual(pcm.tobytes())
+
+        self.assertTrue(all(0.0 <= valor <= 1.0 for valor in envolvente))
+
+    def test_extraccion_preserva_audio_byte_identical(self):
+        original = np.arange(-160, 160, dtype=np.int16).tobytes()
+        copia = bytes(original)
+
+        extraer_envolvente_visual(original)
+
+        self.assertEqual(original, copia)
+
+    def test_frame_invalido_falla_de_forma_segura(self):
+        self.assertEqual(extraer_envolvente_visual(b""), (0.0,) * 17)
+        self.assertEqual(extraer_envolvente_visual(b"\x01"), (0.0,) * 17)
+        self.assertEqual(
+            extraer_envolvente_visual(np.zeros(4, dtype=np.int16).tobytes()),
+            (0.0,) * 17,
+        )
+
+    def test_rms_visual_cero_voz_y_clamp(self):
+        self.assertEqual(
+            calcular_nivel_visual_pcm(np.zeros(320, dtype=np.int16).tobytes()),
+            0.0,
+        )
+        self.assertAlmostEqual(
+            calcular_nivel_visual_pcm(
+                np.full(320, 8192, dtype=np.int16).tobytes()),
+            0.25,
+        )
+        self.assertGreaterEqual(
+            calcular_nivel_visual_pcm(
+                np.full(320, -32768, dtype=np.int16).tobytes()),
+            0.0,
+        )
+        self.assertLessEqual(
+            calcular_nivel_visual_pcm(
+                np.full(320, -32768, dtype=np.int16).tobytes()),
+            1.0,
+        )
+
+    def test_callback_visual_no_modifica_frame_entregado_al_pipeline(self):
+        niveles = []
+        mic = CapturadorMic(
+            16000,
+            4,
+            publicar_nivel_visual=niveles.append,
+        )
+        with mic._callback_lock:
+            mic._preparar_generacion(9)
+        original = np.asarray([0, 1000, -2000, 3000], dtype=np.int16).tobytes()
+
+        mic._callback(9, original, 4, None, None)
+
+        frame = mic.leer_frame(timeout=0)
+        self.assertEqual(frame.audio, original)
+        self.assertEqual(len(niveles), 1)
+        self.assertIs(type(niveles[0]), float)
+        self.assertGreaterEqual(niveles[0], 0.0)
+        self.assertLessEqual(niveles[0], 1.0)
+
+    def test_callback_publica_descriptor_sin_modificar_pipeline(self):
+        descriptores = []
+        mic = CapturadorMic(
+            16000,
+            320,
+            publicar_descriptor_visual=lambda nivel, forma: (
+                descriptores.append((nivel, forma))),
+        )
+        with mic._callback_lock:
+            mic._preparar_generacion(10)
+        pcm = np.zeros(320, dtype=np.int16)
+        pcm[120:200] = 9000
+        original = pcm.tobytes()
+
+        mic._callback(10, original, 320, None, None)
+
+        frame = mic.leer_frame(timeout=0)
+        self.assertEqual(frame.audio, original)
+        self.assertEqual(len(descriptores), 1)
+        nivel, forma = descriptores[0]
+        self.assertIs(type(nivel), float)
+        self.assertEqual(len(forma), 17)
+        self.assertGreater(max(forma[6:11]), max(forma[:3]))
+
+    def test_callback_visual_no_importa_ni_toca_tk(self):
+        niveles = []
+        mic = CapturadorMic(
+            16000,
+            2,
+            publicar_nivel_visual=niveles.append,
+        )
+        with mic._callback_lock:
+            mic._preparar_generacion(1)
+        importar_real = builtins.__import__
+
+        def importar(nombre, *args, **kwargs):
+            if nombre == "tkinter" or nombre.startswith("tkinter."):
+                raise AssertionError("el callback no debe tocar Tk")
+            return importar_real(nombre, *args, **kwargs)
+
+        with mock.patch("builtins.__import__", side_effect=importar):
+            mic._callback(
+                1,
+                np.asarray([1000, -1000], dtype=np.int16).tobytes(),
+                2,
+                None,
+                None,
+            )
+
+        self.assertEqual(len(niveles), 1)
 
 
 if __name__ == "__main__":

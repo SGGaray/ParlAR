@@ -16,6 +16,7 @@ from parlar.capturador_audio import (
 )
 from parlar.config import Config
 from parlar.cliente_guionar import ClienteNulo
+from parlar.estado_ui import EstadoInterfaz
 
 
 class MicFalso:
@@ -242,11 +243,56 @@ class UIFalsa:
     def __init__(self):
         self.estados = []
         self.cerrada = threading.Event()
+        self.trabajo_iniciado = threading.Event()
+        self.trabajo_finalizado = threading.Event()
+        self.estado = EstadoInterfaz()
+
+    def _registrar(self, resultado=True):
+        self.estados.append(self.estado.snapshot().operativo)
+        return resultado
 
     def fijar_estado(self, estado):
-        self.estados.append(estado)
+        self.estado.fijar_operativo(estado)
+        return self._registrar()
+
+    def preparar_generacion(self, generacion):
+        return self._registrar(self.estado.preparar_generacion(generacion))
+
+    def iniciar_captura(self, generacion):
+        return self._registrar(self.estado.iniciar_captura(generacion))
+
+    def cerrar_captura(self, generacion, *, trabajo_pendiente=False):
+        return self._registrar(self.estado.cerrar_captura(
+            generacion, trabajo_pendiente=trabajo_pendiente))
+
+    def iniciar_trabajo(self, generacion):
+        resultado = self.estado.iniciar_trabajo(generacion)
+        self.trabajo_iniciado.set()
+        return self._registrar(resultado)
+
+    def finalizar_trabajo(self, generacion):
+        resultado = self.estado.finalizar_trabajo(generacion)
+        self.trabajo_finalizado.set()
+        return self._registrar(resultado)
+
+    def invalidar_generacion(self, generacion):
+        return self._registrar(self.estado.invalidar_generacion(generacion))
+
+    def completar_generacion(self, generacion, *, con_error=False):
+        return self._registrar(self.estado.completar_generacion(
+            generacion, con_error=con_error))
+
+    def fijar_presionado(self, activo):
+        self.estado.fijar_presionado(activo)
+
+    def fijar_continuo(self, activo):
+        self.estado.fijar_continuo(activo)
+
+    def snapshot_ui(self):
+        return self.estado.snapshot()
 
     def cerrar(self):
+        self.estado.cerrar()
         self.cerrada.set()
 
 
@@ -303,7 +349,7 @@ class PruebasApp(unittest.TestCase):
         self.assertIn("cancelar", pista)
         self.assertNotIn("indicador", pista)
 
-    def test_pista_x11_documenta_ptt_continuo_esc_e_indicador(self):
+    def test_pista_x11_documenta_ptt_continuo_esc_sin_overlay_interactivo(self):
         app, *_ = self.app()
         app.cfg.overlay = True
         app.atajos._listener = object()
@@ -311,7 +357,125 @@ class PruebasApp(unittest.TestCase):
         self.assertIn(app.cfg.hotkey_toggle, pista)
         self.assertIn("doble toque", pista)
         self.assertIn("Esc cancela", pista)
-        self.assertIn("click en el indicador", pista)
+        self.assertNotIn("click", pista)
+
+    def test_ptt_press_publica_listening_visible(self):
+        app, *_ = self.app()
+
+        app.gesto_dictado.presionar()
+
+        snapshot = app.ui.snapshot_ui()
+        self.assertTrue(snapshot.visible)
+        self.assertTrue(snapshot.capturando)
+        self.assertTrue(snapshot.presionado)
+        self.assertEqual(snapshot.operativo, "recording")
+
+    def test_release_pasa_directo_a_processing_y_ultimo_trabajo_oculta(self):
+        frases = FrasesFalsas(bloquear=True)
+        app, mic, _, _, _, _, sesion, _ = self.app(frases=frases)
+        self.assertTrue(app.iniciar_grabacion())
+        indice_listening = len(app.ui.estados) - 1
+        mic.enviar(7)
+        mic.enviar(0)
+        self.assertTrue(frases.inferencia_iniciada.wait(2))
+
+        self.assertTrue(app.detener_grabacion())
+
+        procesando = app.ui.snapshot_ui()
+        self.assertEqual(procesando.operativo, "transcribing")
+        self.assertTrue(procesando.visible)
+        self.assertNotIn("idle", app.ui.estados[indice_listening:])
+
+        frases.liberar.set()
+        self.assertTrue(sesion.escrito.wait(2))
+        self.assertTrue(app.esperar_estado(EstadoApp.IDLE))
+        self.assertFalse(app.ui.snapshot_ui().visible)
+
+    def test_trabajo_interno_con_mic_abierto_mantiene_listening(self):
+        frases = FrasesFalsas(bloquear=True)
+        app, mic, *_ = self.app(frases=frases)
+        self.assertTrue(app.iniciar_grabacion())
+        mic.enviar(8)
+        mic.enviar(0)
+        self.assertTrue(frases.inferencia_iniciada.wait(2))
+
+        snapshot = app.ui.snapshot_ui()
+        self.assertTrue(snapshot.capturando)
+        self.assertEqual(snapshot.trabajos_pendientes, 1)
+        self.assertEqual(snapshot.operativo, "recording")
+
+        frases.liberar.set()
+        self.assertTrue(app.ui.trabajo_finalizado.wait(2))
+
+    def test_continuo_domina_trabajo_interno_y_off_muestra_processing(self):
+        frases = FrasesFalsas(bloquear=True)
+        app, mic, *_ = self.app(frases=frases)
+        app.ui.fijar_continuo(True)
+        self.assertTrue(app.iniciar_grabacion())
+        mic.enviar(9)
+        mic.enviar(0)
+        self.assertTrue(frases.inferencia_iniciada.wait(2))
+
+        self.assertEqual(app.ui.snapshot_ui().operativo, "recording")
+
+        app.ui.fijar_continuo(False)
+        self.assertTrue(app.detener_grabacion())
+        self.assertEqual(app.ui.snapshot_ui().operativo, "transcribing")
+        frases.liberar.set()
+        self.assertTrue(app.esperar_estado(EstadoApp.IDLE))
+
+    def test_cancel_processing_oculta_y_completion_stale_no_reaparece(self):
+        frases = FrasesFalsas(bloquear=True)
+        app, mic, *_ = self.app(frases=frases)
+        self.assertTrue(app.iniciar_grabacion())
+        mic.enviar(10)
+        mic.enviar(0)
+        self.assertTrue(frases.inferencia_iniciada.wait(2))
+        self.assertTrue(app.detener_grabacion())
+        self.assertEqual(app.ui.snapshot_ui().operativo, "transcribing")
+
+        self.assertTrue(app.cancelar_grabacion())
+        self.assertFalse(app.ui.snapshot_ui().visible)
+
+        frases.liberar.set()
+        self.assertTrue(app.ui.trabajo_finalizado.wait(2))
+        self.assertFalse(app.ui.snapshot_ui().visible)
+
+    def test_excepcion_stt_limpia_trabajo_visual_en_finally(self):
+        class FrasesConError:
+            def __init__(self):
+                self.iniciada = threading.Event()
+                self.liberar = threading.Event()
+
+            def transcribir(self, _audio):
+                self.iniciada.set()
+                self.liberar.wait(2)
+                raise RuntimeError("stt inyectado")
+
+        frases = FrasesConError()
+        app, mic, *_ = self.app(frases=frases)
+        self.assertTrue(app.iniciar_grabacion())
+        mic.enviar(11)
+        mic.enviar(0)
+        self.assertTrue(frases.iniciada.wait(2))
+        self.assertEqual(app.ui.snapshot_ui().trabajos_pendientes, 1)
+
+        frases.liberar.set()
+        self.assertTrue(app.ui.trabajo_finalizado.wait(2))
+
+        snapshot = app.ui.snapshot_ui()
+        self.assertEqual(snapshot.trabajos_pendientes, 0)
+        self.assertEqual(snapshot.operativo, "recording")
+
+    def test_shutdown_oculta_e_ignora_publicacion_tardia(self):
+        app, *_ = self.app()
+        self.assertTrue(app.iniciar_grabacion())
+        generacion = app.generacion_activa
+
+        app.salir()
+
+        self.assertFalse(app.ui.snapshot_ui().visible)
+        self.assertFalse(app.ui.iniciar_trabajo(generacion))
 
     def test_stop_finaliza_frase_abierta(self):
         app, mic, _, _, _, _, sesion, fabrica = self.app()
@@ -584,9 +748,11 @@ class PruebasApp(unittest.TestCase):
         self.assertTrue(respuesta.startswith("ERR micrófono:"), respuesta)
         self.assertEqual(app.estado, EstadoApp.ERROR)
         self.assertFalse(app.grabando.is_set())
+        self.assertEqual(app.ui.snapshot_ui().operativo, "error")
         mic.fallar_inicio = False
         self.assertTrue(app.iniciar_grabacion())
         self.assertEqual(app.estado, EstadoApp.RECORDING)
+        self.assertEqual(app.ui.snapshot_ui().operativo, "recording")
 
     def test_fallo_al_cerrar_mic_queda_visible_en_health(self):
         mic = MicFalso(fallar_stop=True)
@@ -604,6 +770,7 @@ class PruebasApp(unittest.TestCase):
         self.assertTrue(app.esperar_estado(EstadoApp.ERROR))
         self.assertFalse(app.grabando.is_set())
         self.assertIn("worker:", app._atender_comando("estado"))
+        self.assertEqual(app.ui.snapshot_ui().operativo, "error")
         self.assertFalse(app.iniciar_grabacion())
 
 
