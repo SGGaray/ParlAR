@@ -19,6 +19,7 @@ from parlar.settings_backend import (
     snapshot_configuracion,
 )
 from parlar.settings_window import (
+    ARQUITECTURA_SETTINGS,
     ControlPruebaMicrofono,
     ControlSettings,
     OpcionEntrada,
@@ -26,6 +27,7 @@ from parlar.settings_window import (
     ValoresFormulario,
     VentanaSettings,
     _indice_opcion_audio,
+    accion_cierre_settings,
     cargar_inventario_entradas,
     construir_opciones_entrada,
     construir_selectores,
@@ -35,6 +37,7 @@ from parlar.settings_window import (
     mensaje_resolucion_entrada,
     mensaje_persistencia,
     parsear_context_terms,
+    refrescar_entradas,
     snapshot_desde_valores,
     valor_opcion_selector,
     valores_desde_snapshot,
@@ -142,6 +145,20 @@ class PruebasLogicaSettings(unittest.TestCase):
             ("COBIT", "Acme   Corporation", "OWASP"),
         )
         self.assertEqual(parsear_context_terms("\n  \n"), ())
+
+    def test_contexto_multilinea_hace_roundtrip(self):
+        valores = dataclasses.replace(
+            valores_desde_snapshot(self.snapshot),
+            context_terms="María Elena\nINTA\nAPI de Pagos",
+        )
+
+        candidata = snapshot_desde_valores(self.snapshot, valores)
+        reconstruidos = valores_desde_snapshot(candidata)
+
+        self.assertEqual(
+            reconstruidos.context_terms,
+            "María Elena\nINTA\nAPI de Pagos",
+        )
 
     def test_detecta_cambio_y_sin_cambio(self):
         control = ControlSettings(self.base, self.snapshot)
@@ -254,7 +271,7 @@ class PruebasSelectoresHumanos(unittest.TestCase):
         indice = indice_opcion_selector(opciones, "streaming")
 
         self.assertGreaterEqual(indice, 0)
-        self.assertEqual(opciones[indice].etiqueta, "Continuo (streaming)")
+        self.assertEqual(opciones[indice].etiqueta, "Incremental")
 
     def test_indice_invalido_conserva_valor_original(self):
         opciones = self.selectores["rewrite_mode"]
@@ -372,7 +389,7 @@ class PruebasSelectoresHumanos(unittest.TestCase):
     def test_mensaje_de_reinicio_es_modelable_sin_tk(self):
         self.assertEqual(
             mensaje_reinicio_previo(),
-            "Los cambios de configuración se aplican al reiniciar ParlAR.",
+            "Los cambios se aplican al reiniciar ParlAR.",
         )
 
     def test_model_size_sigue_siendo_texto_libre(self):
@@ -408,6 +425,100 @@ class PruebasSelectoresHumanos(unittest.TestCase):
         ventana.control.snapshot_inicial.device = "auto"
 
         self.assertEqual(ventana._valor_selector_actual("device"), "cpu")
+
+
+class PruebasArquitecturaSettings(unittest.TestCase):
+    def test_tres_pestanas_tienen_orden_final(self):
+        self.assertEqual(
+            tuple(pestana.nombre for pestana in ARQUITECTURA_SETTINGS.pestañas),
+            ("Dictado", "Aplicación", "Avanzado"),
+        )
+
+    def test_dictado_concentra_recorrido_principal(self):
+        dictado = ARQUITECTURA_SETTINGS.pestañas[0]
+
+        self.assertEqual(
+            dictado.campos,
+            (
+                "hotkey_toggle", "audio_input_device", "audio_refresh",
+                "audio_test", "language", "context_terms",
+            ),
+        )
+        self.assertEqual(dictado.orden_foco, dictado.campos)
+
+    def test_aplicacion_contiene_solo_indicador_y_posicion(self):
+        aplicacion = ARQUITECTURA_SETTINGS.pestañas[1]
+
+        self.assertEqual(
+            aplicacion.campos, ("overlay", "overlay_position"))
+
+    def test_avanzado_contiene_opciones_tecnicas(self):
+        avanzado = ARQUITECTURA_SETTINGS.pestañas[2]
+
+        self.assertTrue({
+            "model_size", "device", "compute_type", "mode",
+            "rewrite_mode", "injector", "guardar_sesion", "guionar",
+            "guionar_socket",
+        }.issubset(avanzado.campos))
+        self.assertEqual(avanzado.orden_foco, avanzado.campos)
+
+    def test_footer_es_fijo_y_no_pertenece_al_scroll(self):
+        self.assertTrue(ARQUITECTURA_SETTINGS.footer_fijo)
+        self.assertFalse(ARQUITECTURA_SETTINGS.footer_dentro_scroll)
+
+    def test_mode_usa_por_frases_incremental_sin_continuo(self):
+        capacidades = SettingsCapabilities(
+            devices=(), compute_types=(),
+            modes=("utterance", "streaming"),
+            rewrite_modes=(), injectors=(), session_type="x11",
+            overlay_positions=(),
+        )
+        opciones = construir_selectores(capacidades)["mode"]
+
+        self.assertEqual(
+            tuple(opcion.etiqueta for opcion in opciones),
+            ("Por frases", "Incremental"),
+        )
+        self.assertNotIn("Continuo", {
+            opcion.etiqueta for opcion in opciones})
+        self.assertEqual(
+            valor_opcion_selector(opciones, 1, "utterance"), "streaming")
+
+    def test_cierre_limpio_no_pide_confirmacion(self):
+        self.assertEqual(
+            accion_cierre_settings(sucio=False), "cerrar")
+
+    def test_cierre_sucio_requiere_confirmacion(self):
+        self.assertEqual(
+            accion_cierre_settings(sucio=True), "confirmar")
+
+    def test_seguir_editando_cancela_el_descarte(self):
+        self.assertEqual(
+            accion_cierre_settings(
+                sucio=True, descartar_confirmado=False),
+            "seguir_editando",
+        )
+
+    def test_aceptar_descarte_cierra(self):
+        self.assertEqual(
+            accion_cierre_settings(
+                sucio=True, descartar_confirmado=True),
+            "cerrar",
+        )
+
+    def test_guionar_desactivado_conserva_socket(self):
+        inicial = snapshot_configuracion(Config(
+            guionar=True,
+            guionar_socket="/run/user/1000/guionar.sock",
+        ))
+        valores = dataclasses.replace(
+            valores_desde_snapshot(inicial), guionar=False)
+
+        candidata = snapshot_desde_valores(inicial, valores)
+
+        self.assertFalse(candidata.guionar)
+        self.assertEqual(
+            candidata.guionar_socket, "/run/user/1000/guionar.sock")
 
 
 class PruebasSelectorYPruebaAudio(unittest.TestCase):
@@ -511,6 +622,80 @@ class PruebasSelectorYPruebaAudio(unittest.TestCase):
 
         self.assertEqual(resultado.dispositivos, ())
         self.assertEqual(resultado.error, "PortAudio no disponible")
+
+    def test_refresh_conserva_seleccion_por_identidad(self):
+        resultado = refrescar_entradas(
+            self.identidad,
+            lambda: (self.mic_otro, self.mic),
+        )
+
+        self.assertEqual(resultado.seleccion, self.identidad)
+        self.assertEqual(
+            resultado.opciones[resultado.indice_seleccionado].valor,
+            self.identidad,
+        )
+        self.assertIsNone(resultado.error)
+
+    def test_refresh_conserva_ausente_como_no_disponible(self):
+        resultado = refrescar_entradas(
+            self.identidad,
+            lambda: (self.mic_otro,),
+        )
+
+        opcion = resultado.opciones[resultado.indice_seleccionado]
+        self.assertEqual(opcion.valor, self.identidad)
+        self.assertFalse(opcion.disponible)
+        self.assertIn("no disponible", opcion.etiqueta)
+
+    def test_refresh_no_modifica_otros_campos_del_formulario(self):
+        valores = ValoresFormulario(
+            model_size="medium",
+            device="cpu",
+            compute_type="int8",
+            language="es",
+            context_terms="ParlAR\nINTA",
+            mode="streaming",
+            rewrite_mode="formal",
+            injector="clipboard",
+            hotkey_toggle="<ctrl>+d",
+            overlay=False,
+            guionar=True,
+            guionar_socket="/tmp/guionar.sock",
+            guardar_sesion=True,
+            audio_input_device=self.identidad,
+            overlay_position="top-right",
+        )
+
+        refrescar_entradas(
+            valores.audio_input_device, lambda: (self.mic,))
+
+        self.assertEqual(valores.language, "es")
+        self.assertEqual(valores.context_terms, "ParlAR\nINTA")
+        self.assertEqual(valores.overlay_position, "top-right")
+
+    def test_refresh_error_conserva_seleccion_y_deja_opciones_usables(self):
+        def fallar():
+            raise ErrorDispositivosAudio("PortAudio no disponible")
+
+        resultado = refrescar_entradas(self.identidad, fallar)
+
+        self.assertEqual(resultado.error, "PortAudio no disponible")
+        self.assertGreaterEqual(resultado.indice_seleccionado, 0)
+        self.assertEqual(
+            resultado.opciones[resultado.indice_seleccionado].valor,
+            self.identidad,
+        )
+
+    def test_control_actualiza_inventario_solo_en_reposo(self):
+        prueba = PruebaAudioFalsa()
+        control = self.crear_control(prueba)
+
+        self.assertTrue(control.actualizar_inventario((self.mic_otro,)))
+        self.assertTrue(control.iniciar(self.otro))
+        self.assertTrue(control.esperar_fase("active"))
+        self.assertFalse(control.actualizar_inventario((self.mic,)))
+
+        self.assertEqual(prueba.inicios, [11])
 
     def test_mensaje_hace_explicito_fallback_por_ausencia(self):
         resolucion = resolver_dispositivo_entrada(self.otro, (self.mic,))

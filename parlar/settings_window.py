@@ -80,6 +80,68 @@ class EstadoControlPrueba:
     seleccion: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class PestañaSettings:
+    """Estructura y orden de foco de una pestaña, independiente de Tk."""
+
+    nombre: str
+    campos: tuple[str, ...]
+    orden_foco: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ArquitecturaSettings:
+    pestañas: tuple[PestañaSettings, ...]
+    footer_fijo: bool
+    footer_dentro_scroll: bool
+
+
+@dataclass(frozen=True, slots=True)
+class RefrescoEntradas:
+    inventario: tuple[DispositivoEntrada, ...]
+    opciones: tuple[OpcionEntrada, ...]
+    indice_seleccionado: int
+    seleccion: str
+    error: str | None
+
+
+ARQUITECTURA_SETTINGS = ArquitecturaSettings(
+    pestañas=(
+        PestañaSettings(
+            "Dictado",
+            (
+                "hotkey_toggle", "audio_input_device", "audio_refresh",
+                "audio_test", "language", "context_terms",
+            ),
+            (
+                "hotkey_toggle", "audio_input_device", "audio_refresh",
+                "audio_test", "language", "context_terms",
+            ),
+        ),
+        PestañaSettings(
+            "Aplicación",
+            ("overlay", "overlay_position"),
+            ("overlay", "overlay_position"),
+        ),
+        PestañaSettings(
+            "Avanzado",
+            (
+                "model_size", "device", "compute_type", "mode",
+                "rewrite_mode", "injector", "guardar_sesion", "guionar",
+                "guionar_socket",
+            ),
+            (
+                "model_size", "device", "compute_type", "mode",
+                "rewrite_mode", "injector", "guardar_sesion", "guionar",
+                "guionar_socket",
+            ),
+        ),
+    ),
+    footer_fijo=True,
+    footer_dentro_scroll=False,
+)
+
+
 _ETIQUETAS_SELECTORES = {
     "device": {
         "auto": "Automático",
@@ -94,7 +156,7 @@ _ETIQUETAS_SELECTORES = {
     },
     "mode": {
         "utterance": "Por frases",
-        "streaming": "Continuo (streaming)",
+        "streaming": "Incremental",
     },
     "rewrite_mode": {
         "none": "Sin reescritura",
@@ -172,7 +234,17 @@ def valor_opcion_selector(
 
 
 def mensaje_reinicio_previo() -> str:
-    return "Los cambios de configuración se aplican al reiniciar ParlAR."
+    return "Los cambios se aplican al reiniciar ParlAR."
+
+
+def accion_cierre_settings(
+        *, sucio: bool, descartar_confirmado: bool | None = None) -> str:
+    """Decide el cierre sin UI ni efectos secundarios."""
+    if not sucio:
+        return "cerrar"
+    if descartar_confirmado is None:
+        return "confirmar"
+    return "cerrar" if descartar_confirmado else "seguir_editando"
 
 
 def cargar_inventario_entradas(
@@ -219,6 +291,23 @@ def construir_opciones_entrada(
             disponible=False,
         ))
     return tuple(opciones)
+
+
+def refrescar_entradas(
+        seleccion: str,
+        listar: Callable = listar_dispositivos_entrada,
+) -> RefrescoEntradas:
+    """Reenumera y conserva la identidad elegida, incluso si desapareció."""
+    resultado = cargar_inventario_entradas(listar)
+    opciones = construir_opciones_entrada(
+        seleccion, resultado.dispositivos)
+    return RefrescoEntradas(
+        inventario=resultado.dispositivos,
+        opciones=opciones,
+        indice_seleccionado=_indice_opcion_audio(opciones, seleccion),
+        seleccion=seleccion,
+        error=resultado.error,
+    )
 
 
 def _indice_opcion_audio(
@@ -303,10 +392,7 @@ class ControlPruebaMicrofono:
         with self._cv:
             if self._fase != "idle":
                 return False
-        resolucion = self._resolver(seleccion, self.inventario)
-        with self._cv:
-            if self._fase != "idle":
-                return False
+            resolucion = self._resolver(seleccion, self.inventario)
             if resolucion.indice is None:
                 self._error = (
                     "No hay un dispositivo de entrada resoluble para la prueba "
@@ -320,6 +406,17 @@ class ControlPruebaMicrofono:
             self._indice = resolucion.indice
             self._seleccion = seleccion
             self._comandos.put(("start", resolucion.indice))
+            self._cv.notify_all()
+            return True
+
+    def actualizar_inventario(
+            self, inventario: tuple[DispositivoEntrada, ...]) -> bool:
+        """Reemplaza el inventario sólo cuando no hay un stream en uso."""
+        with self._cv:
+            if self._fase != "idle":
+                return False
+            self.inventario = tuple(inventario)
+            self._error = None
             self._cv.notify_all()
             return True
 
@@ -521,7 +618,8 @@ class VentanaSettings:
             *,
             inventario: tuple[DispositivoEntrada, ...] = (),
             error_inventario: str | None = None,
-            control_prueba: ControlPruebaMicrofono | None = None):
+            control_prueba: ControlPruebaMicrofono | None = None,
+            listar_entradas: Callable = listar_dispositivos_entrada):
         import tkinter as tk
         from tkinter import ttk
 
@@ -532,11 +630,17 @@ class VentanaSettings:
         self.capacidades = capacidades
         self.inventario = tuple(inventario)
         self.error_inventario = error_inventario
+        self._listar_entradas = listar_entradas
         self.control_prueba = control_prueba or ControlPruebaMicrofono(
             self.inventario)
         self._creando = True
         self._cerrando = False
         self._poll_audio_id = None
+        self._refresh_audio_thread = None
+        self._refresh_audio_resultados = queue.Queue()
+        self._modal_descarte = None
+        self._areas_scroll = {}
+        self._widgets_foco = {}
 
         self.opciones_audio = construir_opciones_entrada(
             control.snapshot_inicial.audio_input_device,
@@ -549,10 +653,11 @@ class VentanaSettings:
         self.opciones_selectores = construir_selectores(capacidades)
         self.selectores = {}
 
-        self.root.title("ParlAR Settings")
+        self.root.title("Configuración de ParlAR")
         self.root.geometry("700x700")
         self.root.minsize(640, 600)
-        self.root.protocol("WM_DELETE_WINDOW", self._cancelar)
+        self.root.protocol("WM_DELETE_WINDOW", self._solicitar_cierre)
+        self.root.bind("<Escape>", self._al_escape)
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
 
@@ -562,6 +667,7 @@ class VentanaSettings:
         self._crear_contenido()
         self._conectar_cambios()
         self._creando = False
+        self._actualizar_dependencias()
         self._actualizar_audio()
         self._actualizar_sucio()
         self._programar_poll_audio()
@@ -571,6 +677,8 @@ class VentanaSettings:
         estilo.configure("Status.TLabel", foreground="#4b5563")
         estilo.configure("Success.Status.TLabel", foreground="#166534")
         estilo.configure("Error.Status.TLabel", foreground="#b91c1c")
+        estilo.configure(
+            "Section.TLabel", font=("TkDefaultFont", 11, "bold"))
 
     def _crear_variables(self, valores: ValoresFormulario):
         tk = self.tk
@@ -590,222 +698,377 @@ class VentanaSettings:
             "overlay_position": tk.StringVar(
                 value=valores.overlay_position),
         }
-        self.estado = tk.StringVar(value="")
+        self.estado = tk.StringVar(value=mensaje_reinicio_previo())
         self.audio_seleccion = tk.StringVar(value="")
         self.estado_audio = tk.StringVar(value="")
         self._contexto_inicial = valores.context_terms
 
     def _crear_contenido(self):
         ttk = self.ttk
-        zona_scroll = ttk.Frame(self.root)
-        zona_scroll.grid(row=0, column=0, sticky="nsew")
-        zona_scroll.columnconfigure(0, weight=1)
-        zona_scroll.rowconfigure(0, weight=1)
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.grid(
+            row=0, column=0, sticky="nsew", padx=16, pady=(16, 0))
+        self.notebook.enable_traversal()
 
-        self.canvas_contenido = self.tk.Canvas(
-            zona_scroll,
-            borderwidth=0,
-            highlightthickness=0,
+        dictado = self._crear_pestana_scroll("Dictado")
+        aplicacion = self._crear_pestana_scroll("Aplicación")
+        avanzado = self._crear_pestana_scroll("Avanzado")
+        self._crear_dictado(dictado)
+        self._crear_aplicacion(aplicacion)
+        self._crear_avanzado(avanzado)
+
+        self.footer = ttk.Frame(self.root, padding=(16, 10, 16, 12))
+        self.footer.grid(row=1, column=0, sticky="ew")
+        self.footer.columnconfigure(0, weight=1)
+        self.etiqueta_estado = ttk.Label(
+            self.footer,
+            textvariable=self.estado,
+            style="Status.TLabel",
+            wraplength=420,
         )
-        barra_vertical = ttk.Scrollbar(
-            zona_scroll,
-            orient="vertical",
-            command=self.canvas_contenido.yview,
+        self.etiqueta_estado.grid(row=0, column=0, sticky="w")
+        self.boton_cancelar = ttk.Button(
+            self.footer,
+            text="Cerrar",
+            command=self._solicitar_cierre,
         )
-        self.canvas_contenido.configure(
-            yscrollcommand=barra_vertical.set)
-        self.canvas_contenido.grid(row=0, column=0, sticky="nsew")
-        barra_vertical.grid(row=0, column=1, sticky="ns")
+        self.boton_cancelar.grid(row=0, column=1, padx=(16, 8))
+        self.boton_guardar = ttk.Button(
+            self.footer, text="Guardar cambios", command=self._guardar)
+        self.boton_guardar.grid(row=0, column=2)
 
-        contenedor = ttk.Frame(self.canvas_contenido, padding=16)
-        contenedor.columnconfigure(0, weight=1)
-        self._ventana_contenido = self.canvas_contenido.create_window(
-            (0, 0),
-            window=contenedor,
-            anchor="nw",
+        self.root.bind("<MouseWheel>", self._rueda_scroll, add="+")
+        self.root.bind("<Button-4>", self._rueda_scroll, add="+")
+        self.root.bind("<Button-5>", self._rueda_scroll, add="+")
+        self.root.bind("<Prior>", self._pagina_scroll, add="+")
+        self.root.bind("<Next>", self._pagina_scroll, add="+")
+
+    def _crear_pestana_scroll(self, nombre):
+        ttk = self.ttk
+        pestana = ttk.Frame(self.notebook)
+        pestana.columnconfigure(0, weight=1)
+        pestana.rowconfigure(0, weight=1)
+        self.notebook.add(pestana, text=nombre)
+
+        canvas = self.tk.Canvas(
+            pestana, borderwidth=0, highlightthickness=0, takefocus=0)
+        barra = ttk.Scrollbar(
+            pestana, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=barra.set)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        barra.grid(row=0, column=1, sticky="ns")
+
+        contenido = ttk.Frame(canvas, padding=(24, 20, 24, 24))
+        contenido.columnconfigure(1, weight=1)
+        ventana = canvas.create_window(
+            (0, 0), window=contenido, anchor="nw")
+        area = {
+            "canvas": canvas,
+            "contenido": contenido,
+            "ventana": ventana,
+            "pestana": pestana,
+        }
+        self._areas_scroll[nombre] = area
+        contenido.bind(
+            "<Configure>",
+            lambda _evento, lienzo=canvas: self._actualizar_region_scroll(
+                lienzo),
         )
-        contenedor.bind("<Configure>", self._actualizar_region_scroll)
-        self.canvas_contenido.bind(
-            "<Configure>", self._ajustar_ancho_contenido)
+        canvas.bind(
+            "<Configure>",
+            lambda evento, lienzo=canvas, item=ventana:
+                self._ajustar_ancho_contenido(evento, lienzo, item),
+        )
+        return contenido
 
-        general = ttk.LabelFrame(contenedor, text="General", padding=10)
-        general.grid(row=0, column=0, sticky="ew")
-        for columna in (1, 3):
-            general.columnconfigure(columna, weight=1)
+    def _titulo_seccion(self, padre, texto, fila):
+        self.ttk.Label(
+            padre, text=texto, style="Section.TLabel").grid(
+                row=fila,
+                column=0,
+                columnspan=3,
+                sticky="w",
+                pady=((0 if fila == 0 else 20), 8),
+            )
 
-        self._campo(
-            general, "Modelo Whisper", "model_size", 0, 0,
-            ayuda="Nombre del modelo de transcripción, por ejemplo small o medium.")
-        self._campo(
-            general, "Acelerador", "device", 0, 2,
-            opciones=self.opciones_selectores["device"],
-            ayuda="Dónde se ejecutará Whisper; Automático elige al iniciar.")
-        self._campo(
-            general, "Formato de cálculo", "compute_type", 2, 0,
-            opciones=self.opciones_selectores["compute_type"],
-            ayuda="Precisión numérica usada por el motor de transcripción.")
-        self._campo(
-            general, "Idioma de dictado", "language", 2, 2,
-            ayuda="Código de idioma, por ejemplo es o en; vacío detecta automáticamente.")
-        self._campo(
-            general, "Transcripción", "mode", 4, 0,
-            opciones=self.opciones_selectores["mode"],
-            ayuda="Por frases espera una pausa; Continuo actualiza mientras hablás.")
-        self._campo(
-            general, "Estilo del texto", "rewrite_mode", 4, 2,
-            opciones=self.opciones_selectores["rewrite_mode"],
-            ayuda="Ajusta el texto reconocido sin modificar el audio.")
+    def _separador(self, padre, fila):
+        self.ttk.Separator(padre).grid(
+            row=fila, column=0, columnspan=3, sticky="ew", pady=(20, 0))
 
-        audio = ttk.LabelFrame(contenedor, text="Entrada de audio", padding=10)
-        audio.grid(row=1, column=0, sticky="ew", pady=(10, 0))
-        audio.columnconfigure(1, weight=1)
-        ttk.Label(audio, text="Micrófono").grid(
-            row=0, column=0, padx=(0, 12), sticky="w")
+    def _registrar_foco(self, nombre, widget):
+        self._widgets_foco[nombre] = widget
+        widget.bind(
+            "<FocusIn>",
+            lambda _evento, control=widget:
+                self.root.after_idle(
+                    lambda: self._asegurar_foco_visible(control)),
+            add="+",
+        )
+
+    def _crear_dictado(self, contenido):
+        ttk = self.ttk
+        self._titulo_seccion(contenido, "Atajo", 0)
+        ttk.Label(contenido, text="Atajo de dictado").grid(
+            row=1, column=0, padx=(0, 16), sticky="w")
+        atajo = ttk.Entry(
+            contenido, textvariable=self.variables["hotkey_toggle"])
+        atajo.grid(row=1, column=1, columnspan=2, sticky="ew")
+        self._registrar_foco("hotkey_toggle", atajo)
+        ttk.Label(
+            contenido,
+            text="Mantené el atajo para hablar. Soltalo para terminar.",
+            style="Status.TLabel",
+        ).grid(row=2, column=1, columnspan=2, sticky="w", pady=(6, 0))
+        ttk.Label(
+            contenido,
+            text=(
+                "Doble toque activa el dictado continuo. "
+                "Escape cancela lo pendiente."
+            ),
+            style="Status.TLabel",
+            wraplength=540,
+        ).grid(row=3, column=1, columnspan=2, sticky="w", pady=(2, 0))
+
+        self._separador(contenido, 4)
+        self._titulo_seccion(contenido, "Micrófono", 5)
+        ttk.Label(contenido, text="Entrada de audio").grid(
+            row=6, column=0, padx=(0, 16), sticky="w")
         self.selector_audio = ttk.Combobox(
-            audio,
+            contenido,
             textvariable=self.audio_seleccion,
             values=tuple(opcion.etiqueta for opcion in self.opciones_audio),
             state="readonly",
         )
-        self.selector_audio.grid(row=0, column=1, sticky="ew")
+        self.selector_audio.grid(row=6, column=1, sticky="ew")
+        self._registrar_foco("audio_input_device", self.selector_audio)
         if self._indice_audio_inicial >= 0:
             self.selector_audio.current(self._indice_audio_inicial)
+        self.boton_actualizar_audio = ttk.Button(
+            contenido,
+            text="Actualizar",
+            command=self._actualizar_dispositivos,
+        )
+        self.boton_actualizar_audio.grid(row=6, column=2, padx=(10, 0))
+        self._registrar_foco("audio_refresh", self.boton_actualizar_audio)
         self.boton_prueba = ttk.Button(
-            audio,
+            contenido,
             text="Probar micrófono",
             command=self._alternar_prueba_audio,
         )
-        self.boton_prueba.grid(row=0, column=2, padx=(10, 0))
+        self.boton_prueba.grid(row=7, column=1, sticky="w", pady=(12, 0))
+        self._registrar_foco("audio_test", self.boton_prueba)
         self.medidor_audio = ttk.Progressbar(
-            audio, maximum=100, mode="determinate", length=140)
+            contenido, maximum=100, mode="determinate", length=180)
         self.medidor_audio.grid(
-            row=1, column=0, columnspan=3, sticky="ew", pady=(10, 0))
+            row=7, column=2, sticky="ew", padx=(10, 0), pady=(12, 0))
         self.etiqueta_estado_audio = ttk.Label(
-            audio,
+            contenido,
             textvariable=self.estado_audio,
             style="Status.TLabel",
-            wraplength=620,
+            wraplength=560,
         )
         self.etiqueta_estado_audio.grid(
-            row=2, column=0, columnspan=3, sticky="w", pady=(6, 0))
+            row=8, column=1, columnspan=2, sticky="w", pady=(6, 0))
 
-        salida = ttk.LabelFrame(contenedor, text="Salida", padding=10)
-        salida.grid(row=2, column=0, sticky="ew", pady=(10, 0))
-        salida.columnconfigure(1, weight=1)
-        self._campo(
-            salida, "Método de escritura", "injector", 0, 0,
-            opciones=self.opciones_selectores["injector"],
-            ayuda="Cómo se entrega el texto a la aplicación con foco.")
-        ttk.Checkbutton(
-            salida, text="Usar GuionAR",
-            variable=self.variables["guionar"],
-        ).grid(row=0, column=2, padx=(18, 0), sticky="w")
-        ttk.Checkbutton(
-            salida, text="Guardar sesión",
-            variable=self.variables["guardar_sesion"],
-        ).grid(row=0, column=3, padx=(18, 0), sticky="w")
-
-        interfaz = ttk.LabelFrame(
-            contenedor, text="Interfaz / Indicador", padding=10)
-        interfaz.grid(row=3, column=0, sticky="ew", pady=(10, 0))
-        interfaz.columnconfigure(1, weight=1)
-        ttk.Checkbutton(
-            interfaz, text="Mostrar overlay de dictado",
-            variable=self.variables["overlay"],
-        ).grid(row=0, column=0, sticky="w")
-        self._campo(
-            interfaz,
-            "Posición del indicador",
-            "overlay_position",
-            1,
-            0,
-            opciones=self.opciones_selectores["overlay_position"],
-            ayuda="Se aplica al reiniciar ParlAR.",
-        )
-
-        atajo = ttk.LabelFrame(contenedor, text="Atajo", padding=10)
-        atajo.grid(row=4, column=0, sticky="ew", pady=(10, 0))
-        atajo.columnconfigure(1, weight=1)
-        ttk.Label(atajo, text="Combinación").grid(
-            row=0, column=0, padx=(0, 12), sticky="w")
-        ttk.Entry(
-            atajo, textvariable=self.variables["hotkey_toggle"],
-        ).grid(row=0, column=1, sticky="ew")
+        self._separador(contenido, 9)
+        self._titulo_seccion(contenido, "Idioma", 10)
+        ttk.Label(contenido, text="Idioma del dictado").grid(
+            row=11, column=0, padx=(0, 16), sticky="w")
+        idioma = ttk.Entry(
+            contenido, textvariable=self.variables["language"])
+        idioma.grid(row=11, column=1, columnspan=2, sticky="ew")
+        self._registrar_foco("language", idioma)
         ttk.Label(
-            atajo,
-            text="Formato textual del atajo actual; todavía no captura teclas.",
+            contenido,
+            text="Usá un código como es o en. Vacío detecta el idioma.",
             style="Status.TLabel",
-        ).grid(row=1, column=1, pady=(6, 0), sticky="w")
+        ).grid(row=12, column=1, columnspan=2, sticky="w", pady=(6, 0))
 
-        contexto = ttk.LabelFrame(contenedor, text="Contexto", padding=10)
-        contexto.grid(row=5, column=0, sticky="nsew", pady=(10, 0))
-        contexto.columnconfigure(0, weight=1)
+        self._separador(contenido, 13)
+        self._titulo_seccion(contenido, "Palabras y nombres", 14)
         ttk.Label(
-            contexto,
+            contenido,
             text=(
-                "Un término por línea. Se usan como contexto para mejorar "
-                "el reconocimiento; las líneas vacías se ignoran."
+                "Agregá nombres propios, siglas o términos que ParlAR "
+                "debería reconocer mejor. Un término por línea."
             ),
             style="Status.TLabel",
-            wraplength=600,
-        ).grid(row=0, column=0, sticky="w")
+            wraplength=560,
+        ).grid(row=15, column=0, columnspan=3, sticky="w")
         self.contexto = self.tk.Text(
-            contexto,
-            height=3,
+            contenido,
+            height=6,
             wrap="word",
             undo=True,
             relief="solid",
             borderwidth=1,
         )
-        self.contexto.grid(row=1, column=0, sticky="nsew", pady=(8, 0))
+        self.contexto.grid(
+            row=16, column=0, columnspan=3, sticky="nsew", pady=(8, 0))
         self.contexto.insert("1.0", self._contexto_inicial)
         self.contexto.edit_modified(False)
+        self._registrar_foco("context_terms", self.contexto)
 
-        socket = ttk.LabelFrame(
-            contenedor, text="Socket GuionAR", padding=10)
-        socket.grid(row=6, column=0, sticky="ew", pady=(10, 0))
-        socket.columnconfigure(1, weight=1)
-        ttk.Label(socket, text="Ruta").grid(
-            row=0, column=0, padx=(0, 12), sticky="w")
-        ttk.Entry(
-            socket, textvariable=self.variables["guionar_socket"],
-        ).grid(row=0, column=1, sticky="ew")
-
-        pie = ttk.Frame(contenedor)
-        pie.grid(row=7, column=0, sticky="ew", pady=(14, 0))
-        pie.columnconfigure(0, weight=1)
+    def _crear_aplicacion(self, contenido):
+        ttk = self.ttk
+        self._titulo_seccion(contenido, "Indicador", 0)
+        self.check_overlay = ttk.Checkbutton(
+            contenido,
+            text="Mostrar indicador durante el dictado",
+            variable=self.variables["overlay"],
+        )
+        self.check_overlay.grid(
+            row=1, column=0, columnspan=3, sticky="w")
+        self._registrar_foco("overlay", self.check_overlay)
+        self._campo(
+            contenido,
+            "Posición del indicador",
+            "overlay_position",
+            2,
+            0,
+            opciones=self.opciones_selectores["overlay_position"],
+            ayuda="Elegí dónde aparece la señal visual mientras dictás.",
+        )
         ttk.Label(
-            pie,
+            contenido,
             text=mensaje_reinicio_previo(),
             style="Status.TLabel",
-            wraplength=500,
-        ).grid(row=0, column=0, columnspan=3, sticky="w")
-        self.etiqueta_estado = ttk.Label(
-            pie,
-            textvariable=self.estado,
+            wraplength=560,
+        ).grid(row=4, column=0, columnspan=3, sticky="w", pady=(18, 0))
+
+    def _crear_avanzado(self, contenido):
+        ttk = self.ttk
+        self._titulo_seccion(contenido, "Reconocimiento", 0)
+        self._campo(
+            contenido, "Modelo de reconocimiento", "model_size", 1, 0,
+            ayuda="Tamaño del modelo de voz, por ejemplo small o medium.")
+        self._campo(
+            contenido, "Acelerador", "device", 3, 0,
+            opciones=self.opciones_selectores["device"],
+            ayuda="Automático elige CPU o NVIDIA CUDA al iniciar.")
+        self._campo(
+            contenido, "Precisión de cálculo", "compute_type", 5, 0,
+            opciones=self.opciones_selectores["compute_type"],
+            ayuda="Formato numérico usado por el modelo de reconocimiento.")
+        self._campo(
+            contenido, "Estrategia de transcripción", "mode", 7, 0,
+            opciones=self.opciones_selectores["mode"],
+            ayuda="Por frases espera una pausa; Incremental actualiza el texto.")
+
+        self._separador(contenido, 9)
+        self._titulo_seccion(contenido, "Salida y texto", 10)
+        self._campo(
+            contenido, "Reescritura", "rewrite_mode", 11, 0,
+            opciones=self.opciones_selectores["rewrite_mode"],
+            ayuda="Ajusta el estilo del texto después del reconocimiento.")
+        self._campo(
+            contenido, "Método de escritura", "injector", 13, 0,
+            opciones=self.opciones_selectores["injector"],
+            ayuda="Cómo se entrega el texto a la aplicación con foco.")
+        self.check_guardar_sesion = ttk.Checkbutton(
+            contenido,
+            text="Conservar transcripciones",
+            variable=self.variables["guardar_sesion"],
+        )
+        self.check_guardar_sesion.grid(
+            row=15, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        self._registrar_foco("guardar_sesion", self.check_guardar_sesion)
+
+        self._separador(contenido, 16)
+        self._titulo_seccion(contenido, "GuionAR", 17)
+        self.check_guionar = ttk.Checkbutton(
+            contenido,
+            text="Enviar dictado y actividad a GuionAR",
+            variable=self.variables["guionar"],
+        )
+        self.check_guionar.grid(
+            row=18, column=0, columnspan=3, sticky="w")
+        self._registrar_foco("guionar", self.check_guionar)
+        ttk.Label(contenido, text="Socket de GuionAR").grid(
+            row=19, column=0, padx=(0, 16), pady=(10, 0), sticky="w")
+        self.entrada_guionar_socket = ttk.Entry(
+            contenido, textvariable=self.variables["guionar_socket"])
+        self.entrada_guionar_socket.grid(
+            row=19, column=1, columnspan=2, sticky="ew", pady=(10, 0))
+        self._registrar_foco(
+            "guionar_socket", self.entrada_guionar_socket)
+        ttk.Label(
+            contenido,
+            text="La ruta se conserva aunque desactives GuionAR.",
             style="Status.TLabel",
-            wraplength=400,
-        )
-        self.etiqueta_estado.grid(row=1, column=0, sticky="w", pady=(8, 0))
-        self.boton_cancelar = ttk.Button(
-            pie, text="Cancelar", command=self._cancelar,
-        )
-        self.boton_cancelar.grid(
-            row=1, column=1, padx=(12, 8), pady=(8, 0))
-        self.boton_guardar = ttk.Button(
-            pie, text="Guardar", command=self._guardar)
-        self.boton_guardar.grid(row=1, column=2, pady=(8, 0))
+        ).grid(row=20, column=1, columnspan=2, sticky="w", pady=(6, 0))
 
-    def _actualizar_region_scroll(self, _evento=None):
-        region = self.canvas_contenido.bbox("all")
+    def _actualizar_region_scroll(self, canvas):
+        region = canvas.bbox("all")
         if region is not None:
-            self.canvas_contenido.configure(scrollregion=region)
+            canvas.configure(scrollregion=region)
 
-    def _ajustar_ancho_contenido(self, evento):
-        self.canvas_contenido.itemconfigure(
-            self._ventana_contenido,
-            width=evento.width,
-        )
+    def _ajustar_ancho_contenido(self, evento, canvas, ventana):
+        canvas.itemconfigure(ventana, width=evento.width)
+
+    def _area_scroll_de_widget(self, widget):
+        actual = widget
+        while actual is not None:
+            for area in self._areas_scroll.values():
+                if actual == area["contenido"]:
+                    return area
+            try:
+                padre = actual.winfo_parent()
+                actual = actual.nametowidget(padre) if padre else None
+            except Exception:
+                return None
+        return None
+
+    def _widget_bajo_puntero(self, evento):
+        try:
+            return self.root.winfo_containing(evento.x_root, evento.y_root)
+        except Exception:
+            return None
+
+    def _rueda_scroll(self, evento):
+        widget = self._widget_bajo_puntero(evento)
+        area = self._area_scroll_de_widget(widget)
+        if area is None or widget.winfo_class() == "Text":
+            return None
+        if getattr(evento, "num", None) == 4:
+            pasos = -3
+        elif getattr(evento, "num", None) == 5:
+            pasos = 3
+        else:
+            delta = getattr(evento, "delta", 0)
+            if not delta:
+                return None
+            pasos = -3 if delta > 0 else 3
+        area["canvas"].yview_scroll(pasos, "units")
+        return "break"
+
+    def _pagina_scroll(self, evento):
+        widget = self.root.focus_get()
+        area = self._area_scroll_de_widget(widget)
+        if area is None or widget.winfo_class() == "Text":
+            return None
+        pasos = -1 if evento.keysym == "Prior" else 1
+        area["canvas"].yview_scroll(pasos, "pages")
+        return "break"
+
+    def _asegurar_foco_visible(self, widget):
+        area = self._area_scroll_de_widget(widget)
+        if area is None:
+            return
+        canvas = area["canvas"]
+        contenido = area["contenido"]
+        canvas.update_idletasks()
+        alto_total = max(1, contenido.winfo_reqheight())
+        alto_vista = max(1, canvas.winfo_height())
+        superior = canvas.canvasy(0)
+        inferior = superior + alto_vista
+        y = widget.winfo_rooty() - contenido.winfo_rooty()
+        alto = max(1, widget.winfo_height())
+        if y < superior:
+            canvas.yview_moveto(max(0.0, y / alto_total))
+        elif y + alto > inferior:
+            destino = (y + alto - alto_vista) / alto_total
+            canvas.yview_moveto(min(1.0, max(0.0, destino)))
 
     def _campo(
             self, padre, etiqueta, nombre, fila, columna, *, opciones=None,
@@ -829,18 +1092,20 @@ class VentanaSettings:
             self.selectores[nombre] = (widget, opciones)
         widget.grid(
             row=fila, column=columna + 1,
-            padx=(0, 14), pady=5, sticky="ew")
+            columnspan=2,
+            pady=5,
+            sticky="ew")
+        self._registrar_foco(nombre, widget)
         if ayuda:
             self.ttk.Label(
                 padre,
                 text=ayuda,
                 style="Status.TLabel",
-                wraplength=270,
+                wraplength=560,
             ).grid(
                 row=fila + 1,
-                column=columna,
+                column=columna + 1,
                 columnspan=2,
-                padx=(0, 14),
                 pady=(0, 5),
                 sticky="nw",
             )
@@ -859,6 +1124,7 @@ class VentanaSettings:
         self.contexto.bind("<<Modified>>", self._al_modificar_contexto)
 
     def _al_cambiar(self, *_args):
+        self._actualizar_dependencias()
         self._actualizar_sucio()
 
     def _al_cambiar_audio(self, *_args):
@@ -869,6 +1135,20 @@ class VentanaSettings:
         if self.contexto.edit_modified():
             self.contexto.edit_modified(False)
             self._actualizar_sucio()
+
+    def _actualizar_dependencias(self):
+        if not hasattr(self, "entrada_guionar_socket"):
+            return
+        self.entrada_guionar_socket.configure(
+            state="normal" if self.variables["guionar"].get() else "disabled")
+        selector_posicion, _opciones = self.selectores["overlay_position"]
+        selector_posicion.configure(
+            state=(
+                "readonly"
+                if self.variables["overlay"].get()
+                else "disabled"
+            )
+        )
 
     def _valores(self) -> ValoresFormulario:
         return ValoresFormulario(
@@ -904,13 +1184,22 @@ class VentanaSettings:
         if self._creando:
             return
         fase = self.control_prueba.estado().fase
+        sucio = self.control.esta_sucio(self._valores())
         if guardado_habilitado(
-                sucio=self.control.esta_sucio(self._valores()),
+                sucio=sucio,
                 fase_audio=fase,
                 cerrando=self._cerrando):
             self.boton_guardar.state(["!disabled"])
         else:
             self.boton_guardar.state(["disabled"])
+        self.boton_cancelar.configure(
+            text="Descartar cambios" if sucio else "Cerrar")
+
+    def _refresh_activo(self) -> bool:
+        return (
+            self._refresh_audio_thread is not None
+            and self._refresh_audio_thread.is_alive()
+        )
 
     def _actualizar_audio(self):
         estado = self.control_prueba.estado()
@@ -918,13 +1207,23 @@ class VentanaSettings:
         ocupado = estado.fase in {
             "starting", "active", "stopping", "closing", "closed"
         }
+        refrescando = self._refresh_activo()
         self.selector_audio.configure(
-            state="disabled" if ocupado else "readonly")
+            state="disabled" if ocupado or refrescando else "readonly")
+        if ocupado or refrescando or self._cerrando:
+            self.boton_actualizar_audio.state(["disabled"])
+        else:
+            self.boton_actualizar_audio.state(["!disabled"])
 
         if self._cerrando:
             self.boton_prueba.configure(text="Probar micrófono")
             self.boton_prueba.state(["disabled"])
             mensaje = "Cerrando la prueba de audio…"
+            estilo = "Status.TLabel"
+        elif refrescando:
+            self.boton_prueba.configure(text="Probar micrófono")
+            self.boton_prueba.state(["disabled"])
+            mensaje = "Actualizando la lista de micrófonos…"
             estilo = "Status.TLabel"
         elif estado.fase == "active":
             self.boton_prueba.configure(text="Detener prueba")
@@ -965,6 +1264,57 @@ class VentanaSettings:
         self.etiqueta_estado_audio.configure(style=estilo)
         self._actualizar_sucio()
 
+    def _actualizar_dispositivos(self):
+        if (self._cerrando or self._refresh_activo()
+                or self.control_prueba.estado().fase != "idle"):
+            return
+        seleccion = self._audio_actual()
+
+        def consultar():
+            try:
+                resultado = refrescar_entradas(
+                    seleccion, self._listar_entradas)
+            except Exception as exc:
+                opciones = construir_opciones_entrada(seleccion, ())
+                resultado = RefrescoEntradas(
+                    inventario=(),
+                    opciones=opciones,
+                    indice_seleccionado=_indice_opcion_audio(
+                        opciones, seleccion),
+                    seleccion=seleccion,
+                    error=str(exc),
+                )
+            self._refresh_audio_resultados.put(resultado)
+
+        self._refresh_audio_thread = threading.Thread(
+            target=consultar,
+            name="settings-audio-refresh",
+            daemon=True,
+        )
+        self._refresh_audio_thread.start()
+        self._actualizar_audio()
+
+    def _consumir_refresco_audio(self):
+        try:
+            resultado = self._refresh_audio_resultados.get_nowait()
+        except queue.Empty:
+            return
+        hilo = self._refresh_audio_thread
+        if hilo is not None and not hilo.is_alive():
+            hilo.join()
+        self._refresh_audio_thread = None
+        if self._cerrando:
+            return
+        self.inventario = resultado.inventario
+        self.error_inventario = resultado.error
+        self.opciones_audio = resultado.opciones
+        self.selector_audio.configure(
+            values=tuple(opcion.etiqueta for opcion in self.opciones_audio))
+        if resultado.indice_seleccionado >= 0:
+            self.selector_audio.current(resultado.indice_seleccionado)
+        self.control_prueba.actualizar_inventario(resultado.inventario)
+        self._actualizar_audio()
+
     def _alternar_prueba_audio(self):
         estado = self.control_prueba.estado()
         if estado.fase == "active":
@@ -978,8 +1328,11 @@ class VentanaSettings:
 
     def _poll_audio(self):
         self._poll_audio_id = None
+        self._consumir_refresco_audio()
         self._actualizar_audio()
-        if self._cerrando and self.control_prueba.estado().fase == "closed":
+        if (self._cerrando
+                and self.control_prueba.estado().fase == "closed"
+                and not self._refresh_activo()):
             self.control.cancelar(self.root.destroy)
             return
         self._programar_poll_audio()
@@ -1000,13 +1353,87 @@ class VentanaSettings:
         self.etiqueta_estado.configure(style="Success.Status.TLabel")
         self._actualizar_sucio()
 
-    def _cancelar(self):
+    def _al_escape(self, _evento=None):
+        if self._modal_descarte is None:
+            self._solicitar_cierre()
+        return "break"
+
+    def _solicitar_cierre(self):
+        if self._cerrando:
+            return
+        decision = accion_cierre_settings(
+            sucio=self.control.esta_sucio(self._valores()))
+        if decision == "confirmar":
+            self._mostrar_confirmacion_descarte()
+            return
+        self._iniciar_cierre()
+
+    def _mostrar_confirmacion_descarte(self):
+        if self._modal_descarte is not None:
+            self._modal_descarte.focus_force()
+            return
+        modal = self.tk.Toplevel(self.root)
+        self._modal_descarte = modal
+        modal.title("Cambios sin guardar")
+        modal.resizable(False, False)
+        modal.transient(self.root)
+        modal.protocol("WM_DELETE_WINDOW", self._seguir_editando)
+        modal.bind("<Escape>", lambda _evento: self._seguir_editando())
+        cuerpo = self.ttk.Frame(modal, padding=20)
+        cuerpo.grid(row=0, column=0, sticky="nsew")
+        cuerpo.columnconfigure(0, weight=1)
+        self.ttk.Label(
+            cuerpo,
+            text="Hay cambios sin guardar.",
+            style="Section.TLabel",
+        ).grid(row=0, column=0, columnspan=2, sticky="w")
+        self.ttk.Label(
+            cuerpo,
+            text="Podés seguir editando o descartar los cambios.",
+            style="Status.TLabel",
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 18))
+        seguir = self.ttk.Button(
+            cuerpo, text="Seguir editando", command=self._seguir_editando)
+        seguir.grid(row=2, column=0, padx=(0, 8))
+        self.ttk.Button(
+            cuerpo,
+            text="Descartar cambios",
+            command=self._descartar_confirmado,
+        ).grid(row=2, column=1)
+        modal.grab_set()
+        seguir.focus_set()
+
+    def _cerrar_modal_descarte(self):
+        modal = self._modal_descarte
+        self._modal_descarte = None
+        if modal is not None:
+            try:
+                modal.grab_release()
+                modal.destroy()
+            except Exception:
+                pass
+
+    def _seguir_editando(self):
+        self._cerrar_modal_descarte()
+        self.root.focus_force()
+
+    def _descartar_confirmado(self):
+        self._cerrar_modal_descarte()
+        self._iniciar_cierre()
+
+    def _iniciar_cierre(self):
         if self._cerrando:
             return
         self._cerrando = True
         self.boton_cancelar.state(["disabled"])
+        self.boton_guardar.state(["disabled"])
+        self.boton_actualizar_audio.state(["disabled"])
         self.control_prueba.cerrar()
         self._actualizar_audio()
+
+    def _cancelar(self):
+        """Alias histórico para consumidores que cerraban la vista."""
+        self._solicitar_cierre()
 
 
 def main() -> int:
