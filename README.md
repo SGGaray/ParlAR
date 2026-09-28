@@ -292,7 +292,11 @@ publiques detalles sensibles en un issue.
   reinstalá con `--install-service` para restaurar el autostart XDG.
 - **Esc aparece como `^[` en la aplicación enfocada:** pynput observa Esc pero
   no puede suprimir solo esa tecla sin un grab global agresivo. CANCEL se
-  ejecuta, pero el passthrough queda como limitación conocida.
+  ejecuta, pero el passthrough queda como limitación conocida. En X11, al
+  mantener el default Ctrl derecho + Mayús derecha, el escritorio también
+  puede interpretar Ctrl+Mayús+Esc (por ejemplo, abrir su monitor de tareas).
+  El backend Xorg de pynput sólo ofrece un grab exclusivo de todo el teclado,
+  no supresión selectiva de Escape; ParlAR no activa ese grab por seguridad.
 
 ## Desinstalación
 

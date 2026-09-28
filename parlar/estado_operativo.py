@@ -21,6 +21,7 @@ class EstadoComponente(str, Enum):
     NOT_LOADED = "not_loaded"
     LOADING = "loading"
     READY = "ready"
+    SUSPENDED = "suspended"
     FALLBACK = "fallback"
     DEGRADED = "degraded"
     ERROR = "error"
@@ -119,6 +120,11 @@ def resumen_humano(estado: EstadoOperativo) -> tuple[str, str]:
         if estado.warnings:
             return "Requiere atención", estado.warnings[0].mensaje
         return "Listo", "ParlAR está listo para dictar."
+    if estado.hotkey == EstadoComponente.SUSPENDED:
+        return (
+            "Requiere atención",
+            "El atajo está suspendido mientras configurás una combinación.",
+        )
     problema = estado.error_bloqueante
     if problema is not None:
         return "No disponible", problema.mensaje

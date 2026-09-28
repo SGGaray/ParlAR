@@ -7,8 +7,8 @@ Nota: las claves del JSON se mantienen en inglés a propósito, para no romper
 configuraciones existentes (compatibilidad hacia atrás).
 """
 
-import json
 import ipaddress
+import json
 import math
 import os
 import re
@@ -16,6 +16,12 @@ import urllib.parse
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import ClassVar
+
+from .hotkey import (
+    ATAJO_PREDETERMINADO,
+    ErrorAtajo,
+    validar_atajo_principal,
+)
 
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "parlar"
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -104,7 +110,7 @@ class Config:
     # --- Atajos ---
     # X11: mantener para dictar. Conservamos el nombre histórico del campo.
     # Wayland: usar bindings del compositor con parlarctl.
-    hotkey_toggle: str = "<ctrl_r>+<shift_r>"
+    hotkey_toggle: str = ATAJO_PREDETERMINADO
     hotkey_quit: str = "<ctrl>+<alt>+q"
 
     # --- UI ---
@@ -337,6 +343,13 @@ class Config:
 
         if not self.model_size.strip():
             errores.append("'model_size' no puede estar vacío")
+        try:
+            validar_atajo_principal(
+                self.hotkey_toggle,
+                hotkey_salida=self.hotkey_quit,
+            )
+        except ErrorAtajo as exc:
+            errores.append(f"'hotkey_toggle': {exc}")
         if self.sample_rate != 16000:
             errores.append(
                 f"'sample_rate'={self.sample_rate}: solo se admite 16000 Hz "

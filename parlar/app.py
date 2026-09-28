@@ -15,6 +15,7 @@ generación anterior. Shutdown es terminal: invalida primero, espera al worker
 y recién entonces cierra sinks.
 """
 
+import re
 import sys
 import threading
 import time
@@ -22,17 +23,17 @@ from enum import Enum
 from typing import Optional
 
 from .capturador_audio import CapturadorMic, Segmentador, crear_vad
-from .coordinador_salida import crear_coordinador_salida
 from .config import Config
 from .control import ServidorControl, normalizar_comando
 from .control_gesto_dictado import ControlGestoDictado
+from .coordinador_salida import crear_coordinador_salida
 from .daemon_atajos import DaemonAtajos
 from .entrega import EstadoEntrega
 from .estado_operativo import (
+    ErrorInicializacionSTT,
     EstadoComponente,
     EstadoOperativoStore,
     EstadoRuntime,
-    ErrorInicializacionSTT,
     ProblemaOperativo,
     Severidad,
     puede_dictar,
@@ -1438,11 +1439,79 @@ class App:
                 f"cola={captura.queue_depth}/{self.mic.capacidad} "
                 f"backlog_ms={captura.backlog_ms:.1f}")
 
+    _TOKEN_SUSPENSION_RE = re.compile(r"[A-Za-z0-9_-]{16,128}")
+
+    def _parametros_suspension_atajo(self, partes):
+        if len(partes) != 4 or partes[1] != "v1":
+            return None
+        token = partes[2]
+        if self._TOKEN_SUSPENSION_RE.fullmatch(token) is None:
+            return None
+        try:
+            duracion_ms = int(partes[3])
+        except ValueError:
+            return None
+        if not 1000 <= duracion_ms <= 10000:
+            return None
+        return token, duracion_ms / 1000.0
+
+    def _sincronizar_suspension_atajo(self) -> None:
+        snapshot = self.estado_operativo.snapshot()
+        if snapshot.hotkey != EstadoComponente.SUSPENDED:
+            return
+        consultar = getattr(self.atajos, "esta_suspendido", None)
+        if not callable(consultar) or not consultar():
+            self.estado_operativo.fijar_componente(
+                "hotkey", EstadoComponente.READY)
+
+    def _comando_suspension_atajo(self, op: str, partes: list[str]) -> str:
+        parametros = self._parametros_suspension_atajo(partes)
+        if parametros is None:
+            return "ERR protocolo hotkey v1 inválido"
+        token, duracion_s = parametros
+        with self._estado_cv:
+            if self._estado != EstadoApp.IDLE:
+                return "ERR hotkey ocupado"
+        estado_hotkey = self.estado_operativo.snapshot().hotkey
+        if estado_hotkey not in {
+                EstadoComponente.READY, EstadoComponente.SUSPENDED}:
+            return "ERR hotkey no disponible"
+        metodo = (
+            getattr(self.atajos, "suspender", None)
+            if op == "hotkey-suspender"
+            else getattr(self.atajos, "renovar_suspension", None)
+        )
+        if not callable(metodo) or not metodo(token, duracion_s):
+            return "ERR lease hotkey rechazado"
+        self.estado_operativo.fijar_componente(
+            "hotkey", EstadoComponente.SUSPENDED)
+        return "OK hotkey suspendido v1"
+
+    def _comando_restaurar_atajo(self, partes: list[str]) -> str:
+        if (
+            len(partes) != 3
+            or partes[1] != "v1"
+            or self._TOKEN_SUSPENSION_RE.fullmatch(partes[2]) is None
+        ):
+            return "ERR protocolo hotkey v1 inválido"
+        restaurar = getattr(self.atajos, "restaurar", None)
+        if not callable(restaurar) or not restaurar(partes[2]):
+            self._sincronizar_suspension_atajo()
+            return "ERR lease hotkey desconocido"
+        self.estado_operativo.fijar_componente(
+            "hotkey", EstadoComponente.READY)
+        return "OK hotkey restaurado v1"
+
     def _atender_comando(self, cmd: str) -> str:
         partes = normalizar_comando(cmd)
         if not partes:
             return "ERR vacío"
         op = partes[0]
+        self._sincronizar_suspension_atajo()
+        if op in {"hotkey-suspender", "hotkey-renovar"}:
+            return self._comando_suspension_atajo(op, partes)
+        if op == "hotkey-restaurar":
+            return self._comando_restaurar_atajo(partes)
         if op == "alternar":
             return self._respuesta_control_lifecycle(self.alternar())
         if op == "iniciar":

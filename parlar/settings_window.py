@@ -13,21 +13,31 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from .audio_test import PruebaMicrofono
+from .hotkey import (
+    ATAJO_PREDETERMINADO,
+    ErrorAtajo,
+    SesionCapturaAtajo,
+    etiqueta_atajo,
+    token_desde_evento_tk,
+    validar_atajo_principal,
+)
 from .settings_backend import (
     DispositivoEntrada,
     ErrorDispositivosAudio,
+    ErrorSuspensionAtajo,
     ResolucionEntrada,
     ResultadoPersistencia,
     SettingsCapabilities,
     SettingsSnapshot,
+    SuspensionHotkeyProductivo,
     cargar_configuracion_actual,
-    consultar_estado_parlar,
     construir_configuracion_candidata,
+    consultar_estado_parlar,
     listar_dispositivos_entrada,
     obtener_capacidades,
     persistir_configuracion,
-    resolver_dispositivo_entrada,
     requiere_reinicio,
+    resolver_dispositivo_entrada,
     snapshot_configuracion,
 )
 
@@ -604,6 +614,12 @@ class ControlSettings:
         self.snapshot_inicial = resultado.snapshot
         return resultado
 
+    def validar_atajo(self, texto: str):
+        return validar_atajo_principal(
+            texto,
+            hotkey_salida=self.configuracion_base.hotkey_quit,
+        )
+
     def cancelar(self, cerrar: Callable[[], None]) -> None:
         cerrar()
 
@@ -621,7 +637,8 @@ class VentanaSettings:
             error_inventario: str | None = None,
             control_prueba: ControlPruebaMicrofono | None = None,
             listar_entradas: Callable = listar_dispositivos_entrada,
-            estado_parlar=None):
+            estado_parlar=None,
+            crear_suspension_atajo: Callable = SuspensionHotkeyProductivo):
         import tkinter as tk
         from tkinter import ttk
 
@@ -633,6 +650,7 @@ class VentanaSettings:
         self.inventario = tuple(inventario)
         self.error_inventario = error_inventario
         self._listar_entradas = listar_entradas
+        self._crear_suspension_atajo = crear_suspension_atajo
         self.control_prueba = control_prueba or ControlPruebaMicrofono(
             self.inventario)
         self._creando = True
@@ -641,6 +659,11 @@ class VentanaSettings:
         self._refresh_audio_thread = None
         self._refresh_audio_resultados = queue.Queue()
         self._modal_descarte = None
+        self._modal_atajo = None
+        self._captura_atajo = None
+        self._suspension_atajo = None
+        self._renovacion_atajo_id = None
+        self._boton_origen_atajo = None
         self._areas_scroll = {}
         self._widgets_foco = {}
         self.estado_parlar = estado_parlar or consultar_estado_parlar()
@@ -705,6 +728,8 @@ class VentanaSettings:
         self.estado = tk.StringVar(value=mensaje_reinicio_previo())
         self.audio_seleccion = tk.StringVar(value="")
         self.estado_audio = tk.StringVar(value="")
+        self.hotkey_etiqueta = tk.StringVar(
+            value=etiqueta_atajo(valores.hotkey_toggle))
         self._contexto_inicial = valores.context_terms
 
     def _crear_contenido(self):
@@ -814,10 +839,28 @@ class VentanaSettings:
         self._titulo_seccion(contenido, "Atajo", 0)
         ttk.Label(contenido, text="Atajo de dictado").grid(
             row=1, column=0, padx=(0, 16), sticky="w")
-        atajo = ttk.Entry(
-            contenido, textvariable=self.variables["hotkey_toggle"])
-        atajo.grid(row=1, column=1, columnspan=2, sticky="ew")
-        self._registrar_foco("hotkey_toggle", atajo)
+        fila_atajo = ttk.Frame(contenido)
+        fila_atajo.grid(row=1, column=1, columnspan=2, sticky="ew")
+        fila_atajo.columnconfigure(0, weight=1)
+        self.etiqueta_hotkey = ttk.Label(
+            fila_atajo,
+            textvariable=self.hotkey_etiqueta,
+            anchor="w",
+            padding=(10, 6),
+            relief="sunken",
+        )
+        self.etiqueta_hotkey.grid(row=0, column=0, sticky="ew")
+        self.boton_cambiar_atajo = ttk.Button(
+            fila_atajo,
+            text="Cambiar…",
+            command=self._mostrar_captura_atajo,
+        )
+        self.boton_cambiar_atajo.grid(row=0, column=1, padx=(10, 0))
+        self.boton_cambiar_atajo.bind(
+            "<Return>",
+            lambda _evento: self._mostrar_captura_atajo() or "break",
+        )
+        self._registrar_foco("hotkey_toggle", self.boton_cambiar_atajo)
         ttk.Label(
             contenido,
             text="Mantené el atajo para hablar. Soltalo para terminar.",
@@ -831,7 +874,14 @@ class VentanaSettings:
             ),
             style="Status.TLabel",
             wraplength=540,
-        ).grid(row=3, column=1, columnspan=2, sticky="w", pady=(2, 0))
+        ).grid(row=3, column=1, sticky="w", pady=(2, 0))
+        self.boton_restaurar_atajo = ttk.Button(
+            contenido,
+            text="Restaurar predeterminado",
+            command=self._restaurar_atajo,
+        )
+        self.boton_restaurar_atajo.grid(
+            row=3, column=2, sticky="e", padx=(10, 0))
 
         self._separador(contenido, 4)
         self._titulo_seccion(contenido, "Micrófono", 5)
@@ -912,6 +962,230 @@ class VentanaSettings:
         self.contexto.insert("1.0", self._contexto_inicial)
         self.contexto.edit_modified(False)
         self._registrar_foco("context_terms", self.contexto)
+
+    def _actualizar_valor_atajo(self, valor: str) -> None:
+        self.variables["hotkey_toggle"].set(valor)
+        self.hotkey_etiqueta.set(etiqueta_atajo(valor))
+
+    def _restaurar_atajo(self) -> None:
+        self._actualizar_valor_atajo(ATAJO_PREDETERMINADO)
+
+    def _mostrar_captura_atajo(self) -> None:
+        if self._modal_atajo is not None or self._cerrando:
+            return
+        suspension = self._crear_suspension_atajo()
+        self._suspension_atajo = suspension
+        self._captura_atajo = SesionCapturaAtajo(
+            self.variables["hotkey_toggle"].get(),
+            validar=self.control.validar_atajo,
+            suspension=suspension,
+        )
+        self._boton_origen_atajo = self.boton_cambiar_atajo
+        modal = self.tk.Toplevel(self.root)
+        self._modal_atajo = modal
+        modal.title("Cambiar atajo")
+        modal.resizable(False, False)
+        modal.transient(self.root)
+        modal.protocol("WM_DELETE_WINDOW", self._cancelar_captura_atajo)
+
+        cuerpo = self.ttk.Frame(modal, padding=20)
+        cuerpo.grid(row=0, column=0, sticky="nsew")
+        cuerpo.columnconfigure(0, weight=1)
+        self.ttk.Label(
+            cuerpo,
+            text="Presioná la combinación que querés usar",
+            style="Section.TLabel",
+        ).grid(row=0, column=0, columnspan=2, sticky="w")
+        self.ttk.Label(
+            cuerpo,
+            text=(
+                "Podés usar modificadores izquierdos o derechos. "
+                "Escape cancela y Tab recorre los controles."
+            ),
+            style="Status.TLabel",
+            wraplength=430,
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 14))
+
+        self._captura_atajo_texto = self.tk.StringVar(
+            value="Esperando combinación…")
+        self._captura_atajo_error = self.tk.StringVar(value="")
+        self._superficie_captura_atajo = self.tk.Frame(
+            cuerpo,
+            padx=14,
+            pady=12,
+            relief="sunken",
+            borderwidth=1,
+            takefocus=1,
+            highlightthickness=2,
+            highlightcolor="#2563eb",
+            highlightbackground="#9ca3af",
+        )
+        self._superficie_captura_atajo.grid(
+            row=2, column=0, columnspan=2, sticky="ew")
+        self.ttk.Label(
+            self._superficie_captura_atajo,
+            textvariable=self._captura_atajo_texto,
+            anchor="center",
+        ).grid(row=0, column=0, sticky="ew")
+        self._superficie_captura_atajo.columnconfigure(0, weight=1)
+        self.ttk.Label(
+            cuerpo,
+            textvariable=self._captura_atajo_error,
+            style="Error.Status.TLabel",
+            wraplength=430,
+        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 14))
+
+        cancelar = self.ttk.Button(
+            cuerpo, text="Cancelar", command=self._cancelar_captura_atajo)
+        cancelar.grid(row=4, column=0, sticky="e", padx=(0, 8))
+        cancelar.bind(
+            "<Return>",
+            lambda _evento: self._cancelar_captura_atajo() or "break",
+        )
+        self._boton_usar_atajo = self.ttk.Button(
+            cuerpo, text="Usar combinación", command=self._usar_captura_atajo)
+        self._boton_usar_atajo.grid(row=4, column=1, sticky="e")
+        self._boton_usar_atajo.bind(
+            "<Return>",
+            lambda _evento: self._usar_captura_atajo() or "break",
+        )
+        self._boton_usar_atajo.state(["disabled"])
+
+        self._superficie_captura_atajo.bind(
+            "<KeyPress>", self._al_press_captura_atajo)
+        self._superficie_captura_atajo.bind(
+            "<KeyRelease>", self._al_release_captura_atajo)
+        modal.bind("<FocusOut>", self._al_perder_foco_captura, add="+")
+        try:
+            self._captura_atajo.iniciar(
+                runtime_activo=self.estado_parlar.ejecutandose)
+            modal.grab_set()
+            self._superficie_captura_atajo.focus_set()
+        except (ErrorSuspensionAtajo, OSError) as exc:
+            self.estado.set(str(exc))
+            self.etiqueta_estado.configure(style="Error.Status.TLabel")
+            self._cerrar_captura_atajo()
+            return
+        self._programar_renovacion_atajo()
+
+    def _al_press_captura_atajo(self, evento):
+        token = token_desde_evento_tk(evento.keysym, evento.char)
+        accion = self._captura_atajo.presionar(token)
+        if accion == "cancelar":
+            self._cancelar_captura_atajo()
+            return "break"
+        if accion == "ignorar":
+            return None
+        candidata = self._captura_atajo.captura.candidata
+        if candidata is None:
+            return "break"
+        self._captura_atajo_texto.set(candidata.etiqueta)
+        try:
+            self.control.validar_atajo(candidata.persistido)
+        except ErrorAtajo as exc:
+            self._captura_atajo_error.set(str(exc))
+            self._boton_usar_atajo.state(["disabled"])
+        else:
+            self._captura_atajo_error.set("")
+            self._boton_usar_atajo.state(["!disabled"])
+        return "break"
+
+    def _al_release_captura_atajo(self, evento):
+        token = token_desde_evento_tk(evento.keysym, evento.char)
+        self._captura_atajo.soltar(token)
+        return None if token == "<tab>" else "break"
+
+    def _usar_captura_atajo(self) -> None:
+        try:
+            normalizada = self._captura_atajo.usar()
+        except ErrorAtajo as exc:
+            self._captura_atajo_error.set(str(exc))
+            self._boton_usar_atajo.state(["disabled"])
+            return
+        self._actualizar_valor_atajo(normalizada.persistido)
+        self._cerrar_captura_atajo()
+
+    def _cancelar_captura_atajo(self, _evento=None) -> None:
+        if self._captura_atajo is not None:
+            self._captura_atajo.cancelar()
+        self._cerrar_captura_atajo()
+
+    def _programar_renovacion_atajo(self) -> None:
+        if (
+            self._modal_atajo is not None
+            and self._suspension_atajo is not None
+            and self._suspension_atajo.adquirida
+        ):
+            self._renovacion_atajo_id = self.root.after(
+                2000, self._renovar_suspension_atajo)
+
+    def _renovar_suspension_atajo(self) -> None:
+        self._renovacion_atajo_id = None
+        captura = self._captura_atajo
+        if captura is None or self._modal_atajo is None:
+            return
+        try:
+            renovada = captura.renovar()
+        except Exception:
+            renovada = False
+        if not renovada:
+            self.estado.set(
+                "La captura se canceló porque no pudo mantenerse suspendido "
+                "el atajo activo.")
+            self.etiqueta_estado.configure(style="Error.Status.TLabel")
+            self._cerrar_captura_atajo()
+            return
+        self._programar_renovacion_atajo()
+
+    def _al_perder_foco_captura(self, _evento=None) -> None:
+        self.root.after_idle(self._cancelar_si_perdio_foco_captura)
+
+    def _cancelar_si_perdio_foco_captura(self) -> None:
+        modal = self._modal_atajo
+        if modal is None:
+            return
+        try:
+            widget = modal.focus_get()
+            dentro = False
+            while widget is not None:
+                if widget == modal:
+                    dentro = True
+                    break
+                padre = widget.winfo_parent()
+                widget = widget.nametowidget(padre) if padre else None
+        except Exception:
+            dentro = False
+        if not dentro:
+            self._cancelar_captura_atajo()
+
+    def _cerrar_captura_atajo(self) -> None:
+        renovacion, self._renovacion_atajo_id = (
+            self._renovacion_atajo_id, None)
+        if renovacion is not None:
+            try:
+                self.root.after_cancel(renovacion)
+            except Exception:
+                pass
+        self._suspension_atajo = None
+        captura, self._captura_atajo = self._captura_atajo, None
+        if captura is not None:
+            try:
+                captura.cerrar()
+            except Exception:
+                pass
+        modal, self._modal_atajo = self._modal_atajo, None
+        if modal is not None:
+            try:
+                modal.grab_release()
+                modal.destroy()
+            except Exception:
+                pass
+        origen, self._boton_origen_atajo = self._boton_origen_atajo, None
+        if origen is not None and not self._cerrando:
+            try:
+                origen.focus_set()
+            except Exception:
+                pass
 
     def _crear_aplicacion(self, contenido):
         ttk = self.ttk
@@ -1385,6 +1659,8 @@ class VentanaSettings:
     def _solicitar_cierre(self):
         if self._cerrando:
             return
+        if self._modal_atajo is not None:
+            self._cerrar_captura_atajo()
         decision = accion_cierre_settings(
             sucio=self.control.esta_sucio(self._valores()))
         if decision == "confirmar":
@@ -1449,9 +1725,12 @@ class VentanaSettings:
         if self._cerrando:
             return
         self._cerrando = True
+        self._cerrar_captura_atajo()
         self.boton_cancelar.state(["disabled"])
         self.boton_guardar.state(["disabled"])
         self.boton_actualizar_audio.state(["disabled"])
+        self.boton_cambiar_atajo.state(["disabled"])
+        self.boton_restaurar_atajo.state(["disabled"])
         self.control_prueba.cerrar()
         self._actualizar_audio()
 

@@ -6,6 +6,7 @@ inicio. No conoce ``App`` ni aplica cambios sobre una sesión activa.
 
 import json
 import os
+import secrets
 import socket
 import urllib.parse
 from collections.abc import Iterable, Mapping
@@ -90,6 +91,65 @@ class EstadoParlARSettings:
     titulo: str
     mensaje: str
     ejecutandose: bool
+
+
+class ErrorSuspensionAtajo(RuntimeError):
+    """El runtime no pudo garantizar una captura aislada del hotkey."""
+
+
+class SuspensionHotkeyProductivo:
+    """Lease IPC acotado; el daemon se restaura aunque el cliente desaparezca."""
+
+    VERSION = "v1"
+    TTL_MS = 5000
+
+    def __init__(self, *, enviar=None, token: str | None = None):
+        if enviar is None:
+            from .control import enviar_comando
+
+            enviar = lambda comando: enviar_comando(comando, timeout=0.35)
+        self._enviar = enviar
+        self.token = token or secrets.token_urlsafe(24)
+        self.adquirida = False
+
+    def adquirir(self, *, runtime_activo: bool) -> bool:
+        if not runtime_activo:
+            return False
+        respuesta = self._enviar(
+            f"hotkey-suspender {self.VERSION} {self.token} {self.TTL_MS}")
+        if respuesta != "OK hotkey suspendido v1":
+            raise ErrorSuspensionAtajo(
+                "No se pudo suspender el atajo activo para capturarlo "
+                f"con seguridad ({respuesta})."
+            )
+        self.adquirida = True
+        return True
+
+    def renovar(self) -> bool:
+        if not self.adquirida:
+            return True
+        try:
+            respuesta = self._enviar(
+                f"hotkey-renovar {self.VERSION} {self.token} {self.TTL_MS}")
+        except OSError:
+            self.adquirida = False
+            return False
+        if respuesta != "OK hotkey suspendido v1":
+            self.adquirida = False
+            return False
+        return True
+
+    def liberar(self) -> bool:
+        if not self.adquirida:
+            return True
+        self.adquirida = False
+        try:
+            respuesta = self._enviar(
+                f"hotkey-restaurar {self.VERSION} {self.token}")
+        except OSError:
+            # El lease vence solo; cerrar Settings no debe quedar bloqueado.
+            return False
+        return respuesta == "OK hotkey restaurado v1"
 
 
 def representar_estado_parlar(

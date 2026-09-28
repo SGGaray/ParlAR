@@ -14,6 +14,8 @@ siendo usar comandos de ``parlarctl`` desde bindings del compositor.
 """
 
 import sys
+import threading
+import time
 from typing import Callable, Hashable, Iterable
 
 from .inyector_salida import detectar_sesion
@@ -114,6 +116,64 @@ class DaemonAtajos:
         self._listener = None
         self._estado_dictado = None
         self._hotkey_salir = None
+        self._suspension_lock = threading.Lock()
+        self._suspension_token: str | None = None
+        self._suspension_hasta = 0.0
+
+    def suspender(self, token: str, duracion_s: float) -> bool:
+        """Suspende callbacks mediante un lease que expira automáticamente."""
+        if not token or not 1.0 <= duracion_s <= 10.0:
+            return False
+        ahora = time.monotonic()
+        with self._suspension_lock:
+            activa = (
+                self._suspension_token is not None
+                and ahora < self._suspension_hasta
+            )
+            if activa and self._suspension_token != token:
+                return False
+            self._suspension_token = token
+            self._suspension_hasta = ahora + duracion_s
+        if self._estado_dictado is not None:
+            self._estado_dictado.reiniciar()
+        return True
+
+    def renovar_suspension(self, token: str, duracion_s: float) -> bool:
+        if not 1.0 <= duracion_s <= 10.0:
+            return False
+        ahora = time.monotonic()
+        with self._suspension_lock:
+            if (
+                self._suspension_token != token
+                or ahora >= self._suspension_hasta
+            ):
+                self._suspension_token = None
+                self._suspension_hasta = 0.0
+                return False
+            self._suspension_hasta = ahora + duracion_s
+            return True
+
+    def restaurar(self, token: str) -> bool:
+        with self._suspension_lock:
+            if self._suspension_token != token:
+                return False
+            self._suspension_token = None
+            self._suspension_hasta = 0.0
+        if self._estado_dictado is not None:
+            self._estado_dictado.reiniciar()
+        return True
+
+    def esta_suspendido(self) -> bool:
+        ahora = time.monotonic()
+        with self._suspension_lock:
+            if (
+                self._suspension_token is not None
+                and ahora < self._suspension_hasta
+            ):
+                return True
+            self._suspension_token = None
+            self._suspension_hasta = 0.0
+            return False
 
     def _crear_listener(self, keyboard):
         teclas_dictado = {
@@ -143,6 +203,11 @@ class DaemonAtajos:
         def al_press(tecla):
             nonlocal escape_presionado
 
+            if self.esta_suspendido():
+                estado_dictado.reiniciar()
+                escape_presionado = False
+                return
+
             # El hotkey de salida conserva el comportamiento estándar
             # de pynput, para el que sí conviene canonicalizar.
             hotkey_salir.press(
@@ -164,6 +229,11 @@ class DaemonAtajos:
 
         def al_release(tecla):
             nonlocal escape_presionado
+
+            if self.esta_suspendido():
+                estado_dictado.reiniciar()
+                escape_presionado = False
+                return
 
             identidad = _identidad_tecla(tecla)
 
@@ -246,3 +316,6 @@ class DaemonAtajos:
 
         self._estado_dictado = None
         self._hotkey_salir = None
+        with self._suspension_lock:
+            self._suspension_token = None
+            self._suspension_hasta = 0.0
