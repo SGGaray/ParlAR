@@ -35,6 +35,7 @@ ALIAS_COMANDOS = {
     "toggle": "alternar", "start": "iniciar", "stop": "detener",
     "cancel": "cancelar",
     "status": "estado", "mode": "modo", "rewrite": "reescritura",
+    "operational-status": "estado-operativo",
     "quit": "salir",
 }
 
@@ -464,10 +465,10 @@ class ServidorControl:
             pass
 
 
-def enviar_comando(cmd: str) -> str:
+def enviar_comando(cmd: str, *, timeout: float = 3.0) -> str:
     """Lado cliente, usado por el punto de entrada parlarctl."""
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.settimeout(3.0)
+    s.settimeout(timeout)
     try:
         s.connect(str(SOCKET_PATH))
         s.sendall((cmd + "\n").encode("utf-8"))

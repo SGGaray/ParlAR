@@ -4,7 +4,9 @@ Este módulo sólo prepara, valida y persiste configuración para el próximo
 inicio. No conoce ``App`` ni aplica cambios sobre una sesión activa.
 """
 
+import json
 import os
+import socket
 import urllib.parse
 from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass
@@ -78,6 +80,54 @@ class SettingsCapabilities:
     session_type: str
     overlay_positions: tuple[str, ...] = tuple(
         sorted(Config.OVERLAY_POSITIONS))
+
+
+@dataclass(frozen=True, slots=True)
+class EstadoParlARSettings:
+    """Resumen mínimo del runtime, listo para presentar sin lógica Tk."""
+
+    categoria: str
+    titulo: str
+    mensaje: str
+    ejecutandose: bool
+
+
+def representar_estado_parlar(
+        datos: Mapping[str, Any] | None) -> EstadoParlARSettings:
+    if datos is None:
+        return EstadoParlARSettings(
+            "stopped", "No está ejecutándose",
+            "ParlAR no está ejecutándose.", False)
+    titulo = str(datos.get("status", "No disponible"))
+    mensaje = str(datos.get("message", "ParlAR no está disponible."))
+    if titulo == "Listo":
+        categoria = "ready"
+    elif titulo == "Requiere atención":
+        categoria = "attention"
+    else:
+        categoria = "unavailable"
+        titulo = "No disponible"
+    return EstadoParlARSettings(categoria, titulo, mensaje, True)
+
+
+def consultar_estado_parlar(enviar=None) -> EstadoParlARSettings:
+    """Consulta puntual y acotada del daemon; su ausencia no es un error."""
+    if enviar is None:
+        from .control import enviar_comando
+
+        enviar = lambda comando: enviar_comando(comando, timeout=0.35)
+    try:
+        respuesta = enviar("estado-operativo")
+        datos = json.loads(respuesta)
+        if not isinstance(datos, Mapping):
+            raise ValueError("la respuesta operativa no es un objeto")
+    except (ConnectionRefusedError, FileNotFoundError, socket.timeout):
+        return representar_estado_parlar(None)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return EstadoParlARSettings(
+            "unavailable", "No disponible",
+            "No se pudo consultar el estado de ParlAR.", True)
+    return representar_estado_parlar(datos)
 
 
 class ErrorDispositivosAudio(RuntimeError):

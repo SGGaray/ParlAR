@@ -21,6 +21,7 @@ from .settings_backend import (
     SettingsCapabilities,
     SettingsSnapshot,
     cargar_configuracion_actual,
+    consultar_estado_parlar,
     construir_configuracion_candidata,
     listar_dispositivos_entrada,
     obtener_capacidades,
@@ -120,7 +121,7 @@ ARQUITECTURA_SETTINGS = ArquitecturaSettings(
         ),
         PestañaSettings(
             "Aplicación",
-            ("overlay", "overlay_position"),
+            ("runtime_status", "overlay", "overlay_position"),
             ("overlay", "overlay_position"),
         ),
         PestañaSettings(
@@ -619,7 +620,8 @@ class VentanaSettings:
             inventario: tuple[DispositivoEntrada, ...] = (),
             error_inventario: str | None = None,
             control_prueba: ControlPruebaMicrofono | None = None,
-            listar_entradas: Callable = listar_dispositivos_entrada):
+            listar_entradas: Callable = listar_dispositivos_entrada,
+            estado_parlar=None):
         import tkinter as tk
         from tkinter import ttk
 
@@ -641,6 +643,7 @@ class VentanaSettings:
         self._modal_descarte = None
         self._areas_scroll = {}
         self._widgets_foco = {}
+        self.estado_parlar = estado_parlar or consultar_estado_parlar()
 
         self.opciones_audio = construir_opciones_entrada(
             control.snapshot_inicial.audio_input_device,
@@ -676,6 +679,7 @@ class VentanaSettings:
         estilo = self.ttk.Style(self.root)
         estilo.configure("Status.TLabel", foreground="#4b5563")
         estilo.configure("Success.Status.TLabel", foreground="#166534")
+        estilo.configure("Warning.Status.TLabel", foreground="#92400e")
         estilo.configure("Error.Status.TLabel", foreground="#b91c1c")
         estilo.configure(
             "Section.TLabel", font=("TkDefaultFont", 11, "bold"))
@@ -911,20 +915,40 @@ class VentanaSettings:
 
     def _crear_aplicacion(self, contenido):
         ttk = self.ttk
-        self._titulo_seccion(contenido, "Indicador", 0)
+        self._titulo_seccion(contenido, "Estado de ParlAR", 0)
+        estilo_estado = {
+            "ready": "Success.Status.TLabel",
+            "attention": "Warning.Status.TLabel",
+            "unavailable": "Error.Status.TLabel",
+            "stopped": "Status.TLabel",
+        }.get(self.estado_parlar.categoria, "Status.TLabel")
+        ttk.Label(
+            contenido,
+            text=self.estado_parlar.titulo,
+            style="Section.TLabel",
+        ).grid(row=1, column=0, columnspan=3, sticky="w")
+        ttk.Label(
+            contenido,
+            text=self.estado_parlar.mensaje,
+            style=estilo_estado,
+            wraplength=560,
+        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(4, 0))
+
+        self._separador(contenido, 3)
+        self._titulo_seccion(contenido, "Indicador", 4)
         self.check_overlay = ttk.Checkbutton(
             contenido,
             text="Mostrar indicador durante el dictado",
             variable=self.variables["overlay"],
         )
         self.check_overlay.grid(
-            row=1, column=0, columnspan=3, sticky="w")
+            row=5, column=0, columnspan=3, sticky="w")
         self._registrar_foco("overlay", self.check_overlay)
         self._campo(
             contenido,
             "Posición del indicador",
             "overlay_position",
-            2,
+            6,
             0,
             opciones=self.opciones_selectores["overlay_position"],
             ayuda="Elegí dónde aparece la señal visual mientras dictás.",
@@ -934,7 +958,7 @@ class VentanaSettings:
             text=mensaje_reinicio_previo(),
             style="Status.TLabel",
             wraplength=560,
-        ).grid(row=4, column=0, columnspan=3, sticky="w", pady=(18, 0))
+        ).grid(row=8, column=0, columnspan=3, sticky="w", pady=(18, 0))
 
     def _crear_avanzado(self, contenido):
         ttk = self.ttk
@@ -1442,6 +1466,7 @@ def main() -> int:
         snapshot = snapshot_configuracion(base)
         capacidades = obtener_capacidades()
         inventario = cargar_inventario_entradas()
+        estado_parlar = consultar_estado_parlar()
     except Exception as exc:
         print(f"[settings] no se pudo cargar la configuración: {exc}",
               file=sys.stderr)
@@ -1461,6 +1486,7 @@ def main() -> int:
         capacidades,
         inventario=inventario.dispositivos,
         error_inventario=inventario.error,
+        estado_parlar=estado_parlar,
     )
     root.mainloop()
     return 0

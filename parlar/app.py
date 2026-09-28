@@ -27,8 +27,20 @@ from .config import Config
 from .control import ServidorControl, normalizar_comando
 from .control_gesto_dictado import ControlGestoDictado
 from .daemon_atajos import DaemonAtajos
+from .entrega import EstadoEntrega
+from .estado_operativo import (
+    EstadoComponente,
+    EstadoOperativoStore,
+    EstadoRuntime,
+    ErrorInicializacionSTT,
+    ProblemaOperativo,
+    Severidad,
+    puede_dictar,
+    serializar_estado,
+)
 from .estado_ui import EstadoInterfaz
 from .indicador import crear_ui
+from .inyector_salida import backend_inyector_disponible, detectar_sesion
 from .motor_transcripcion import MotorWhisper, TranscriptorFrase, TranscriptorStreaming
 from .procesador_texto import ProcesadorTexto
 from .settings_backend import (
@@ -81,8 +93,17 @@ class App:
                  proc=None, inyector=None, guionar=None, sesion=None, mic=None,
                  ui=None, control=None, atajos=None, guardia_instancia=None,
                  vad_factory=crear_vad, segmentador_factory=Segmentador,
-                 listar_entradas=None, resolver_entrada=None):
-        cfg.validate()
+                 listar_entradas=None, resolver_entrada=None,
+                 estado_operativo=None):
+        self.estado_operativo = estado_operativo or EstadoOperativoStore(
+            gesto_requerido=detectar_sesion() != "wayland")
+        try:
+            cfg.validate()
+        except Exception as exc:
+            self._fallo_operativo(
+                "configuracion_invalida", "runtime",
+                "La configuración de ParlAR no es válida.", exc)
+            raise
         self.cfg = cfg
         self.grabando = threading.Event()
         self.saliendo = threading.Event()
@@ -119,11 +140,21 @@ class App:
         self.resolucion_entrada = None
         mic_productivo = mic
         if mic_productivo is None:
-            self.resolucion_entrada = resolver_entrada_productiva(
-                cfg.audio_input_device,
-                listar_entradas=listar_entradas,
-                resolver_entrada=resolver_entrada,
-            )
+            try:
+                self.resolucion_entrada = resolver_entrada_productiva(
+                    cfg.audio_input_device,
+                    listar_entradas=listar_entradas,
+                    resolver_entrada=resolver_entrada,
+                )
+            except Exception as exc:
+                self.estado_operativo.fijar_componente(
+                    "audio", EstadoComponente.ERROR,
+                    problema=ProblemaOperativo(
+                        "audio_no_disponible", "audio", Severidad.BLOCKING,
+                        "No hay un micrófono disponible para dictar.",
+                        self._detalle_error(exc)),
+                )
+                raise
             if self.resolucion_entrada.usando_fallback:
                 dispositivo = self.resolucion_entrada.dispositivo
                 nombre = (
@@ -137,6 +168,21 @@ class App:
                     f"(motivo: {self.resolucion_entrada.motivo})",
                     file=sys.stderr,
                 )
+                self.estado_operativo.fijar_componente(
+                    "audio", EstadoComponente.FALLBACK,
+                    dispositivo_audio=nombre,
+                    problema=ProblemaOperativo(
+                        "audio_fallback", "audio", Severidad.WARNING,
+                        "El micrófono guardado no está disponible; se usa el predeterminado.",
+                        self.resolucion_entrada.motivo),
+                )
+            else:
+                dispositivo = self.resolucion_entrada.dispositivo
+                self.estado_operativo.fijar_componente(
+                    "audio", EstadoComponente.READY,
+                    dispositivo_audio=(
+                        dispositivo.nombre if dispositivo is not None else None),
+                )
             mic_productivo = CapturadorMic(
                 cfg.sample_rate,
                 cfg.frame_samples,
@@ -145,16 +191,36 @@ class App:
                 publicar_descriptor_visual=(
                     estado_interfaz.fijar_descriptor_visual),
             )
+        else:
+            self.estado_operativo.fijar_componente(
+                "audio", EstadoComponente.READY)
 
         if motor is None and (frases is None or streaming is None):
-            motor = MotorWhisper(
-                cfg.model_size,
-                cfg.device,
-                cfg.compute_type,
-                cfg.language,
-                cfg.beam_size,
-                initial_prompt=cfg.construir_contexto_stt(),
-            )
+            self.estado_operativo.fijar_componente(
+                "stt", EstadoComponente.LOADING)
+            try:
+                motor = MotorWhisper(
+                    cfg.model_size,
+                    cfg.device,
+                    cfg.compute_type,
+                    cfg.language,
+                    cfg.beam_size,
+                    initial_prompt=cfg.construir_contexto_stt(),
+                )
+            except Exception as exc:
+                mensaje = (
+                    "No se pudo iniciar la aceleración CUDA solicitada."
+                    if cfg.device == "cuda"
+                    else "No se pudo cargar el modelo de reconocimiento.")
+                self.estado_operativo.fijar_componente(
+                    "stt", EstadoComponente.ERROR,
+                    problema=ProblemaOperativo(
+                        "stt_carga_fallida", "stt", Severidad.BLOCKING,
+                        mensaje, self._detalle_error(exc)),
+                )
+                raise ErrorInicializacionSTT(mensaje) from exc
+        self.estado_operativo.fijar_componente(
+            "stt", EstadoComponente.READY)
         self.motor = motor
         self.frases = frases or TranscriptorFrase(self.motor)
         self.streaming = streaming or TranscriptorStreaming(
@@ -168,6 +234,29 @@ class App:
             guionar=guionar,
             sesion=sesion,
         )
+        backend_salida = getattr(self.salida.inyector, "backend", None)
+        if backend_salida and not backend_inyector_disponible(backend_salida):
+            self.estado_operativo.fijar_componente(
+                "output", EstadoComponente.ERROR,
+                backend_salida=backend_salida,
+                problema=ProblemaOperativo(
+                    "inyector_no_disponible", "output", Severidad.BLOCKING,
+                    "No hay una salida disponible para entregar el dictado.",
+                    f"backend={backend_salida}"),
+            )
+        elif backend_salida == "clipboard":
+            self.estado_operativo.fijar_componente(
+                "output", EstadoComponente.DEGRADED,
+                backend_salida=backend_salida,
+                problema=ProblemaOperativo(
+                    "inyector_clipboard", "output", Severidad.WARNING,
+                    "La escritura directa no está disponible; se usará el portapapeles.",
+                ),
+            )
+        else:
+            self.estado_operativo.fijar_componente(
+                "output", EstadoComponente.READY,
+                backend_salida=backend_salida or "personalizado")
         if cfg.guionar:
             print(f"[guionar] integración activa (socket: {self.guionar.ruta})")
         self.mic = mic_productivo
@@ -196,6 +285,15 @@ class App:
             al_salir=self.salir,
             al_cancelar=self.cancelar_grabacion,
         )
+
+    @staticmethod
+    def _detalle_error(exc) -> str:
+        return f"{type(exc).__name__}: {exc}"
+
+    def _fallo_operativo(self, codigo, componente, mensaje, exc):
+        self.estado_operativo.reportar_problema(ProblemaOperativo(
+            codigo, componente, Severidad.BLOCKING, mensaje,
+            self._detalle_error(exc)))
 
     # ------------------------------------------------------------ ciclo de vida
 
@@ -253,17 +351,70 @@ class App:
     def ejecutar(self):
         try:
             self._iniciar_trabajador()
-            self.control.iniciar()
-            self.atajos.iniciar()
-            print(
-                f"[app] listo. Modo: {self.cfg.mode}. "
-                f"{self._pista_controles()}"
+            try:
+                self.control.iniciar()
+            except Exception as exc:
+                self.estado_operativo.fijar_componente(
+                    "control", EstadoComponente.ERROR,
+                    problema=ProblemaOperativo(
+                        "control_no_disponible", "control", Severidad.BLOCKING,
+                        "No se pudo iniciar el control local de ParlAR.",
+                        self._detalle_error(exc)),
+                )
+                self.estado_operativo.actualizar_runtime(EstadoRuntime.ERROR)
+                raise
+            self.estado_operativo.fijar_componente(
+                "control", EstadoComponente.READY)
+            try:
+                hotkey_listo = bool(self.atajos.iniciar())
+            except Exception as exc:
+                self.estado_operativo.fijar_componente(
+                    "hotkey", EstadoComponente.ERROR,
+                    problema=ProblemaOperativo(
+                        "hotkey_inicio_fallido", "hotkey", Severidad.BLOCKING,
+                        "No se pudo iniciar el atajo global.",
+                        self._detalle_error(exc)),
+                )
+                self.estado_operativo.actualizar_runtime(EstadoRuntime.ERROR)
+                raise
+            if hotkey_listo:
+                self.estado_operativo.fijar_componente(
+                    "hotkey", EstadoComponente.READY)
+            else:
+                gesto_requerido = self.estado_operativo.snapshot().gesto_requerido
+                self.estado_operativo.fijar_componente(
+                    "hotkey", EstadoComponente.ERROR if gesto_requerido
+                    else EstadoComponente.UNAVAILABLE,
+                    problema=ProblemaOperativo(
+                        "hotkey_no_disponible", "hotkey",
+                        Severidad.BLOCKING if gesto_requerido
+                        else Severidad.WARNING,
+                        "El atajo global no está disponible; usá parlarctl.",
+                    ),
+                )
+            self._comprobar_guionar()
+            self.estado_operativo.actualizar_runtime(EstadoRuntime.READY)
+            prefijo = (
+                "[app] listo."
+                if puede_dictar(self.estado_operativo.snapshot())
+                else "[app] iniciado, pero requiere atención."
             )
+            print(f"{prefijo} Modo: {self.cfg.mode}. {self._pista_controles()}")
             self.ui.ejecutar()
         except KeyboardInterrupt:
             pass
         finally:
             self.salir()
+
+    def _comprobar_guionar(self):
+        if not self.cfg.guionar:
+            return
+        comprobar = getattr(self.guionar, "comprobar_disponibilidad", None)
+        if comprobar is not None and not comprobar():
+            self.estado_operativo.reportar_problema(ProblemaOperativo(
+                "guionar_no_disponible", "guionar", Severidad.WARNING,
+                "GuionAR no está disponible; el dictado seguirá en la salida principal.",
+            ))
 
     def _pista_controles(self) -> str:
         if self.atajos._listener:
@@ -403,6 +554,13 @@ class App:
                     return False
                 self._estado_visual_terminal_si_vigente(
                     "error", EstadoApp.ERROR, generacion)
+                self.estado_operativo.fijar_componente(
+                    "audio", EstadoComponente.ERROR,
+                    problema=ProblemaOperativo(
+                        "audio_apertura_fallida", "audio", Severidad.BLOCKING,
+                        "No se pudo abrir el micrófono seleccionado.",
+                        self._detalle_error(exc)),
+                )
                 print(f"[app] no se pudo abrir el micrófono: {exc}", file=sys.stderr)
                 return False
 
@@ -436,6 +594,18 @@ class App:
                 return False
 
             self.grabando.set()
+            if (self.resolucion_entrada is not None
+                    and self.resolucion_entrada.usando_fallback):
+                self.estado_operativo.fijar_componente(
+                    "audio", EstadoComponente.FALLBACK,
+                    problema=ProblemaOperativo(
+                        "audio_fallback", "audio", Severidad.WARNING,
+                        "El micrófono guardado no está disponible; se usa el predeterminado.",
+                        self.resolucion_entrada.motivo),
+                )
+            else:
+                self.estado_operativo.fijar_componente(
+                    "audio", EstadoComponente.READY)
             self._ui_iniciar_captura(generacion)
             print(f"[app] ● grabando (sesión {generacion})")
             return True
@@ -485,6 +655,14 @@ class App:
                 self._estado_cv.notify_all()
             if cancelada:
                 return error is None
+            if error is not None:
+                self.estado_operativo.fijar_componente(
+                    "audio", EstadoComponente.ERROR,
+                    problema=ProblemaOperativo(
+                        "audio_cierre_fallido", "audio", Severidad.BLOCKING,
+                        "No se pudo cerrar correctamente el micrófono.",
+                        self._detalle_error(error)),
+                )
             print(f"[app] ◌ deteniendo (sesión {generacion})")
             return error is None
 
@@ -605,6 +783,13 @@ class App:
             if error_vigente:
                 self._estado_visual_terminal_si_vigente(
                     "error", EstadoApp.ERROR, revision)
+                self.estado_operativo.fijar_componente(
+                    "audio", EstadoComponente.ERROR,
+                    problema=ProblemaOperativo(
+                        "audio_cierre_fallido", "audio", Severidad.BLOCKING,
+                        "No se pudo cerrar correctamente el micrófono.",
+                        self._detalle_error(error)),
+                )
             return False
 
         self._estado_visual_terminal_si_vigente(
@@ -652,6 +837,10 @@ class App:
                     self._estado_cv.notify_all()
                     espera = self._shutdown_completo
                     propietario = True
+
+            if propietario:
+                self.estado_operativo.actualizar_runtime(
+                    EstadoRuntime.STOPPING)
 
             if propietario:
                 with self._salida_lock:
@@ -715,6 +904,7 @@ class App:
                         self._shutdown_errores)
                 self._estado = EstadoApp.CLOSED
                 self._estado_cv.notify_all()
+            self.estado_operativo.actualizar_runtime(EstadoRuntime.STOPPED)
             self._shutdown_completo.set()
 
     def _registrar_error_shutdown(self, etapa: str, exc: BaseException):
@@ -939,7 +1129,44 @@ class App:
             return True
 
     def _escribir_en_todas_bajo_lock(self, texto: str):
-        return self.salida.entregar_fragmento(texto)
+        resultado = self.salida.entregar_fragmento(texto)
+        self._registrar_resultado_salida(resultado)
+        return resultado
+
+    def _registrar_resultado_salida(self, resultado):
+        estado_operativo = getattr(self, "estado_operativo", None)
+        if estado_operativo is None:
+            return
+        estado_inyector = getattr(resultado, "inyector", None)
+        if estado_inyector == EstadoEntrega.FAILED:
+            estado_operativo.fijar_componente(
+                "output", EstadoComponente.ERROR,
+                problema=ProblemaOperativo(
+                    "inyector_fallido", "output", Severidad.BLOCKING,
+                    "No se pudo entregar el texto dictado.",
+                ),
+            )
+        elif estado_inyector == EstadoEntrega.COPIED:
+            estado_operativo.fijar_componente(
+                "output", EstadoComponente.DEGRADED,
+                problema=ProblemaOperativo(
+                    "inyector_clipboard", "output", Severidad.WARNING,
+                    "El texto quedó en el portapapeles para pegarlo manualmente.",
+                ),
+            )
+        elif estado_inyector == EstadoEntrega.INSERTED:
+            estado_operativo.fijar_componente(
+                "output", EstadoComponente.READY)
+
+        estado_guionar = getattr(resultado, "guionar", None)
+        guionar_activo = getattr(getattr(self, "cfg", None), "guionar", False)
+        if guionar_activo and estado_guionar == EstadoEntrega.FAILED:
+            estado_operativo.reportar_problema(ProblemaOperativo(
+                "guionar_no_disponible", "guionar", Severidad.WARNING,
+                "GuionAR no está disponible; el dictado seguirá en la salida principal.",
+            ))
+        elif estado_guionar == EstadoEntrega.MIRRORED:
+            estado_operativo.resolver_problema("guionar_no_disponible")
 
     # ------------------------------------------------------------ emisión
 
@@ -967,7 +1194,9 @@ class App:
                 self.salida.presionar_enter()
                 return
             if p.texto:
-                return self.salida.entregar_texto(p.texto)
+                resultado = self.salida.entregar_texto(p.texto)
+                self._registrar_resultado_salida(resultado)
+                return resultado
 
     # ------------------------------------------------------------ estado interno
 
@@ -1020,6 +1249,13 @@ class App:
             print(f"[app] etapa={etapa} degradada "
                   f"tipo={tipo_error} contador={contador} "
                   f"generacion={generacion}", file=sys.stderr)
+            self.estado_operativo.reportar_problema(ProblemaOperativo(
+                f"{etapa}_degradado", etapa, Severidad.WARNING,
+                "El reconocimiento tuvo un fallo recuperable."
+                if etapa == "stt"
+                else "La detección de voz tuvo un fallo recuperable.",
+                str(tipo_error),
+            ))
 
     def _registrar_recuperacion_etapa(self, etapa: str):
         if not hasattr(self, "_estado_cv"):
@@ -1027,8 +1263,10 @@ class App:
         with self._estado_cv:
             if etapa == "stt" and self._stt_failures:
                 self._stt_health = "recovered"
+                self.estado_operativo.resolver_problema("stt_degradado")
             elif etapa == "vad" and self._vad_failures:
                 self._vad_health = "recovered"
+                self.estado_operativo.resolver_problema("vad_degradado")
 
     def _actualizar_salud_vad(self, segmentador, vistos: int,
                               generacion: int) -> int:
@@ -1149,6 +1387,10 @@ class App:
                 pass
         self._estado_visual_terminal_si_vigente(
             "error", EstadoApp.ERROR, generacion)
+        self._fallo_operativo(
+            "worker_fallido", "runtime",
+            "El proceso de dictado dejó de funcionar.", exc)
+        self.estado_operativo.actualizar_runtime(EstadoRuntime.ERROR)
 
     # ------------------------------------------------------------ control
 
@@ -1211,6 +1453,8 @@ class App:
             return self._respuesta_control_lifecycle(self.cancelar_grabacion())
         if op == "estado":
             return self._respuesta_estado()
+        if op == "estado-operativo":
+            return serializar_estado(self.estado_operativo.snapshot())
         if op == "modo" and len(partes) > 1 and partes[1] in Config.MODOS:
             return (f"OK modo={partes[1]}" if self.cambiar_modo(partes[1])
                     else "ERR aplicación cerrada")

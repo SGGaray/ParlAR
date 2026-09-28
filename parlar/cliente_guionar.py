@@ -149,6 +149,11 @@ class ClienteGuionAR:
             return self._conectar() and self._enviar_conectado(obj)
 
     # ---------------------------------------------------------- API pública
+    def comprobar_disponibilidad(self):
+        """Sondeo local acotado; no envía texto ni modifica el contrato."""
+        with self._lock:
+            return self._conectar()
+
     def escribir_texto(self, texto: str):
         if not texto:
             return False
@@ -218,6 +223,7 @@ class ClienteNulo:
 
     es_nulo = True
 
+    def comprobar_disponibilidad(self): return True
     def escribir_texto(self, texto: str): return False
     def enviar_parcial(self, texto: str): return False
     def evento_vad(self, hablando: bool): return False

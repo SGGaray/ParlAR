@@ -48,6 +48,20 @@ def detectar_sesion() -> str:
     return "x11"
 
 
+def backend_inyector_disponible(backend: str) -> bool:
+    """Comprueba ejecutables del backend sin iniciar procesos ni inyectar."""
+    if backend == "clipboard":
+        return bool(
+            (detectar_sesion() == "wayland" and _cual("wl-copy"))
+            or _cual("xclip")
+        )
+    if backend == "xdotool":
+        return bool(_cual("xdotool") and _cual("xclip"))
+    if backend in {"wtype", "ydotool"}:
+        return bool(_cual(backend))
+    return False
+
+
 class Inyector:
     def __init__(self, backend: str = "auto", type_delay_ms: int = 1,
                  notify: bool = True, permitir_return: bool = False):

@@ -13,6 +13,7 @@ import threading
 
 from .config import CONFIG_FILE, Config, ErrorConfiguracion
 from .control import GuardiaInstancia, InstanciaActivaError
+from .estado_operativo import ErrorInicializacionSTT
 from .runtime_nvidia import preparar_runtime_nvidia
 from .settings_backend import ErrorInicializacionAudio
 
@@ -196,6 +197,9 @@ def main():
         raise SystemExit(_CODIGO_INSTANCIA_ACTIVA)
     except ErrorInicializacionAudio as e:
         print(f"[audio] no se pudo iniciar: {e}", file=sys.stderr)
+        raise SystemExit(1)
+    except ErrorInicializacionSTT as e:
+        print(f"[stt] no se pudo iniciar: {e}", file=sys.stderr)
         raise SystemExit(1)
     finally:
         if guardia is not None:

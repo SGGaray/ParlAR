@@ -213,6 +213,9 @@ class DaemonAtajos:
                 keyboard
             )
             self._listener.start()
+            esperar_listo = getattr(self._listener, "wait", None)
+            if callable(esperar_listo):
+                esperar_listo()
 
             print(
                 "[atajos] mantener="

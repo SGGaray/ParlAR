@@ -446,11 +446,12 @@ class PruebasArquitecturaSettings(unittest.TestCase):
         )
         self.assertEqual(dictado.orden_foco, dictado.campos)
 
-    def test_aplicacion_contiene_solo_indicador_y_posicion(self):
+    def test_aplicacion_contiene_estado_indicador_y_posicion(self):
         aplicacion = ARQUITECTURA_SETTINGS.pestañas[1]
 
         self.assertEqual(
-            aplicacion.campos, ("overlay", "overlay_position"))
+            aplicacion.campos,
+            ("runtime_status", "overlay", "overlay_position"))
 
     def test_avanzado_contiene_opciones_tecnicas(self):
         avanzado = ARQUITECTURA_SETTINGS.pestañas[2]
