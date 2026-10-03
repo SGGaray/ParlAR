@@ -6,6 +6,7 @@ los cambios se escriben para el próximo inicio mediante ``settings_backend``.
 """
 
 import dataclasses
+import logging
 import queue
 import sys
 import threading
@@ -45,6 +46,9 @@ from .settings_backend import (
     resolver_dispositivo_entrada,
     snapshot_configuracion,
 )
+
+
+_LOG = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,6 +260,10 @@ def mensaje_reinicio_previo() -> str:
     return "Los cambios se aplican al reiniciar ParlAR."
 
 
+def mensaje_autostart_inmediato() -> str:
+    return "Este cambio se aplica de inmediato; no depende de Guardar cambios."
+
+
 def accion_cierre_settings(
         *, sucio: bool, descartar_confirmado: bool | None = None) -> str:
     """Decide el cierre sin UI ni efectos secundarios."""
@@ -272,6 +280,7 @@ def cargar_inventario_entradas(
     try:
         return ResultadoInventario(tuple(listar()), None)
     except ErrorDispositivosAudio as exc:
+        _LOG.info("no se pudo obtener el inventario de audio: %s", exc)
         return ResultadoInventario((), str(exc))
 
 
@@ -344,7 +353,10 @@ def mensaje_resolucion_entrada(
         error_inventario: str | None = None,
 ) -> str:
     if error_inventario:
-        return f"No se pudo obtener el inventario de micrófonos: {error_inventario}"
+        return (
+            "No se pudo obtener la lista de micrófonos. "
+            "Podés volver a intentarlo con Actualizar."
+        )
     if resolucion.usando_fallback and resolucion.dispositivo is not None:
         if resolucion.motivo == "seleccion_ambigua":
             causa = "La selección coincide con varios dispositivos"
@@ -368,6 +380,15 @@ def mensaje_resolucion_entrada(
             "La selección es ambigua y no hay un default válido."),
     }
     return mensajes.get(resolucion.motivo, "")
+
+
+def mensaje_error_prueba_audio(error: str | None) -> str:
+    if not error:
+        return ""
+    return (
+        "No se pudo completar la prueba de micrófono. "
+        "Verificá que el dispositivo esté disponible y no esté en uso."
+    )
 
 
 def guardado_habilitado(
@@ -758,10 +779,6 @@ class VentanaSettings:
 
     def _configurar_estilos(self):
         estilo = self.ttk.Style(self.root)
-        estilo.configure("Status.TLabel", foreground="#4b5563")
-        estilo.configure("Success.Status.TLabel", foreground="#166534")
-        estilo.configure("Warning.Status.TLabel", foreground="#92400e")
-        estilo.configure("Error.Status.TLabel", foreground="#b91c1c")
         estilo.configure(
             "Section.TLabel", font=("TkDefaultFont", 11, "bold"))
 
@@ -831,9 +848,12 @@ class VentanaSettings:
             command=self._solicitar_cierre,
         )
         self.boton_cancelar.grid(row=0, column=1, padx=(16, 8))
+        self._vincular_enter(
+            self.boton_cancelar, self._solicitar_cierre)
         self.boton_guardar = ttk.Button(
             self.footer, text="Guardar cambios", command=self._guardar)
         self.boton_guardar.grid(row=0, column=2)
+        self._vincular_enter(self.boton_guardar, self._guardar)
 
         self.root.bind("<MouseWheel>", self._rueda_scroll, add="+")
         self.root.bind("<Button-4>", self._rueda_scroll, add="+")
@@ -903,6 +923,14 @@ class VentanaSettings:
             add="+",
         )
 
+    @staticmethod
+    def _vincular_enter(boton, comando):
+        def activar(_evento):
+            comando()
+            return "break"
+
+        boton.bind("<Return>", activar)
+
     def _crear_dictado(self, contenido):
         ttk = self.ttk
         self._titulo_seccion(contenido, "Atajo", 0)
@@ -925,10 +953,8 @@ class VentanaSettings:
             command=self._mostrar_captura_atajo,
         )
         self.boton_cambiar_atajo.grid(row=0, column=1, padx=(10, 0))
-        self.boton_cambiar_atajo.bind(
-            "<Return>",
-            lambda _evento: self._mostrar_captura_atajo() or "break",
-        )
+        self._vincular_enter(
+            self.boton_cambiar_atajo, self._mostrar_captura_atajo)
         self._registrar_foco("hotkey_toggle", self.boton_cambiar_atajo)
         ttk.Label(
             contenido,
@@ -942,7 +968,7 @@ class VentanaSettings:
                 "Escape cancela lo pendiente."
             ),
             style="Status.TLabel",
-            wraplength=540,
+            wraplength=270,
         ).grid(row=3, column=1, sticky="w", pady=(2, 0))
         self.boton_restaurar_atajo = ttk.Button(
             contenido,
@@ -951,6 +977,8 @@ class VentanaSettings:
         )
         self.boton_restaurar_atajo.grid(
             row=3, column=2, sticky="e", padx=(10, 0))
+        self._vincular_enter(
+            self.boton_restaurar_atajo, self._restaurar_atajo)
 
         self._separador(contenido, 4)
         self._titulo_seccion(contenido, "Micrófono", 5)
@@ -972,6 +1000,8 @@ class VentanaSettings:
             command=self._actualizar_dispositivos,
         )
         self.boton_actualizar_audio.grid(row=6, column=2, padx=(10, 0))
+        self._vincular_enter(
+            self.boton_actualizar_audio, self._actualizar_dispositivos)
         self._registrar_foco("audio_refresh", self.boton_actualizar_audio)
         self.boton_prueba = ttk.Button(
             contenido,
@@ -979,6 +1009,8 @@ class VentanaSettings:
             command=self._alternar_prueba_audio,
         )
         self.boton_prueba.grid(row=7, column=1, sticky="w", pady=(12, 0))
+        self._vincular_enter(
+            self.boton_prueba, self._alternar_prueba_audio)
         self._registrar_foco("audio_test", self.boton_prueba)
         self.medidor_audio = ttk.Progressbar(
             contenido, maximum=100, mode="determinate", length=180)
@@ -1078,25 +1110,14 @@ class VentanaSettings:
         self._captura_atajo_texto = self.tk.StringVar(
             value="Esperando combinación…")
         self._captura_atajo_error = self.tk.StringVar(value="")
-        self._superficie_captura_atajo = self.tk.Frame(
+        self._superficie_captura_atajo = self.ttk.Entry(
             cuerpo,
-            padx=14,
-            pady=12,
-            relief="sunken",
-            borderwidth=1,
-            takefocus=1,
-            highlightthickness=2,
-            highlightcolor="#2563eb",
-            highlightbackground="#9ca3af",
+            textvariable=self._captura_atajo_texto,
+            justify="center",
+            state="readonly",
         )
         self._superficie_captura_atajo.grid(
-            row=2, column=0, columnspan=2, sticky="ew")
-        self.ttk.Label(
-            self._superficie_captura_atajo,
-            textvariable=self._captura_atajo_texto,
-            anchor="center",
-        ).grid(row=0, column=0, sticky="ew")
-        self._superficie_captura_atajo.columnconfigure(0, weight=1)
+            row=2, column=0, columnspan=2, sticky="ew", ipady=8)
         self.ttk.Label(
             cuerpo,
             textvariable=self._captura_atajo_error,
@@ -1107,17 +1128,12 @@ class VentanaSettings:
         cancelar = self.ttk.Button(
             cuerpo, text="Cancelar", command=self._cancelar_captura_atajo)
         cancelar.grid(row=4, column=0, sticky="e", padx=(0, 8))
-        cancelar.bind(
-            "<Return>",
-            lambda _evento: self._cancelar_captura_atajo() or "break",
-        )
+        self._vincular_enter(cancelar, self._cancelar_captura_atajo)
         self._boton_usar_atajo = self.ttk.Button(
             cuerpo, text="Usar combinación", command=self._usar_captura_atajo)
         self._boton_usar_atajo.grid(row=4, column=1, sticky="e")
-        self._boton_usar_atajo.bind(
-            "<Return>",
-            lambda _evento: self._usar_captura_atajo() or "break",
-        )
+        self._vincular_enter(
+            self._boton_usar_atajo, self._usar_captura_atajo)
         self._boton_usar_atajo.state(["disabled"])
 
         self._superficie_captura_atajo.bind(
@@ -1317,10 +1333,16 @@ class VentanaSettings:
         self._aplicar_estado_autostart(self.control_autostart.estado)
         ttk.Label(
             contenido,
+            text=mensaje_autostart_inmediato(),
+            style="Status.TLabel",
+            wraplength=560,
+        ).grid(row=12, column=0, columnspan=3, sticky="w", pady=(4, 0))
+        ttk.Label(
+            contenido,
             text=mensaje_reinicio_previo(),
             style="Status.TLabel",
             wraplength=560,
-        ).grid(row=12, column=0, columnspan=3, sticky="w", pady=(18, 0))
+        ).grid(row=13, column=0, columnspan=3, sticky="w", pady=(18, 0))
 
     def _aplicar_estado_autostart(
             self, estado: EstadoAutostart, *, mensaje: str | None = None):
@@ -1667,7 +1689,7 @@ class VentanaSettings:
             estilo = "Status.TLabel"
 
         if estado.error:
-            mensaje = estado.error
+            mensaje = mensaje_error_prueba_audio(estado.error)
             estilo = "Error.Status.TLabel"
         self.estado_audio.set(mensaje)
         self.etiqueta_estado_audio.configure(style=estilo)
@@ -1684,6 +1706,7 @@ class VentanaSettings:
                 resultado = refrescar_entradas(
                     seleccion, self._listar_entradas)
             except Exception as exc:
+                _LOG.exception("no se pudo actualizar el inventario de audio")
                 opciones = construir_opciones_entrada(seleccion, ())
                 resultado = RefrescoEntradas(
                     inventario=(),
@@ -1867,11 +1890,14 @@ class VentanaSettings:
         seguir = self.ttk.Button(
             cuerpo, text="Seguir editando", command=self._seguir_editando)
         seguir.grid(row=2, column=0, padx=(0, 8))
-        self.ttk.Button(
+        self._vincular_enter(seguir, self._seguir_editando)
+        descartar = self.ttk.Button(
             cuerpo,
             text="Descartar cambios",
             command=self._descartar_confirmado,
-        ).grid(row=2, column=1)
+        )
+        descartar.grid(row=2, column=1)
+        self._vincular_enter(descartar, self._descartar_confirmado)
         modal.grab_set()
         seguir.focus_set()
 

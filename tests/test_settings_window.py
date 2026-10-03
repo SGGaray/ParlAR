@@ -35,6 +35,8 @@ from parlar.settings_window import (
     construir_selectores,
     guardado_habilitado,
     indice_opcion_selector,
+    mensaje_autostart_inmediato,
+    mensaje_error_prueba_audio,
     mensaje_reinicio_previo,
     mensaje_resolucion_entrada,
     mensaje_persistencia,
@@ -693,10 +695,50 @@ class PruebasSelectorYPruebaAudio(unittest.TestCase):
         def fallar():
             raise ErrorDispositivosAudio("PortAudio no disponible")
 
-        resultado = cargar_inventario_entradas(fallar)
+        with self.assertLogs("parlar.settings_window", level="INFO"):
+            resultado = cargar_inventario_entradas(fallar)
 
         self.assertEqual(resultado.dispositivos, ())
         self.assertEqual(resultado.error, "PortAudio no disponible")
+
+    def test_error_de_inventario_se_presenta_sin_detalle_tecnico(self):
+        resolucion = resolver_dispositivo_entrada("default", ())
+
+        mensaje = mensaje_resolucion_entrada(
+            resolucion,
+            error_inventario="PortAudio -9985: Device unavailable",
+        )
+
+        self.assertIn("lista de micrófonos", mensaje)
+        self.assertIn("Actualizar", mensaje)
+        self.assertNotIn("PortAudio", mensaje)
+        self.assertNotIn("-9985", mensaje)
+
+    def test_error_de_prueba_se_presenta_con_recuperacion_humana(self):
+        mensaje = mensaje_error_prueba_audio(
+            "PortAudio -9985: Device unavailable")
+
+        self.assertIn("dispositivo esté disponible", mensaje)
+        self.assertIn("no esté en uso", mensaje)
+        self.assertNotIn("PortAudio", mensaje)
+        self.assertNotIn("-9985", mensaje)
+
+    def test_autostart_explica_que_no_depende_de_guardar(self):
+        mensaje = mensaje_autostart_inmediato()
+
+        self.assertIn("de inmediato", mensaje)
+        self.assertIn("no depende de Guardar cambios", mensaje)
+
+    def test_enter_invoca_la_accion_del_boton_enfocado(self):
+        boton = mock.Mock()
+        accion = mock.Mock()
+
+        VentanaSettings._vincular_enter(boton, accion)
+        evento = boton.bind.call_args.args[1]
+
+        self.assertEqual(evento(object()), "break")
+        accion.assert_called_once_with()
+        boton.bind.assert_called_once_with("<Return>", evento)
 
     def test_refresh_conserva_seleccion_por_identidad(self):
         resultado = refrescar_entradas(
