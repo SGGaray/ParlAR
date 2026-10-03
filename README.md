@@ -26,19 +26,21 @@ nativa ni su pipeline de audio, hotkeys e inyección.
 - En X11: `xdotool` y `xclip` para inyección Unicode.
 - En Wayland: `wtype` o `ydotool`; si ninguno puede inyectar, ParlAR degrada a
   copia por portapapeles cuando hay una herramienta compatible.
-- Opcionales: Tk para el indicador, `notify-send` para notificaciones y GPU
-  NVIDIA para acelerar Whisper.
+- Opcionales: Tk para el indicador, GTK 3/PyGObject del sistema para el icono
+  del área de estado, `notify-send` para notificaciones y GPU NVIDIA para
+  acelerar Whisper. Si el escritorio no ofrece tray, ParlAR sigue funcionando.
 
 Paquetes habituales:
 
 ```bash
 # Debian / Ubuntu
 sudo apt install python3 python3-venv python3-dev portaudio19-dev \
-  python3-tk libnotify-bin xdotool xclip wtype wl-clipboard
+  python3-tk python3-gi gir1.2-gtk-3.0 libnotify-bin xdotool xclip wtype \
+  wl-clipboard
 
 # Fedora
 sudo dnf install python3 python3-devel portaudio-devel python3-tkinter \
-  libnotify xdotool xclip wtype wl-clipboard
+  python3-gobject gtk3 libnotify xdotool xclip wtype wl-clipboard
 ```
 
 `ydotool` es una alternativa Wayland basada en uinput y requiere su daemon y
@@ -107,9 +109,10 @@ En X11, el control predeterminado es **Ctrl derecho + Shift derecho**:
 - **Esc** cancela la sesión actual: descarta audio y resultados pendientes, no
   hace undo y no borra texto ya confirmado.
 
-El indicador, cuando está disponible, muestra el estado y permite alternar con
-click izquierdo. `--sin-indicador` ejecuta ParlAR sin prometer esa UI; los
-controles por teclado e IPC siguen disponibles.
+El waveform, cuando está disponible, muestra actividad sin tomar foco. El
+icono del área de estado abre Configuración con click y ofrece únicamente
+estado, pausa/reanudación y salida. `--sin-indicador` deshabilita el waveform;
+los controles por teclado, tray e IPC siguen disponibles.
 
 ## Control con `parlarctl`
 
@@ -118,15 +121,18 @@ parlarctl iniciar
 parlarctl detener
 parlarctl cancelar
 parlarctl alternar
+parlarctl pausar
+parlarctl reanudar
 parlarctl estado
 parlarctl modo streaming
 parlarctl reescritura formal
 parlarctl salir
 ```
 
-También se aceptan `start`, `stop`, `cancel`, `toggle`, `status`, `mode`,
-`rewrite` y `quit`. CANCEL y STOP son operaciones distintas: STOP finaliza lo
-aceptado; CANCEL invalida la generación y descarta lo pendiente.
+También se aceptan `start`, `stop`, `cancel`, `toggle`, `pause`, `resume`,
+`status`, `mode`, `rewrite` y `quit`. CANCEL y STOP son operaciones distintas:
+STOP finaliza lo aceptado; CANCEL invalida la generación y descarta lo
+pendiente.
 
 El socket está en `$XDG_RUNTIME_DIR/parlar.sock`, usa permisos `0600` y se
 elimina durante el shutdown ordenado. `SIGTERM`, incluido el enviado por

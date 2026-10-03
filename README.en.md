@@ -25,19 +25,21 @@ injection architecture described here.
 - X11: `xdotool` plus `xclip` for Unicode delivery.
 - Wayland: `wtype` or `ydotool`; compatible clipboard tools provide a
   copy-only fallback.
-- Optional: Tk for the indicator, `notify-send` for notifications, and an
-  NVIDIA GPU for faster transcription.
+- Optional: Tk for the indicator, system GTK 3/PyGObject for the status-area
+  icon, `notify-send` for notifications, and an NVIDIA GPU for faster
+  transcription. ParlAR keeps working when the desktop has no tray host.
 
 Typical packages:
 
 ```bash
 # Debian / Ubuntu
 sudo apt install python3 python3-venv python3-dev portaudio19-dev \
-  python3-tk libnotify-bin xdotool xclip wtype wl-clipboard
+  python3-tk python3-gi gir1.2-gtk-3.0 libnotify-bin xdotool xclip wtype \
+  wl-clipboard
 
 # Fedora
 sudo dnf install python3 python3-devel portaudio-devel python3-tkinter \
-  libnotify xdotool xclip wtype wl-clipboard
+  python3-gobject gtk3 libnotify xdotool xclip wtype wl-clipboard
 ```
 
 `ydotool` is a uinput-based Wayland alternative and requires its daemon and
@@ -104,9 +106,10 @@ On X11, the default control is **right Ctrl + right Shift**:
 - **Esc** CANCELS the active session. It discards pending audio/results, does
   not undo, and does not remove already confirmed output.
 
-When available, the indicator displays state and accepts a left-click toggle.
-`--sin-indicador` / `--no-overlay` runs without that UI while keyboard and
-IPC controls remain available.
+When available, the waveform shows activity without taking focus. The status
+area icon opens Settings on click and offers only status, pause/resume, and
+quit. `--sin-indicador` / `--no-overlay` disables the waveform; keyboard, tray,
+and IPC controls remain available.
 
 ## `parlarctl`
 
@@ -115,6 +118,8 @@ parlarctl iniciar
 parlarctl detener
 parlarctl cancelar
 parlarctl alternar
+parlarctl pausar
+parlarctl reanudar
 parlarctl estado
 parlarctl modo streaming
 parlarctl reescritura formal
@@ -122,9 +127,9 @@ parlarctl salir
 ```
 
 English aliases are also accepted: `start`, `stop`, `cancel`, `toggle`,
-`status`, `mode`, `rewrite`, and `quit`. CANCEL and STOP are deliberately
-different: STOP finalizes accepted input; CANCEL invalidates the generation and
-discards pending work.
+`pause`, `resume`, `status`, `mode`, `rewrite`, and `quit`. CANCEL and STOP are
+deliberately different: STOP finalizes accepted input; CANCEL invalidates the
+generation and discards pending work.
 
 The daemon uses a `0600` socket at `$XDG_RUNTIME_DIR/parlar.sock`. Ordered
 shutdown removes its own socket. `SIGTERM`, including systemd stop, follows

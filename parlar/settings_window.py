@@ -1666,6 +1666,7 @@ class VentanaSettings:
         self.estado_runtime_mensaje.set(estado.mensaje)
         estilo = {
             "ready": "Success.Status.TLabel",
+            "paused": "Warning.Status.TLabel",
             "starting": "Warning.Status.TLabel",
             "attention": "Warning.Status.TLabel",
             "unavailable": "Error.Status.TLabel",

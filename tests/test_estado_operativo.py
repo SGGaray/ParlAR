@@ -246,6 +246,15 @@ class PruebasEstadoEnSettings(unittest.TestCase):
         self.assertEqual(estado.categoria, "ready")
         self.assertTrue(estado.ejecutandose)
 
+    def test_runtime_pausado_se_representa_sin_marcarlo_caido(self):
+        estado = representar_estado_parlar({
+            "status": "Pausado",
+            "message": "ParlAR no aceptará nuevos dictados hasta reanudarlo.",
+        })
+        self.assertEqual(estado.categoria, "paused")
+        self.assertEqual(estado.titulo, "Pausado")
+        self.assertTrue(estado.ejecutandose)
+
     def test_runtime_atencion_y_error(self):
         atencion = representar_estado_parlar({
             "status": "Requiere atención", "message": "Usá parlarctl."})

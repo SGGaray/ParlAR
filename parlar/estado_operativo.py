@@ -55,6 +55,7 @@ class EstadoOperativo:
     hotkey: EstadoComponente = EstadoComponente.UNAVAILABLE
     control: EstadoComponente = EstadoComponente.UNAVAILABLE
     output: EstadoComponente = EstadoComponente.UNAVAILABLE
+    pausado: bool = False
     gesto_requerido: bool = True
     backend_salida: str | None = None
     dispositivo_audio: str | None = None
@@ -94,6 +95,7 @@ def puede_dictar(estado: EstadoOperativo) -> bool:
         and estado.output in {
             EstadoComponente.READY, EstadoComponente.DEGRADED}
         and hotkey_ok
+        and not estado.pausado
         and estado.error_bloqueante is None
     )
 
@@ -118,6 +120,8 @@ def resumen_humano(estado: EstadoOperativo) -> tuple[str, str]:
             "No disponible",
             problema.mensaje if problema else "ParlAR no está disponible.",
         )
+    if estado.pausado:
+        return "Pausado", "ParlAR no aceptará nuevos dictados hasta reanudarlo."
     if puede_dictar(estado):
         if estado.warnings:
             return "Requiere atención", estado.warnings[0].mensaje
@@ -146,6 +150,7 @@ def serializar_estado(estado: EstadoOperativo) -> str:
         "hotkey": estado.hotkey.value,
         "control": estado.control.value,
         "output": estado.output.value,
+        "paused": estado.pausado,
         "can_dictate": puede_dictar(estado),
         "severity": severidad_global(estado).value,
         "status": titulo,
@@ -201,6 +206,19 @@ class EstadoOperativoStore:
             self._estado = replace(
                 actual, revision=actual.revision + 1,
                 runtime=runtime, problemas=problemas)
+            return True
+
+    def actualizar_pausa(self, pausado: bool) -> bool:
+        """Publica capacidad de dictado sin alterar salud ni lifecycle."""
+        with self._lock:
+            actual = self._estado
+            if actual.runtime in _TERMINALES:
+                return False
+            pausado = bool(pausado)
+            if actual.pausado == pausado:
+                return True
+            self._estado = replace(
+                actual, revision=actual.revision + 1, pausado=pausado)
             return True
 
     def fijar_componente(

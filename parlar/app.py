@@ -51,6 +51,7 @@ from .settings_backend import (
     listar_dispositivos_entrada,
     resolver_dispositivo_entrada,
 )
+from .tray import crear_tray, resumir_estado_tray, serializar_estado_tray
 
 
 def resolver_entrada_productiva(
@@ -105,7 +106,7 @@ class App:
                  ui=None, control=None, atajos=None, guardia_instancia=None,
                  vad_factory=crear_vad, segmentador_factory=Segmentador,
                  listar_entradas=None, resolver_entrada=None,
-                 estado_operativo=None):
+                 estado_operativo=None, tray=None):
         self.estado_operativo = estado_operativo or EstadoOperativoStore(
             gesto_requerido=detectar_sesion() != "wayland")
         try:
@@ -123,6 +124,8 @@ class App:
         self._estado_cv = threading.Condition()
         self._salida_lock = threading.RLock()
         self._estado = EstadoApp.IDLE
+        self._pausado = False
+        self._pausa_pendiente = False
         self._ultimo_error = ""
         self._fallo_fatal_worker = False
         self._generacion = 0
@@ -296,6 +299,7 @@ class App:
             al_salir=self.salir,
             al_cancelar=self.cancelar_grabacion,
         )
+        self.tray = tray or crear_tray(al_fallo=self._reportar_fallo_tray)
 
     @staticmethod
     def _detalle_error(exc) -> str:
@@ -305,6 +309,13 @@ class App:
         self.estado_operativo.reportar_problema(ProblemaOperativo(
             codigo, componente, Severidad.BLOCKING, mensaje,
             self._detalle_error(exc)))
+
+    def _reportar_fallo_tray(self, detalle: str) -> None:
+        print(f"[tray] no disponible ({detalle})", file=sys.stderr)
+        self.estado_operativo.reportar_problema(ProblemaOperativo(
+            "tray_no_disponible", "tray", Severidad.WARNING,
+            "El acceso desde el área de estado no está disponible; "
+            "ParlAR sigue operativo.", detalle))
 
     # ------------------------------------------------------------ ciclo de vida
 
@@ -405,6 +416,10 @@ class App:
                 )
             self._comprobar_guionar()
             self.estado_operativo.actualizar_runtime(EstadoRuntime.READY)
+            try:
+                self.tray.iniciar()
+            except Exception as exc:
+                self._reportar_fallo_tray(self._detalle_error(exc))
             prefijo = (
                 "[app] listo."
                 if puede_dictar(self.estado_operativo.snapshot())
@@ -494,12 +509,64 @@ class App:
             return self.detener_grabacion()
         return self.iniciar_grabacion()
 
+    @property
+    def pausado(self) -> bool:
+        with self._estado_cv:
+            return self._pausado
+
+    def pausar(self) -> bool:
+        """Impide START nuevos y resuelve con suavidad la sesión vigente."""
+        with self._estado_cv:
+            if self._estado in (EstadoApp.SHUTTING_DOWN, EstadoApp.CLOSED):
+                self._ultimo_error = "la aplicación se está cerrando"
+                return False
+            if self._pausado:
+                return True
+            self._pausado = True
+            estado = self._estado
+            self._pausa_pendiente = estado in {
+                EstadoApp.STARTING, EstadoApp.RECORDING, EstadoApp.STOPPING}
+            self._estado_cv.notify_all()
+        self.estado_operativo.actualizar_pausa(True)
+
+        # Quita continuo, doble toque y releases pendientes antes de cerrar la
+        # captura. No toca el listener global ni la configuración del atajo.
+        self.gesto_dictado.reiniciar()
+        resultado = True
+        if estado == EstadoApp.STARTING:
+            resultado = self.cancelar_grabacion()
+        elif estado == EstadoApp.RECORDING:
+            resultado = self.detener_grabacion()
+
+        with self._estado_cv:
+            if self._estado in {EstadoApp.IDLE, EstadoApp.ERROR}:
+                self._pausa_pendiente = False
+                self._estado_cv.notify_all()
+        return resultado
+
+    def reanudar(self) -> bool:
+        """Vuelve a admitir dictados sin iniciar uno automáticamente."""
+        with self._estado_cv:
+            if self._estado in (EstadoApp.SHUTTING_DOWN, EstadoApp.CLOSED):
+                self._ultimo_error = "la aplicación se está cerrando"
+                return False
+            self._pausado = False
+            self._pausa_pendiente = False
+            self._ultimo_error = ""
+            self._estado_cv.notify_all()
+        self.estado_operativo.actualizar_pausa(False)
+        self.gesto_dictado.reiniciar()
+        return True
+
     def iniciar_grabacion(self) -> bool:
         self._iniciar_trabajador()
         with self._transicion_lock:
             with self._estado_cv:
                 if self._estado in (EstadoApp.SHUTTING_DOWN, EstadoApp.CLOSED):
                     self._ultimo_error = "la aplicación se está cerrando"
+                    return False
+                if self._pausado:
+                    self._ultimo_error = "ParlAR está pausado"
                     return False
                 if self._fallo_fatal_worker:
                     self._ultimo_error = "el worker no está operativo"
@@ -699,6 +766,7 @@ class App:
                     EstadoApp.ERROR,
                 ):
                     ya_detenido = True
+                    self._pausa_pendiente = False
                 else:
                     ya_detenido = False
                     generacion = self._sesion_activa
@@ -717,6 +785,7 @@ class App:
                         )
 
                     self._estado = EstadoApp.IDLE
+                    self._pausa_pendiente = False
                     self._ultimo_error = ""
                     self.grabando.clear()
                     self._estado_cv.notify_all()
@@ -894,6 +963,7 @@ class App:
                     self._registrar_error_shutdown("worker", exc)
 
             recursos = (
+                ("tray", self.tray.detener),
                 ("control", self.control.detener),
                 ("hotkeys", self.atajos.detener),
             )
@@ -1347,6 +1417,7 @@ class App:
             self._sesion_activa = None
             self._modo_por_sesion.pop(generacion, None)
             self._estado = EstadoApp.ERROR if con_error else EstadoApp.IDLE
+            self._pausa_pendiente = False
             self._estado_cv.notify_all()
         self._estado_visual_terminal_si_vigente(
             "error" if con_error else "idle",
@@ -1386,6 +1457,7 @@ class App:
                     generacion = self._sesion_activa or self._generacion
                     if self._estado not in (EstadoApp.SHUTTING_DOWN, EstadoApp.CLOSED):
                         self._estado = EstadoApp.ERROR
+                        self._pausa_pendiente = False
                         self._ultimo_error = f"worker: {type(exc).__name__}"
                         self._fallo_fatal_worker = True
                     self._sesion_activa = None
@@ -1530,10 +1602,21 @@ class App:
             return self._respuesta_control_lifecycle(self.detener_grabacion())
         if op == "cancelar":
             return self._respuesta_control_lifecycle(self.cancelar_grabacion())
+        if op == "pausar":
+            return "OK pausado" if self.pausar() else "ERR aplicación cerrada"
+        if op == "reanudar":
+            return "OK reanudado" if self.reanudar() else "ERR aplicación cerrada"
         if op == "estado":
             return self._respuesta_estado()
         if op == "estado-operativo":
             return serializar_estado(self.estado_operativo.snapshot())
+        if op == "estado-tray":
+            with self._estado_cv:
+                estado = self._estado.value
+                pausa_pendiente = self._pausa_pendiente
+            return serializar_estado_tray(resumir_estado_tray(
+                estado, self.estado_operativo.snapshot(),
+                pausa_pendiente=pausa_pendiente))
         if op == "abrir-configuracion":
             with self._estado_cv:
                 estado = self._estado

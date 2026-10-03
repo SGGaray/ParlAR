@@ -170,6 +170,8 @@ def representar_estado_parlar(
     mensaje = str(datos.get("message", "ParlAR no está disponible."))
     if titulo == "Listo":
         categoria = "ready"
+    elif titulo == "Pausado":
+        categoria = "paused"
     elif titulo == "Requiere atención":
         categoria = "attention"
     else:
