@@ -14,6 +14,12 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from .config import Config, ErrorConfiguracion
+from .autostart import (
+    EstadoAutostart,
+    ResultadoAutostart,
+    consultar_autostart,
+    establecer_autostart,
+)
 
 
 @dataclass(frozen=True, slots=True)

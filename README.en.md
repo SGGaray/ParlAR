@@ -75,6 +75,8 @@ but the unit is not enabled in `default.target`. Instead,
 when the session has published `DISPLAY` and `XAUTHORITY`. This avoids early
 startup on desktops where `graphical-session.target` remains inactive. The
 normal application launcher remains a separate artifact.
+When this integration is installed, Settings can enable or disable automatic
+startup without stopping the currently running instance.
 
 To start ParlAR immediately from the current graphical terminal:
 

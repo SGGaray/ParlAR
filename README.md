@@ -77,6 +77,8 @@ automático lo dispara `~/.config/autostart/parlar-systemd.desktop` después del
 login gráfico, cuando la sesión ya publicó `DISPLAY` y `XAUTHORITY`. Esto evita
 arranques prematuros en escritorios donde `graphical-session.target` permanece
 inactivo. El launcher normal de aplicaciones sigue siendo un artefacto separado.
+Cuando esta integración está instalada, Configuración permite activar o
+desactivar el inicio automático sin detener la instancia que ya está corriendo.
 
 Para iniciarlo inmediatamente desde la terminal gráfica actual:
 

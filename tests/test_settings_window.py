@@ -11,6 +11,7 @@ from parlar.audio_test import EstadoPruebaAudio
 from parlar.config import Config, ErrorConfiguracion
 from parlar.settings_backend import (
     DispositivoEntrada,
+    EstadoAutostart,
     ErrorDispositivosAudio,
     ResultadoPersistencia,
     SettingsCapabilities,
@@ -21,6 +22,7 @@ from parlar.settings_backend import (
 from parlar.settings_window import (
     ARQUITECTURA_SETTINGS,
     ControlPruebaMicrofono,
+    ControlAutostart,
     ControlSettings,
     OpcionEntrada,
     OpcionSelector,
@@ -451,7 +453,79 @@ class PruebasArquitecturaSettings(unittest.TestCase):
 
         self.assertEqual(
             aplicacion.campos,
-            ("runtime_status", "overlay", "overlay_position"))
+            ("runtime_status", "overlay", "overlay_position", "autostart"))
+        self.assertEqual(
+            aplicacion.orden_foco,
+            ("overlay", "overlay_position", "autostart"))
+
+    def test_autostart_aplica_inmediato_sin_marcar_config_dirty(self):
+        base = Config()
+        snapshot = snapshot_configuracion(base)
+        control_settings = ControlSettings(base, snapshot)
+        estado_inicial = EstadoAutostart(
+            "disabled", "Desactivado.", True)
+        estado_final = EstadoAutostart(
+            "enabled", "Se iniciará.", True)
+        establecer = mock.Mock(return_value=mock.Mock(
+            resultado="changed", estado=estado_final,
+            mensaje=estado_final.mensaje))
+        control = ControlAutostart(
+            consultar=lambda: estado_inicial,
+            establecer=establecer,
+        )
+
+        resultado = control.cambiar(True)
+
+        self.assertEqual(resultado.estado, estado_final)
+        establecer.assert_called_once_with(True)
+        self.assertFalse(control_settings.esta_sucio(
+            valores_desde_snapshot(snapshot)))
+
+    def test_autostart_fallido_conserva_estado_real(self):
+        real = EstadoAutostart("enabled", "Sigue activo.", True)
+        fallido = mock.Mock(
+            resultado="failed", estado=real, mensaje="No se pudo cambiar.")
+        control = ControlAutostart(
+            consultar=lambda: real,
+            establecer=lambda _activar: fallido,
+        )
+
+        resultado = control.cambiar(False)
+
+        self.assertEqual(resultado.resultado, "failed")
+        self.assertTrue(control.estado.activado)
+
+    def test_checkbox_revierte_visual_si_operacion_falla(self):
+        real = EstadoAutostart("enabled", "Sigue activo.", True)
+        resultado = mock.Mock(
+            resultado="failed", estado=real,
+            mensaje="No se pudo cambiar el inicio automático.")
+        ventana = VentanaSettings.__new__(VentanaSettings)
+        ventana.control_autostart = mock.Mock()
+        ventana.control_autostart.cambiar.return_value = resultado
+        ventana.autostart_activado = mock.Mock()
+        ventana.autostart_activado.get.return_value = False
+        ventana.estado_autostart = mock.Mock()
+        ventana.check_autostart = mock.Mock()
+        ventana.etiqueta_autostart = mock.Mock()
+        ventana._cerrando = False
+
+        ventana._alternar_autostart()
+
+        ventana.control_autostart.cambiar.assert_called_once_with(False)
+        ventana.autostart_activado.set.assert_called_once_with(True)
+        ventana.estado_autostart.set.assert_called_once_with(
+            resultado.mensaje)
+
+    def test_autostart_unavailable_no_bloquea_settings(self):
+        ausente = EstadoAutostart(
+            "unavailable",
+            "El inicio automático no está disponible en esta instalación.",
+            False,
+        )
+        control = ControlAutostart(consultar=lambda: ausente)
+        self.assertEqual(control.estado.estado, "unavailable")
+        self.assertFalse(control.estado.modificable)
 
     def test_avanzado_contiene_opciones_tecnicas(self):
         avanzado = ARQUITECTURA_SETTINGS.pestañas[2]

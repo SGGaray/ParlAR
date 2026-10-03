@@ -23,10 +23,12 @@ from .hotkey import (
 )
 from .settings_backend import (
     DispositivoEntrada,
+    EstadoAutostart,
     EstadoParlARSettings,
     ErrorDispositivosAudio,
     ErrorSuspensionAtajo,
     ResolucionEntrada,
+    ResultadoAutostart,
     ResultadoPersistencia,
     SettingsCapabilities,
     SettingsSnapshot,
@@ -34,6 +36,8 @@ from .settings_backend import (
     cargar_configuracion_recuperable,
     construir_configuracion_candidata,
     consultar_estado_parlar,
+    consultar_autostart,
+    establecer_autostart,
     listar_dispositivos_entrada,
     obtener_capacidades,
     persistir_configuracion,
@@ -132,8 +136,11 @@ ARQUITECTURA_SETTINGS = ArquitecturaSettings(
         ),
         PestañaSettings(
             "Aplicación",
-            ("runtime_status", "overlay", "overlay_position"),
-            ("overlay", "overlay_position"),
+            (
+                "runtime_status", "overlay", "overlay_position",
+                "autostart",
+            ),
+            ("overlay", "overlay_position", "autostart"),
         ),
         PestañaSettings(
             "Avanzado",
@@ -632,6 +639,29 @@ class ControlSettings:
         cerrar()
 
 
+class ControlAutostart:
+    """Coordina el estado externo de login sin mezclarlo con ``Config``."""
+
+    def __init__(
+            self,
+            *,
+            consultar: Callable[[], EstadoAutostart] = consultar_autostart,
+            establecer: Callable[[bool], ResultadoAutostart] = (
+                establecer_autostart)):
+        self._consultar = consultar
+        self._establecer = establecer
+        self.estado = consultar()
+
+    def refrescar(self) -> EstadoAutostart:
+        self.estado = self._consultar()
+        return self.estado
+
+    def cambiar(self, activar: bool):
+        resultado = self._establecer(activar)
+        self.estado = resultado.estado
+        return resultado
+
+
 class VentanaSettings:
     """Vista nativa; no conoce ``Config`` ni recursos del runtime."""
 
@@ -651,7 +681,8 @@ class VentanaSettings:
             permitir_foco_inicial: bool = True,
             puede_presentar: Callable[[], bool] | None = None,
             advertencia_config: str | None = None,
-            crear_suspension_atajo: Callable = SuspensionHotkeyProductivo):
+            crear_suspension_atajo: Callable = SuspensionHotkeyProductivo,
+            control_autostart: ControlAutostart | None = None):
         import tkinter as tk
         from tkinter import ttk
 
@@ -671,6 +702,7 @@ class VentanaSettings:
         self._presentacion_visible = permitir_foco_inicial
         self._poll_runtime_id = None
         self._advertencia_config = advertencia_config
+        self.control_autostart = control_autostart or ControlAutostart()
         self.control_prueba = control_prueba or ControlPruebaMicrofono(
             self.inventario)
         self._creando = True
@@ -761,6 +793,10 @@ class VentanaSettings:
         self.estado_audio = tk.StringVar(value="")
         self.hotkey_etiqueta = tk.StringVar(
             value=etiqueta_atajo(valores.hotkey_toggle))
+        self.autostart_activado = tk.BooleanVar(
+            value=self.control_autostart.estado.activado)
+        self.estado_autostart = tk.StringVar(
+            value=self.control_autostart.estado.mensaje)
         self._contexto_inicial = valores.context_terms
 
     def _crear_contenido(self):
@@ -1258,12 +1294,56 @@ class VentanaSettings:
             opciones=self.opciones_selectores["overlay_position"],
             ayuda="Elegí dónde aparece la señal visual mientras dictás.",
         )
+
+        self._separador(contenido, 8)
+        self._titulo_seccion(contenido, "Inicio de sesión", 9)
+        self.check_autostart = ttk.Checkbutton(
+            contenido,
+            text="Iniciar ParlAR al iniciar sesión",
+            variable=self.autostart_activado,
+            command=self._alternar_autostart,
+        )
+        self.check_autostart.grid(
+            row=10, column=0, columnspan=3, sticky="w")
+        self._registrar_foco("autostart", self.check_autostart)
+        self.etiqueta_autostart = ttk.Label(
+            contenido,
+            textvariable=self.estado_autostart,
+            style="Status.TLabel",
+            wraplength=560,
+        )
+        self.etiqueta_autostart.grid(
+            row=11, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        self._aplicar_estado_autostart(self.control_autostart.estado)
         ttk.Label(
             contenido,
             text=mensaje_reinicio_previo(),
             style="Status.TLabel",
             wraplength=560,
-        ).grid(row=8, column=0, columnspan=3, sticky="w", pady=(18, 0))
+        ).grid(row=12, column=0, columnspan=3, sticky="w", pady=(18, 0))
+
+    def _aplicar_estado_autostart(
+            self, estado: EstadoAutostart, *, mensaje: str | None = None):
+        self.autostart_activado.set(estado.activado)
+        self.estado_autostart.set(mensaje or estado.mensaje)
+        if estado.modificable and not self._cerrando:
+            self.check_autostart.state(["!disabled"])
+        else:
+            self.check_autostart.state(["disabled"])
+        estilo = (
+            "Error.Status.TLabel"
+            if estado.estado == "error"
+            else "Status.TLabel"
+        )
+        self.etiqueta_autostart.configure(style=estilo)
+
+    def _alternar_autostart(self):
+        deseado = bool(self.autostart_activado.get())
+        resultado = self.control_autostart.cambiar(deseado)
+        self._aplicar_estado_autostart(
+            resultado.estado,
+            mensaje=resultado.mensaje,
+        )
 
     def _crear_avanzado(self, contenido):
         ttk = self.ttk
@@ -1823,6 +1903,7 @@ class VentanaSettings:
         self.boton_actualizar_audio.state(["disabled"])
         self.boton_cambiar_atajo.state(["disabled"])
         self.boton_restaurar_atajo.state(["disabled"])
+        self.check_autostart.state(["disabled"])
         self.control_prueba.cerrar()
         self._actualizar_audio()
 
