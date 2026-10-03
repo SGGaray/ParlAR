@@ -15,6 +15,7 @@ generación anterior. Shutdown es terminal: invalida primero, espera al worker
 y recién entonces cierra sinks.
 """
 
+import json
 import re
 import sys
 import threading
@@ -87,6 +88,15 @@ class EstadoApp(str, Enum):
     ERROR = "error"
     SHUTTING_DOWN = "shutting_down"
     CLOSED = "closed"
+
+
+def foco_settings_seguro(estado: EstadoApp) -> bool:
+    """Evita convertir Settings en destino mientras hay dictado en curso."""
+    return estado not in {
+        EstadoApp.STARTING,
+        EstadoApp.RECORDING,
+        EstadoApp.STOPPING,
+    }
 
 
 class App:
@@ -1524,6 +1534,15 @@ class App:
             return self._respuesta_estado()
         if op == "estado-operativo":
             return serializar_estado(self.estado_operativo.snapshot())
+        if op == "abrir-configuracion":
+            with self._estado_cv:
+                estado = self._estado
+            foco = "allow" if foco_settings_seguro(estado) else "defer"
+            return json.dumps({
+                "schema_version": 1,
+                "runtime": estado.value,
+                "focus": foco,
+            }, separators=(",", ":"))
         if op == "modo" and len(partes) > 1 and partes[1] in Config.MODOS:
             return (f"OK modo={partes[1]}" if self.cambiar_modo(partes[1])
                     else "ERR aplicación cerrada")

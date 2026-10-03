@@ -129,10 +129,19 @@ def _crear_parser(cfg: Config) -> argparse.ArgumentParser:
         metavar="COMBINACIÓN",
         help="atajo X11; usalo con --guardar-config para persistirlo",
     )
+    ap.add_argument(
+        "--abrir-configuracion",
+        action="store_true",
+        help="abre Settings y prepara el runtime si todavía no está activo",
+    )
     return ap
 
 
 def main():
+    if sys.argv[1:] == ["--abrir-configuracion"]:
+        from .launcher import main as launcher_main
+
+        return launcher_main()
     if any(argumento in {"-h", "--help"} for argumento in sys.argv[1:]):
         _crear_parser(Config()).parse_args()
 
@@ -143,6 +152,8 @@ def main():
         raise SystemExit(2)
     ap = _crear_parser(cfg)
     args = ap.parse_args()
+    if args.abrir_configuracion:
+        ap.error("--abrir-configuracion no se combina con flags del runtime")
 
     cfg.model_size = args.modelo
     cfg.device = args.dispositivo

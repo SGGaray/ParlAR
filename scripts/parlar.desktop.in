@@ -3,7 +3,8 @@
 Type=Application
 Name=ParlAR
 Comment=Dictado local a nivel sistema
-Exec=@PARLAR_EXECUTABLE@
+Exec=@PARLAR_EXECUTABLE@ --abrir-configuracion
+Icon=parlar
 Terminal=false
 Categories=Utility;Accessibility;
-StartupNotify=false
+StartupNotify=true

@@ -110,6 +110,8 @@ def resumen_humano(estado: EstadoOperativo) -> tuple[str, str]:
     """Devuelve título y explicación breve, sin detalles técnicos."""
     if estado.runtime == EstadoRuntime.STOPPED:
         return "No disponible", "ParlAR no está ejecutándose."
+    if estado.runtime == EstadoRuntime.STARTING:
+        return "Preparando ParlAR…", "ParlAR se está preparando."
     if estado.runtime in {EstadoRuntime.STOPPING, EstadoRuntime.ERROR}:
         problema = estado.error_bloqueante
         return (
@@ -128,8 +130,6 @@ def resumen_humano(estado: EstadoOperativo) -> tuple[str, str]:
     problema = estado.error_bloqueante
     if problema is not None:
         return "No disponible", problema.mensaje
-    if estado.runtime == EstadoRuntime.STARTING:
-        return "Requiere atención", "ParlAR todavía se está iniciando."
     return "Requiere atención", "ParlAR requiere atención antes de dictar."
 
 

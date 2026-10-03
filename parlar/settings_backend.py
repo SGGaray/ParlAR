@@ -93,6 +93,12 @@ class EstadoParlARSettings:
     ejecutandose: bool
 
 
+@dataclass(frozen=True, slots=True)
+class CargaConfiguracionSettings:
+    configuracion: Config
+    advertencia: str | None
+
+
 class ErrorSuspensionAtajo(RuntimeError):
     """El runtime no pudo garantizar una captura aislada del hotkey."""
 
@@ -158,6 +164,8 @@ def representar_estado_parlar(
         return EstadoParlARSettings(
             "stopped", "No está ejecutándose",
             "ParlAR no está ejecutándose.", False)
+    if datos.get("runtime") == "starting":
+        return estado_preparando_parlar()
     titulo = str(datos.get("status", "No disponible"))
     mensaje = str(datos.get("message", "ParlAR no está disponible."))
     if titulo == "Listo":
@@ -168,6 +176,22 @@ def representar_estado_parlar(
         categoria = "unavailable"
         titulo = "No disponible"
     return EstadoParlARSettings(categoria, titulo, mensaje, True)
+
+
+def estado_preparando_parlar() -> EstadoParlARSettings:
+    return EstadoParlARSettings(
+        "starting", "Preparando ParlAR…",
+        "ParlAR se está preparando. Settings sigue disponible.", True)
+
+
+def estado_fallo_inicio(
+        codigo: int | None, detalle: str | None = None) -> EstadoParlARSettings:
+    sufijo = f" (código {codigo})" if codigo is not None else ""
+    mensaje = f"ParlAR no pudo iniciarse{sufijo}. Revisá la configuración."
+    if detalle:
+        mensaje += f" {detalle}"
+    return EstadoParlARSettings(
+        "unavailable", "No disponible", mensaje, False)
 
 
 def consultar_estado_parlar(enviar=None) -> EstadoParlARSettings:
@@ -201,6 +225,18 @@ class ErrorInicializacionAudio(ErrorDispositivosAudio):
 def cargar_configuracion_actual() -> Config:
     """Carga la base persistida sin exponer ``Config`` a la capa de UI."""
     return Config.load()
+
+
+def cargar_configuracion_recuperable() -> CargaConfiguracionSettings:
+    """Mantiene Settings accesible aunque la configuración impida arrancar."""
+    try:
+        return CargaConfiguracionSettings(Config.load(), None)
+    except ErrorConfiguracion as exc:
+        return CargaConfiguracionSettings(
+            Config(),
+            "La configuración guardada no es válida. Corregí los valores y "
+            f"guardá para reemplazarla: {exc}",
+        )
 
 
 def snapshot_configuracion(cfg: Config) -> SettingsSnapshot:

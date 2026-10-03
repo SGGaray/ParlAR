@@ -9,6 +9,7 @@ INSTALL_HOME_ORIGINAL="${PARLAR_INSTALL_HOME:-$DATA_BASE/parlar}"
 INSTALL_HOME="$INSTALL_HOME_ORIGINAL"
 BIN_DIR="${PARLAR_BIN_DIR:-$HOME/.local/bin}"
 DESKTOP_PATH="$DATA_BASE/applications/parlar.desktop"
+ICON_PATH="$DATA_BASE/icons/hicolor/scalable/apps/parlar.svg"
 UNIT_PATH="$CONFIG_BASE/systemd/user/parlar.service"
 AUTOSTART_PATH="$CONFIG_BASE/autostart/parlar-systemd.desktop"
 LEGACY_ENABLE_PATH="$CONFIG_BASE/systemd/user/default.target.wants/parlar.service"
@@ -133,6 +134,8 @@ instalar_enlace() {
 instalar_enlace "$VENV_DIR/bin/parlar" "$BIN_DIR/parlar"
 instalar_enlace "$VENV_DIR/bin/parlarctl" "$BIN_DIR/parlarctl"
 
+"$VENV_PYTHON" "$REPO_DIR/scripts/render_desktop.py" \
+    --icon-source "$REPO_DIR/parlar/assets/parlar.svg" --output "$ICON_PATH"
 "$VENV_PYTHON" "$REPO_DIR/scripts/render_desktop.py" \
     --executable "$VENV_DIR/bin/parlar" --output "$DESKTOP_PATH"
 

@@ -6,6 +6,7 @@ asigná `parlarctl alternar` a un atajo de teclado del compositor/DE.
 
 Comandos (español primero, alias en inglés entre paréntesis):
   alternar (toggle) | iniciar (start) | detener (stop) | estado (status)
+  abrir-configuracion (open-settings)
   modo <utterance|frase|streaming> (mode) | salir (quit)
   reescritura <none|ninguna|formal|concise|conciso|email|correo> (rewrite)
 """
@@ -36,6 +37,7 @@ ALIAS_COMANDOS = {
     "cancel": "cancelar",
     "status": "estado", "mode": "modo", "rewrite": "reescritura",
     "operational-status": "estado-operativo",
+    "open-settings": "abrir-configuracion",
     "quit": "salir",
 }
 
@@ -488,14 +490,14 @@ def parlarctl_main():
         nargs="*",
         metavar="COMANDO",
         help=("alternar|iniciar|detener|cancelar|estado|modo M|"
-              "reescritura M|salir"),
+              "reescritura M|abrir-configuracion|salir"),
     )
     args = parser.parse_args()
     if not args.comando:
         print(
             "uso: parlarctl "
             "<alternar|iniciar|detener|cancelar|estado|modo M|"
-            "reescritura M|salir>"
+            "reescritura M|abrir-configuracion|salir>"
         )
         print("     (los comandos en inglés también funcionan)")
         sys.exit(2)

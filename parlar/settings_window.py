@@ -23,6 +23,7 @@ from .hotkey import (
 )
 from .settings_backend import (
     DispositivoEntrada,
+    EstadoParlARSettings,
     ErrorDispositivosAudio,
     ErrorSuspensionAtajo,
     ResolucionEntrada,
@@ -30,7 +31,7 @@ from .settings_backend import (
     SettingsCapabilities,
     SettingsSnapshot,
     SuspensionHotkeyProductivo,
-    cargar_configuracion_actual,
+    cargar_configuracion_recuperable,
     construir_configuracion_candidata,
     consultar_estado_parlar,
     listar_dispositivos_entrada,
@@ -589,29 +590,36 @@ class ControlSettings:
             configuracion_base,
             snapshot_inicial: SettingsSnapshot,
             *,
-            persistir: Callable | None = None):
+            persistir: Callable | None = None,
+            requiere_reparacion: bool = False):
         self.configuracion_base = configuracion_base
         self.snapshot_inicial = snapshot_inicial
         self._persistir = persistir or persistir_configuracion
+        self.requiere_reparacion = requiere_reparacion
 
     def snapshot_candidato(
             self, valores: ValoresFormulario) -> SettingsSnapshot:
         return snapshot_desde_valores(self.snapshot_inicial, valores)
 
     def esta_sucio(self, valores: ValoresFormulario) -> bool:
-        return requiere_reinicio(
+        return self.requiere_reparacion or requiere_reinicio(
             self.snapshot_inicial,
             self.snapshot_candidato(valores),
         )
 
     def guardar(self, valores: ValoresFormulario) -> ResultadoPersistencia:
+        reparacion = self.requiere_reparacion
         candidata = self.snapshot_candidato(valores)
         construir_configuracion_candidata(
             self.configuracion_base,
             candidata,
         )
         resultado = self._persistir(self.configuracion_base, candidata)
+        if reparacion and not resultado.requires_restart:
+            resultado = dataclasses.replace(
+                resultado, requires_restart=True)
         self.snapshot_inicial = resultado.snapshot
+        self.requiere_reparacion = False
         return resultado
 
     def validar_atajo(self, texto: str):
@@ -638,6 +646,11 @@ class VentanaSettings:
             control_prueba: ControlPruebaMicrofono | None = None,
             listar_entradas: Callable = listar_dispositivos_entrada,
             estado_parlar=None,
+            consultar_estado: Callable | None = None,
+            guardia_settings=None,
+            permitir_foco_inicial: bool = True,
+            puede_presentar: Callable[[], bool] | None = None,
+            advertencia_config: str | None = None,
             crear_suspension_atajo: Callable = SuspensionHotkeyProductivo):
         import tkinter as tk
         from tkinter import ttk
@@ -651,6 +664,13 @@ class VentanaSettings:
         self.error_inventario = error_inventario
         self._listar_entradas = listar_entradas
         self._crear_suspension_atajo = crear_suspension_atajo
+        self._consultar_estado = consultar_estado or consultar_estado_parlar
+        self._guardia_settings = guardia_settings
+        self._puede_presentar = puede_presentar or (lambda: True)
+        self._presentacion_pendiente = not permitir_foco_inicial
+        self._presentacion_visible = permitir_foco_inicial
+        self._poll_runtime_id = None
+        self._advertencia_config = advertencia_config
         self.control_prueba = control_prueba or ControlPruebaMicrofono(
             self.inventario)
         self._creando = True
@@ -667,6 +687,9 @@ class VentanaSettings:
         self._areas_scroll = {}
         self._widgets_foco = {}
         self.estado_parlar = estado_parlar or consultar_estado_parlar()
+
+        if not permitir_foco_inicial:
+            self.root.withdraw()
 
         self.opciones_audio = construir_opciones_entrada(
             control.snapshot_inicial.audio_input_device,
@@ -697,6 +720,9 @@ class VentanaSettings:
         self._actualizar_audio()
         self._actualizar_sucio()
         self._programar_poll_audio()
+        self._programar_poll_runtime()
+        if permitir_foco_inicial:
+            self.root.after_idle(self._presentar)
 
     def _configurar_estilos(self):
         estilo = self.ttk.Style(self.root)
@@ -725,7 +751,12 @@ class VentanaSettings:
             "overlay_position": tk.StringVar(
                 value=valores.overlay_position),
         }
-        self.estado = tk.StringVar(value=mensaje_reinicio_previo())
+        self.estado = tk.StringVar(
+            value=self._advertencia_config or mensaje_reinicio_previo())
+        self.estado_runtime_titulo = tk.StringVar(
+            value=self.estado_parlar.titulo)
+        self.estado_runtime_mensaje = tk.StringVar(
+            value=self.estado_parlar.mensaje)
         self.audio_seleccion = tk.StringVar(value="")
         self.estado_audio = tk.StringVar(value="")
         self.hotkey_etiqueta = tk.StringVar(
@@ -756,6 +787,8 @@ class VentanaSettings:
             wraplength=420,
         )
         self.etiqueta_estado.grid(row=0, column=0, sticky="w")
+        if self._advertencia_config:
+            self.etiqueta_estado.configure(style="Error.Status.TLabel")
         self.boton_cancelar = ttk.Button(
             self.footer,
             text="Cerrar",
@@ -1190,23 +1223,21 @@ class VentanaSettings:
     def _crear_aplicacion(self, contenido):
         ttk = self.ttk
         self._titulo_seccion(contenido, "Estado de ParlAR", 0)
-        estilo_estado = {
-            "ready": "Success.Status.TLabel",
-            "attention": "Warning.Status.TLabel",
-            "unavailable": "Error.Status.TLabel",
-            "stopped": "Status.TLabel",
-        }.get(self.estado_parlar.categoria, "Status.TLabel")
-        ttk.Label(
+        self.etiqueta_runtime_titulo = ttk.Label(
             contenido,
-            text=self.estado_parlar.titulo,
+            textvariable=self.estado_runtime_titulo,
             style="Section.TLabel",
-        ).grid(row=1, column=0, columnspan=3, sticky="w")
-        ttk.Label(
+        )
+        self.etiqueta_runtime_titulo.grid(
+            row=1, column=0, columnspan=3, sticky="w")
+        self.etiqueta_runtime_mensaje = ttk.Label(
             contenido,
-            text=self.estado_parlar.mensaje,
-            style=estilo_estado,
+            textvariable=self.estado_runtime_mensaje,
             wraplength=560,
-        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(4, 0))
+        )
+        self.etiqueta_runtime_mensaje.grid(
+            row=2, column=0, columnspan=3, sticky="w", pady=(4, 0))
+        self._aplicar_estado_parlar(self.estado_parlar)
 
         self._separador(contenido, 3)
         self._titulo_seccion(contenido, "Indicador", 4)
@@ -1624,6 +1655,66 @@ class VentanaSettings:
     def _programar_poll_audio(self):
         self._poll_audio_id = self.root.after(100, self._poll_audio)
 
+    def _programar_poll_runtime(self):
+        self._poll_runtime_id = self.root.after(500, self._poll_runtime)
+
+    def _aplicar_estado_parlar(self, estado):
+        self.estado_parlar = estado
+        if not hasattr(self, "estado_runtime_titulo"):
+            return
+        self.estado_runtime_titulo.set(estado.titulo)
+        self.estado_runtime_mensaje.set(estado.mensaje)
+        estilo = {
+            "ready": "Success.Status.TLabel",
+            "starting": "Warning.Status.TLabel",
+            "attention": "Warning.Status.TLabel",
+            "unavailable": "Error.Status.TLabel",
+            "stopped": "Status.TLabel",
+        }.get(estado.categoria, "Status.TLabel")
+        if hasattr(self, "etiqueta_runtime_mensaje"):
+            self.etiqueta_runtime_mensaje.configure(style=estilo)
+        if hasattr(self, "boton_cambiar_atajo"):
+            if estado.categoria == "starting" or self._cerrando:
+                self.boton_cambiar_atajo.state(["disabled"])
+            else:
+                self.boton_cambiar_atajo.state(["!disabled"])
+
+    def _presentar(self):
+        try:
+            if not self._puede_presentar():
+                self._presentacion_pendiente = True
+                return False
+            self.root.deiconify()
+            self.root.lift()
+            self.root.focus_force()
+        except Exception:
+            return False
+        self._presentacion_visible = True
+        self._presentacion_pendiente = False
+        return True
+
+    def _poll_runtime(self):
+        self._poll_runtime_id = None
+        if self._cerrando:
+            return
+        try:
+            self._aplicar_estado_parlar(self._consultar_estado())
+        except Exception:
+            self._aplicar_estado_parlar(EstadoParlARSettings(
+                "unavailable",
+                "No disponible",
+                "No se pudo actualizar el estado de ParlAR.",
+                True,
+            ))
+        if (
+            self._guardia_settings is not None
+            and self._guardia_settings.consumir_presentacion()
+        ):
+            self._presentacion_pendiente = True
+        if self._presentacion_pendiente:
+            self._presentar()
+        self._programar_poll_runtime()
+
     def _poll_audio(self):
         self._poll_audio_id = None
         self._consumir_refresco_audio()
@@ -1739,16 +1830,35 @@ class VentanaSettings:
         self._solicitar_cierre()
 
 
-def main() -> int:
+def main(
+        *, consultar_estado: Callable | None = None,
+        permitir_foco_inicial: bool = True,
+        puede_presentar: Callable[[], bool] | None = None) -> int:
+    from .launcher import GuardiaVentanaSettings
+
+    guardia_settings = GuardiaVentanaSettings()
     try:
-        base = cargar_configuracion_actual()
+        if not guardia_settings.adquirir_o_solicitar_presentacion():
+            return 0
+        guardia_settings.instalar_receptor_presentacion()
+    except Exception as exc:
+        print(f"[settings] no se pudo coordinar la ventana: {exc}",
+              file=sys.stderr)
+        guardia_settings.liberar()
+        return 1
+
+    try:
+        carga = cargar_configuracion_recuperable()
+        base = carga.configuracion
         snapshot = snapshot_configuracion(base)
         capacidades = obtener_capacidades()
         inventario = cargar_inventario_entradas()
-        estado_parlar = consultar_estado_parlar()
+        proveedor_estado = consultar_estado or consultar_estado_parlar
+        estado_parlar = proveedor_estado()
     except Exception as exc:
         print(f"[settings] no se pudo cargar la configuración: {exc}",
               file=sys.stderr)
+        guardia_settings.liberar()
         return 2
 
     try:
@@ -1757,17 +1867,34 @@ def main() -> int:
     except Exception as exc:
         print(f"[settings] no se pudo abrir la ventana: {exc}",
               file=sys.stderr)
+        guardia_settings.liberar()
         return 1
 
-    VentanaSettings(
-        root,
-        ControlSettings(base, snapshot),
-        capacidades,
-        inventario=inventario.dispositivos,
-        error_inventario=inventario.error,
-        estado_parlar=estado_parlar,
-    )
-    root.mainloop()
+    try:
+        VentanaSettings(
+            root,
+            ControlSettings(
+                base,
+                snapshot,
+                requiere_reparacion=carga.advertencia is not None,
+            ),
+            capacidades,
+            inventario=inventario.dispositivos,
+            error_inventario=inventario.error,
+            estado_parlar=estado_parlar,
+            consultar_estado=proveedor_estado,
+            guardia_settings=guardia_settings,
+            permitir_foco_inicial=permitir_foco_inicial,
+            puede_presentar=puede_presentar,
+            advertencia_config=carga.advertencia,
+        )
+        root.mainloop()
+    except Exception as exc:
+        print(f"[settings] la ventana se cerró por un error: {exc}",
+              file=sys.stderr)
+        return 1
+    finally:
+        guardia_settings.liberar()
     return 0
 
 

@@ -529,13 +529,36 @@ class ContratoInstalacionUsuario(unittest.TestCase):
                 render_desktop.instalar(contenido, salida)
             self.assertIn("Name=Personal", salida.read_text())
 
+    def test_icono_svg_es_real_idempotente_y_no_reemplaza_ajeno(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            salida = Path(tmp) / "icons" / "parlar.svg"
+            origen = ROOT / "parlar" / "assets" / "parlar.svg"
+            contenido = render_desktop.cargar_icono(origen)
+            self.assertIn("<svg", contenido)
+            self.assertEqual(
+                render_desktop.instalar_icono(contenido, salida),
+                "instalado",
+            )
+            self.assertEqual(
+                render_desktop.instalar_icono(contenido, salida),
+                "sin cambios",
+            )
+            salida.write_text("<svg><!-- personal --></svg>\n", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "no fue generado"):
+                render_desktop.instalar_icono(contenido, salida)
+            self.assertIn("personal", salida.read_text(encoding="utf-8"))
+
     def test_launcher_normal_y_autostart_systemd_son_distintos(self):
         ejecutable = Path("/opt/parlar/venv/bin/parlar")
         launcher = render_desktop.renderizar(ejecutable)
         autostart = render_desktop.renderizar_autostart()
 
-        self.assertIn(f'Exec="{ejecutable}"', launcher)
+        self.assertIn(
+            f'Exec="{ejecutable}" --abrir-configuracion', launcher)
         self.assertNotIn("systemctl --user start", launcher)
+        self.assertIn("Icon=parlar", launcher)
+        self.assertIn("Terminal=false", launcher)
+        self.assertIn("StartupNotify=true", launcher)
         self.assertIn(
             "Exec=systemctl --user start parlar.service", autostart)
         self.assertNotIn("PYTHONUNBUFFERED", autostart)
@@ -585,7 +608,8 @@ class ContratoInstalacionUsuario(unittest.TestCase):
                     )
                     self.assertEqual(
                         exec_line,
-                        "Exec=" + argumento_esperado(ejecutable),
+                        "Exec=" + argumento_esperado(ejecutable)
+                        + " --abrir-configuracion",
                     )
                     if shutil.which("desktop-file-validate"):
                         validacion = ejecutar(
@@ -777,6 +801,12 @@ class ContratoInstalacionUsuario(unittest.TestCase):
                 "parlar-systemd.desktop.in",
             ):
                 shutil.copy2(ROOT / "scripts" / nombre, scripts / nombre)
+            recurso = repo / "parlar" / "assets"
+            recurso.mkdir(parents=True)
+            shutil.copy2(
+                ROOT / "parlar" / "assets" / "parlar.svg",
+                recurso / "parlar.svg",
+            )
 
             home = base / "home con ñ"
             data = home / "share"
@@ -862,6 +892,7 @@ class ContratoInstalacionUsuario(unittest.TestCase):
                 self.assertEqual(
                     enlace.readlink(), venv_bin / comando)
             desktop = data / "applications" / "parlar.desktop"
+            icono = data / "icons" / "hicolor" / "scalable" / "apps" / "parlar.svg"
             autostart = config / "autostart" / "parlar-systemd.desktop"
             self.assertIn(str(venv_bin / "parlar"), unit.read_text())
             self.assertNotIn(str(repo), unit.read_text())
@@ -870,6 +901,10 @@ class ContratoInstalacionUsuario(unittest.TestCase):
             self.assertNotIn("[Install]", unit.read_text())
             self.assertNotIn("graphical-session.target", unit.read_text())
             self.assertIn(str(venv_bin / "parlar"), desktop.read_text())
+            self.assertIn("--abrir-configuracion", desktop.read_text())
+            self.assertIn("Icon=parlar", desktop.read_text())
+            self.assertTrue(icono.exists())
+            self.assertIn("<svg", icono.read_text(encoding="utf-8"))
             self.assertEqual(
                 next(line for line in autostart.read_text().splitlines()
                      if line.startswith("Exec=")),
@@ -894,6 +929,7 @@ class ContratoInstalacionUsuario(unittest.TestCase):
             self.assertFalse((install_home / "venv").exists())
             self.assertFalse(unit.exists())
             self.assertFalse(desktop.exists())
+            self.assertFalse(icono.exists())
             self.assertFalse(autostart.exists())
             self.assertFalse(os.path.lexists(bin_dir / "parlar"))
             self.assertFalse(os.path.lexists(bin_dir / "parlarctl"))
@@ -993,6 +1029,8 @@ raise SystemExit(0)
                         bin_dir / "parlar",
                         bin_dir / "parlarctl",
                         data / "applications" / "parlar.desktop",
+                        data / "icons" / "hicolor" / "scalable" / "apps"
+                        / "parlar.svg",
                         config / "systemd" / "user" / "parlar.service",
                         config / "autostart" / "parlar-systemd.desktop"):
                     with self.subTest(variante=nombre, ausente=ruta):
