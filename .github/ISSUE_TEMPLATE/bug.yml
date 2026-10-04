@@ -1,0 +1,47 @@
+name: Error
+description: ParlAR no hace lo que debería.
+title: "[Error] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Gracias por avisar. Si el problema es de seguridad, no lo publiques acá: seguí [SECURITY.md](https://github.com/SGGaray/ParlAR/blob/main/SECURITY.md).
+        No incluyas datos personales, textos privados ni grabaciones.
+  - type: textarea
+    id: que-paso
+    attributes:
+      label: Qué pasó
+      description: Qué hiciste, qué esperabas y qué pasó en cambio.
+    validations:
+      required: true
+  - type: textarea
+    id: pasos
+    attributes:
+      label: Cómo reproducirlo
+      placeholder: |
+        1. Abrir ParlAR desde el menú
+        2. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Versión o commit de ParlAR
+      placeholder: "Por ejemplo: 1.0.1, o el resultado de `git -C ParlAR log -1 --oneline`"
+    validations:
+      required: true
+  - type: input
+    id: entorno
+    attributes:
+      label: Sistema
+      description: Distribución, X11 o Wayland, escritorio, CPU o GPU NVIDIA
+      placeholder: Fedora 43, X11, GNOME, NVIDIA RTX 3060
+    validations:
+      required: true
+  - type: textarea
+    id: registros
+    attributes:
+      label: Mensajes de error (opcional)
+      description: Revisalos antes de pegarlos y quitá cualquier dato privado.
+      render: text

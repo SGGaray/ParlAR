@@ -8,8 +8,7 @@
 | Releases anteriores | No, salvo indicación explícita |
 | `main` y otras ramas de desarrollo | No son releases soportadas |
 
-ParlAR es un proyecto personal en evolución. Las correcciones de seguridad se
-dirigen a la release pública más reciente.
+Las correcciones de seguridad se dirigen a la release pública más reciente.
 
 ## Modelo de amenaza
 
@@ -81,9 +80,9 @@ Los logs normales no incluyen audio ni texto dictado. Registran metadatos
 operativos como estados, tiempos, backend, conteos y rutas. Tampoco se copia el
 stderr de las herramientas de inyección porque podría repetir sus argumentos.
 
-### Transcript de sesión (`--guardar-sesion`, apagado por defecto)
+### Transcripciones guardadas («Conservar transcripciones», apagado por defecto)
 
-Con este flag, cada texto confirmado que dictás se agrega a un archivo
+Con esta opción activa, cada texto confirmado que dictás se agrega a un archivo
 exclusivo por corrida bajo `~/.local/share/parlar/sesiones/` (ruta real
 `$XDG_DATA_HOME/parlar/sesiones/` si esa variable está definida). El nombre
 incluye fecha, microsegundos y un token aleatorio. Se crea con `O_EXCL` para
@@ -96,13 +95,9 @@ El transcript es un historial append-only de emisiones confirmadas, no un
 documento final reconstruido. No registra automáticamente Return, undo, estado
 del editor ni estado del portapapeles.
 
-Por eso `guardar_sesion` está en `false` por defecto. Se activa explícitamente:
-
-```json
-{ "guardar_sesion": true }
-```
-
-en `~/.config/parlar/config.json`, o con `--guardar-sesion` en la línea de comandos.
+Por eso está apagado por defecto. Se activa explícitamente desde
+Configuración → Aplicación → **Conservar transcripciones**, que guarda
+`"guardar_sesion": true` en `~/.config/parlar/config.json`.
 
 **Borrado:** ParlAR nunca borra estos archivos solo. Son texto plano común, se borran a mano:
 
@@ -135,16 +130,19 @@ ParlAR queda `0700`.
 
 ## Reportar una vulnerabilidad
 
-Usá [GitHub Private Vulnerability Reporting](https://github.com/SGGaray/ParlAR/security/advisories/new)
-como canal primario. El reporte y sus comentarios quedan disponibles para el
-responsable del repositorio y las personas incorporadas al advisory.
+**No publiques vulnerabilidades ni detalles sensibles en un issue.** Los
+issues públicos son para errores comunes, problemas de instalación y de
+compatibilidad que no expongan información confidencial ni instrucciones de
+explotación.
 
-Como canal privado alternativo, podés escribir a
-[security@sggaray.com](mailto:security@sggaray.com).
+Para reportar en privado:
 
-No publiques vulnerabilidades ni detalles sensibles en un issue. Los issues
-públicos quedan reservados para bugs ordinarios que no expongan información
-confidencial ni instrucciones de explotación.
+1. Usá [GitHub Private Vulnerability Reporting](https://github.com/SGGaray/ParlAR/security/advisories/new)
+   (pestaña Security → «Report a vulnerability») cuando esté disponible. El
+   reporte sólo lo ven el responsable del repositorio y las personas que se
+   sumen al advisory.
+2. Si no está disponible o preferís el correo, escribí a
+   [security@sggaray.com](mailto:security@sggaray.com).
 
 ### Qué incluir
 
@@ -161,7 +159,6 @@ Usá sentinels y datos sintéticos si permiten reproducir el problema. No envíe
 audio real, transcripts reales, texto dictado privado, API keys, tokens,
 credenciales ni datos personales.
 
-ParlAR no tiene bug bounty ni ofrece recompensas. Tampoco hay un SLA
-contractual de respuesta. El responsable del repositorio intentará acusar
-recibo y coordinar la divulgación, pero no se compromete a plazos fijos. Esta
-política no implica que el proyecto esté auditado o certificado.
+ParlAR no tiene bug bounty ni ofrece recompensas, y no hay plazos de
+respuesta comprometidos. El responsable intentará acusar recibo y coordinar la
+divulgación. Esta política no implica que ParlAR esté auditado o certificado.

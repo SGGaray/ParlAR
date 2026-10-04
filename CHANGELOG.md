@@ -2,6 +2,57 @@
 
 ## [Unreleased]
 
+### Agregado
+- **Ventana de Configuración.** Todo lo que antes requería editar la
+  configuración o usar opciones de línea de comandos se ajusta desde una
+  ventana con cinco secciones: Dictado, Micrófono, GuionAR, Aplicación y
+  Avanzado. Indica cuándo un cambio necesita reiniciar ParlAR y permite
+  reiniciarlo desde ahí.
+- **Elegir y probar el micrófono.** ParlAR recuerda el micrófono elegido y
+  ofrece una prueba de nivel que no guarda audio.
+- **Cambiar el atajo de dictado** desde la Configuración, presionando la
+  combinación deseada.
+- **Entrada en el menú de aplicaciones.** Abrir ParlAR desde el menú abre la
+  Configuración y deja ParlAR funcionando si todavía no lo estaba.
+- **Ícono en la bandeja del sistema** con el estado actual, pausa,
+  Configuración, reinicio y salida.
+- **Inicio con la sesión** activable desde la Configuración cuando ParlAR se
+  instaló con el inicio automático.
+- **Reinicio seguro.** Si hay un dictado en curso, ParlAR avisa y ofrece
+  terminarlo antes de reiniciar, o no reiniciar todavía.
+- **Integración automática con GuionAR.** Si GuionAR está abierto, ParlAR se
+  conecta solo, en cualquier orden, y se reconecta si GuionAR se cierra y se
+  vuelve a abrir. Se puede desactivar desde la Configuración.
+- **Seguimiento en vivo.** GuionAR recibe lo que vas diciendo mientras
+  hablás, no sólo al terminar cada frase.
+- **GuionAR como salida exclusiva** (activado por defecto): mientras GuionAR
+  está conectado, el dictado va sólo a GuionAR y no se escribe en la
+  aplicación con foco.
+- **Identidad visual propia**: ícono de la aplicación, íconos de bandeja con
+  estado y Configuración con la marca de ParlAR.
+
+### Cambiado
+- **Nuevo atajo predeterminado: Ctrl derecho + Super derecha**, para evitar
+  choques con atajos del escritorio. Quien ya tenía un atajo configurado lo
+  conserva.
+- El indicador de dictado ahora es una onda breve que aparece sólo mientras
+  ParlAR escucha y no toma el foco.
+- Mensajes de estado y de recuperación más claros, y mejor uso con teclado.
+
+### Corregido
+- La reescritura con Ollama tiene un tiempo máximo total y un límite de
+  tamaño de respuesta, para que un servicio lento o defectuoso no deje el
+  dictado esperando.
+- La conexión con GuionAR sólo se acepta si el otro proceso pertenece al
+  mismo usuario.
+- Las herramientas de portapapeles ya no vuelcan su salida en los registros.
+- Instalación y desinstalación usan exactamente las mismas rutas.
+
+### Documentación
+- README reescrito para quien usa ParlAR: instalación, uso, Configuración,
+  privacidad, actualización y desinstalación.
+- Política de reporte privado de vulnerabilidades.
+
 ## [1.0.1] - 2026-09-24
 
 ### Corregido
