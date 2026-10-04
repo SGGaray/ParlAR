@@ -156,13 +156,13 @@ ARQUITECTURA_SETTINGS = ArquitecturaSettings(
             "Avanzado",
             (
                 "model_size", "device", "compute_type", "mode",
-                "rewrite_mode", "injector", "guardar_sesion", "guionar",
-                "guionar_socket",
+                "rewrite_mode", "injector", "guardar_sesion",
+                "guionar_status", "guionar",
             ),
             (
                 "model_size", "device", "compute_type", "mode",
-                "rewrite_mode", "injector", "guardar_sesion", "guionar",
-                "guionar_socket",
+                "rewrite_mode", "injector", "guardar_sesion",
+                "guionar_status", "guionar",
             ),
         ),
     ),
@@ -607,6 +607,18 @@ def snapshot_desde_valores(
     return dataclasses.replace(inicial, **datos)
 
 
+def texto_estado_guionar(estado) -> tuple[str, bool]:
+    """Texto breve de presencia de GuionAR y si está conectado."""
+    if not getattr(estado, "ejecutandose", False):
+        return "○ No detectado (ParlAR no está ejecutándose)", False
+    guionar = getattr(estado, "guionar", None)
+    if guionar == "connected":
+        return "● Conectado", True
+    if guionar == "disconnected":
+        return "○ No detectado", False
+    return "○ Integración desactivada", False
+
+
 def mensaje_persistencia(resultado: ResultadoPersistencia) -> str:
     if resultado.requires_restart:
         return (
@@ -817,7 +829,6 @@ class VentanaSettings:
             "hotkey_toggle": tk.StringVar(value=valores.hotkey_toggle),
             "overlay": tk.BooleanVar(value=valores.overlay),
             "guionar": tk.BooleanVar(value=valores.guionar),
-            "guionar_socket": tk.StringVar(value=valores.guionar_socket),
             "guardar_sesion": tk.BooleanVar(value=valores.guardar_sesion),
             "overlay_position": tk.StringVar(
                 value=valores.overlay_position),
@@ -828,6 +839,8 @@ class VentanaSettings:
             value=self.estado_parlar.titulo)
         self.estado_runtime_mensaje = tk.StringVar(
             value=self.estado_parlar.mensaje)
+        self.estado_guionar = tk.StringVar(
+            value=texto_estado_guionar(self.estado_parlar)[0])
         self.audio_seleccion = tk.StringVar(value="")
         self.estado_audio = tk.StringVar(value="")
         self.hotkey_etiqueta = tk.StringVar(
@@ -1439,27 +1452,32 @@ class VentanaSettings:
 
         self._separador(contenido, 16)
         self._titulo_seccion(contenido, "GuionAR", 17)
+        texto, conectado = texto_estado_guionar(self.estado_parlar)
+        self.estado_guionar.set(texto)
+        self.etiqueta_estado_guionar = ttk.Label(
+            contenido,
+            textvariable=self.estado_guionar,
+            style="Success.Status.TLabel" if conectado else "Status.TLabel",
+        )
+        self.etiqueta_estado_guionar.grid(
+            row=18, column=0, columnspan=3, sticky="w")
         self.check_guionar = ttk.Checkbutton(
             contenido,
-            text="Enviar dictado y actividad a GuionAR",
+            text="Integrar con GuionAR",
             variable=self.variables["guionar"],
         )
         self.check_guionar.grid(
-            row=18, column=0, columnspan=3, sticky="w")
+            row=19, column=0, columnspan=3, sticky="w", pady=(8, 0))
         self._registrar_foco("guionar", self.check_guionar)
-        ttk.Label(contenido, text="Socket de GuionAR").grid(
-            row=19, column=0, padx=(0, 16), pady=(10, 0), sticky="w")
-        self.entrada_guionar_socket = ttk.Entry(
-            contenido, textvariable=self.variables["guionar_socket"])
-        self.entrada_guionar_socket.grid(
-            row=19, column=1, columnspan=2, sticky="ew", pady=(10, 0))
-        self._registrar_foco(
-            "guionar_socket", self.entrada_guionar_socket)
         ttk.Label(
             contenido,
-            text="La ruta se conserva aunque desactives GuionAR.",
+            text=(
+                "Cuando GuionAR está abierto, ParlAR puede enviarle el "
+                "dictado automáticamente."
+            ),
             style="Status.TLabel",
-        ).grid(row=20, column=1, columnspan=2, sticky="w", pady=(6, 0))
+            wraplength=560,
+        ).grid(row=20, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
     def _actualizar_region_scroll(self, canvas):
         region = canvas.bbox("all")
@@ -1600,10 +1618,8 @@ class VentanaSettings:
             self._actualizar_sucio()
 
     def _actualizar_dependencias(self):
-        if not hasattr(self, "entrada_guionar_socket"):
+        if not hasattr(self, "check_guionar"):
             return
-        self.entrada_guionar_socket.configure(
-            state="normal" if self.variables["guionar"].get() else "disabled")
         selector_posicion, _opciones = self.selectores["overlay_position"]
         selector_posicion.configure(
             state=(
@@ -1626,7 +1642,9 @@ class VentanaSettings:
             hotkey_toggle=self.variables["hotkey_toggle"].get(),
             overlay=self.variables["overlay"].get(),
             guionar=self.variables["guionar"].get(),
-            guionar_socket=self.variables["guionar_socket"].get(),
+            # Sin campo visible: la ruta personalizada (CLI/config) se
+            # conserva tal cual al guardar.
+            guionar_socket=self.control.snapshot_inicial.guionar_socket,
             guardar_sesion=self.variables["guardar_sesion"].get(),
             audio_input_device=self._audio_actual(),
             overlay_position=self._valor_selector_actual(
@@ -1809,6 +1827,13 @@ class VentanaSettings:
         }.get(estado.categoria, "Status.TLabel")
         if hasattr(self, "etiqueta_runtime_mensaje"):
             self.etiqueta_runtime_mensaje.configure(style=estilo)
+        if hasattr(self, "etiqueta_estado_guionar"):
+            texto, conectado = texto_estado_guionar(estado)
+            if self.estado_guionar.get() != texto:
+                self.estado_guionar.set(texto)
+                self.etiqueta_estado_guionar.configure(
+                    style="Success.Status.TLabel" if conectado
+                    else "Status.TLabel")
         if hasattr(self, "boton_cambiar_atajo"):
             if estado.categoria == "starting" or self._cerrando:
                 self.boton_cambiar_atajo.state(["disabled"])

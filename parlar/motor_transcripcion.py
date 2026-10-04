@@ -137,7 +137,7 @@ def _registrar_segmento_sospechoso(clasificacion: str, metricas, descartar: bool
     print("[stt] segmento sospechoso: " + " ".join(campos), file=sys.stderr)
 
 
-def _descartar_segmento_conocido(segmento) -> bool:
+def _descartar_segmento_conocido(segmento, registrar: bool = True) -> bool:
     texto = getattr(segmento, "text", "")
     clasificacion = _clasificar_alucinacion(texto)
     if clasificacion is None:
@@ -153,7 +153,8 @@ def _descartar_segmento_conocido(segmento) -> bool:
             and metricas["compression_ratio"] > _UMBRAL_COMPRESION)
     )
     descartar = clasificacion == "exact_or_near_exact" and evidencia_debil
-    _registrar_segmento_sospechoso(clasificacion, metricas, descartar)
+    if registrar:
+        _registrar_segmento_sospechoso(clasificacion, metricas, descartar)
     return descartar
 
 
@@ -172,6 +173,17 @@ class TranscriptorFrase:
                 continue
             partes.append(texto_segmento)
         return " ".join(partes).strip()
+
+    def transcribir_parcial(self, audio: np.ndarray) -> str:
+        """Hipótesis provisional para GuionAR: greedy (beam 1) y sin log por
+        segmento, porque se repite varias veces por segundo."""
+        if audio.size < 1600:
+            return ""
+        segments = self.motor.decodificar(audio, beam_size=1)
+        return " ".join(
+            s.text.strip() for s in segments
+            if not _descartar_segmento_conocido(s, registrar=False)
+        ).strip()
 
 
 @dataclass

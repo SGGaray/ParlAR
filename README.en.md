@@ -256,17 +256,23 @@ be checked after installation. CPU is a supported fallback, not a failure mode.
 
 ## Optional GuionAR integration
 
-[GuionAR](https://github.com/SGGaray/GuionAR) can receive VAD, partials, and
-final text over local Unix IPC:
+[GuionAR](https://github.com/SGGaray/GuionAR) can follow your dictation as a
+teleprompter. Nothing needs to be configured:
 
-```bash
-parlar --guionar --mode streaming
-```
+- If GuionAR is open, ParlAR connects automatically.
+- If it is not open, ParlAR keeps working normally.
+- Start order does not matter. If GuionAR closes and reopens, ParlAR
+  reconnects on its own, without restarting.
 
-It is best-effort and not on the critical path. ParlAR continues when GuionAR
-is absent. Reconnection publishes current state, not historical final text.
-The IPC transport has automated coverage; the real GuionAR application was not
-validated end-to-end for v1.0.0.
+Settings → Advanced → GuionAR shows whether it is connected and lets you turn
+the integration off with “Integrar con GuionAR”.
+
+Advanced details: it is best-effort and not on the critical path. After a
+reconnect only new events are sent; dictation produced while GuionAR was away
+is not replayed. The default socket is `$XDG_RUNTIME_DIR/guionar.sock` and only
+a same-user peer is accepted. For debugging, `--guionar-socket PATH` and
+`--no-guionar` (`--sin-guionar`) are available; `--guionar` is kept for
+compatibility and matches the default.
 
 ## Privacy and transcripts
 

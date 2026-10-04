@@ -15,6 +15,7 @@ generación anterior. Shutdown es terminal: invalida primero, espera al worker
 y recién entonces cierra sinks.
 """
 
+import contextlib
 import json
 import os
 import re
@@ -25,6 +26,7 @@ from enum import Enum
 from typing import Optional
 
 from .capturador_audio import CapturadorMic, Segmentador, crear_vad
+from .cliente_guionar import CONECTADO
 from .config import Config
 from .control import ServidorControl, normalizar_comando
 from .control_gesto_dictado import ControlGestoDictado
@@ -45,6 +47,7 @@ from .estado_ui import EstadoInterfaz
 from .indicador import crear_ui
 from .inyector_salida import backend_inyector_disponible, detectar_sesion
 from .motor_transcripcion import MotorWhisper, TranscriptorFrase, TranscriptorStreaming
+from .parcial_stt import ProgramadorParciales, TurnoModelo
 from .procesador_texto import ProcesadorTexto
 from .settings_backend import (
     ErrorDispositivosAudio,
@@ -102,12 +105,18 @@ def foco_settings_seguro(estado: EstadoApp) -> bool:
 
 
 class App:
+    # Defaults para instancias parciales (tests con App.__new__).
+    parciales = None
+    _turno_modelo = None
+    _parcial_generacion = None
+    _parcial_en_unidad = False
+
     def __init__(self, cfg: Config, *, motor=None, frases=None, streaming=None,
                  proc=None, inyector=None, guionar=None, sesion=None, mic=None,
                  ui=None, control=None, atajos=None, guardia_instancia=None,
                  vad_factory=crear_vad, segmentador_factory=Segmentador,
                  listar_entradas=None, resolver_entrada=None,
-                 estado_operativo=None, tray=None):
+                 estado_operativo=None, tray=None, parciales=None):
         self.estado_operativo = estado_operativo or EstadoOperativoStore(
             gesto_requerido=detectar_sesion() != "wayland")
         try:
@@ -252,6 +261,18 @@ class App:
             guionar=guionar,
             sesion=sesion,
         )
+        # Parciales en vivo para GuionAR: sólo con la integración activa y un
+        # transcriptor que los soporte. El hilo nace con el primer parcial
+        # agendado, que exige GuionAR conectado.
+        self._turno_modelo = TurnoModelo()
+        self._parcial_generacion: Optional[int] = None
+        self._parcial_en_unidad = False
+        transcribir_parcial = getattr(self.frases, "transcribir_parcial", None)
+        if parciales is None and cfg.guionar and transcribir_parcial:
+            parciales = ProgramadorParciales(
+                transcribir_parcial, self._emitir_parcial,
+                self._parciales_habilitados, self._turno_modelo)
+        self.parciales = parciales
         backend_salida = getattr(self.salida.inyector, "backend", None)
         if backend_salida and not backend_inyector_disponible(backend_salida):
             self.estado_operativo.fijar_componente(
@@ -276,7 +297,8 @@ class App:
                 "output", EstadoComponente.READY,
                 backend_salida=backend_salida or "personalizado")
         if cfg.guionar:
-            print(f"[guionar] integración activa (socket: {self.guionar.ruta})")
+            print("[guionar] integración automática "
+                  f"(socket: {getattr(self.guionar, 'ruta', '-')})")
         self.mic = mic_productivo
         self.ui = ui or crear_ui(
             cfg.overlay,
@@ -418,7 +440,7 @@ class App:
                         "El atajo global no está disponible; usá parlarctl.",
                     ),
                 )
-            self._comprobar_guionar()
+            self._iniciar_guionar()
             self.estado_operativo.actualizar_runtime(EstadoRuntime.READY)
             try:
                 self.tray.iniciar()
@@ -436,15 +458,25 @@ class App:
         finally:
             self.salir()
 
-    def _comprobar_guionar(self):
+    def _iniciar_guionar(self):
+        """GuionAR es opcional: su ausencia nunca es un problema operativo."""
         if not self.cfg.guionar:
             return
-        comprobar = getattr(self.guionar, "comprobar_disponibilidad", None)
-        if comprobar is not None and not comprobar():
-            self.estado_operativo.reportar_problema(ProblemaOperativo(
-                "guionar_no_disponible", "guionar", Severidad.WARNING,
-                "GuionAR no está disponible; el dictado seguirá en la salida principal.",
-            ))
+        iniciar = getattr(self.guionar, "iniciar", None)
+        if iniciar is None:
+            return
+        estado_operativo = self.estado_operativo
+        estado_operativo.actualizar_guionar(
+            getattr(self.guionar, "estado", None))
+        observar = getattr(self.guionar, "agregar_observador", None)
+        if observar is not None:
+            # El worker sólo publica un snapshot; nunca toca la UI.
+            observar(estado_operativo.actualizar_guionar)
+        try:
+            iniciar()
+        except Exception as exc:
+            print(f"[guionar] no se pudo iniciar: {type(exc).__name__}",
+                  file=sys.stderr)
 
     def _pista_controles(self) -> str:
         if self.atajos._listener:
@@ -801,6 +833,8 @@ class App:
                     if generacion is not None:
                         self._ui_invalidar_generacion(generacion)
 
+            if getattr(self, "parciales", None) is not None:
+                self.parciales.invalidar()
             if not ya_detenido:
                 self.salida.cancelar_generacion()
 
@@ -980,6 +1014,11 @@ class App:
                     cerrar()
                 except BaseException as exc:
                     self._registrar_error_shutdown(nombre, exc)
+            if getattr(self, "parciales", None) is not None:
+                try:
+                    self.parciales.cerrar()
+                except BaseException as exc:
+                    self._registrar_error_shutdown("parciales", exc)
             for nombre, exc in self.salida.cerrar():
                 self._registrar_error_shutdown(nombre, exc)
             try:
@@ -1041,6 +1080,47 @@ class App:
     def _reiniciar_streaming(self):
         self.streaming.reiniciar()
         self._cancelar_contexto_texto()
+        if self.parciales is not None:
+            self.parciales.cerrar_unidad()
+
+    # ------------------------------------------------------------ parciales
+
+    def _turno_final(self):
+        turno = self._turno_modelo
+        return turno.final() if turno is not None else contextlib.nullcontext()
+
+    def _parciales_habilitados(self) -> bool:
+        """GuionAR conectado y app viva: si no, cero inferencias extra."""
+        return (self.cfg.guionar and not self.saliendo.is_set()
+                and getattr(self.guionar, "estado", None) == CONECTADO)
+
+    def _emitir_parcial(self, token, texto: str) -> bool:
+        """Único destino de un parcial: GuionAR, vía la frontera de salida."""
+        with self._salida_lock:
+            generacion = self._parcial_generacion
+            if (generacion is None or not self.parciales.vigente(token)
+                    or not self._puede_emit(generacion)
+                    or not self._parciales_habilitados()):
+                return False
+            self.salida.enviar_parcial(texto)
+            self._parcial_en_unidad = True
+            return True
+
+    def _abrir_unidad_parcial(self, generacion: int, modo_unidad):
+        if self.parciales is None or modo_unidad == "streaming":
+            return
+        with self._salida_lock:
+            self._parcial_generacion = generacion
+            self._parcial_en_unidad = False
+        self.parciales.abrir_unidad()
+
+    def _limpiar_parcial_de_unidad(self, generacion: int):
+        """Si la unidad mostró parciales y el final no los reemplazó (texto
+        vacío o descartado), GuionAR no debe quedar con una hipótesis vieja."""
+        with self._salida_lock:
+            if self._parcial_en_unidad and self._puede_emit(generacion):
+                self.salida.enviar_parcial("")
+            self._parcial_en_unidad = False
 
     def _bucle_trabajador(self):
         generacion = None
@@ -1092,9 +1172,14 @@ class App:
                         self._iniciar_contexto_texto()
                         self.salida.iniciar_unidad(generacion)
                         self._evento_vad(True, generacion)
+                        self._abrir_unidad_parcial(generacion, modo_unidad)
                     elif evento.tipo == "frame_voz" and modo_unidad == "streaming":
                         self.streaming.aceptar_audio(evento.audio)
                         self._paso_streaming(generacion)
+                    elif evento.tipo == "frame_voz" and self.parciales is not None:
+                        self.parciales.agregar_audio(
+                            evento.audio,
+                            voz=not getattr(segmentador, "racha_silencio", 0))
                     elif evento.tipo == "frase":
                         self._evento_vad(False, generacion)
                         self._cerrar_unidad(evento.audio, modo_unidad, generacion)
@@ -1139,12 +1224,17 @@ class App:
         return None, self._modo_de(generacion)
 
     def _cerrar_unidad(self, audio, modo: Optional[str], generacion: int):
+        # El final manda: ningún parcial de esta unidad puede salir después.
+        if self.parciales is not None:
+            self.parciales.cerrar_unidad()
         self._ui_iniciar_trabajo(generacion)
         try:
             if modo == "streaming":
                 self._vaciar_streaming(generacion)
             else:
                 self._atender_frase(audio, generacion)
+                if self.parciales is not None:
+                    self._limpiar_parcial_de_unidad(generacion)
         finally:
             try:
                 self._finalizar_contexto_texto()
@@ -1157,7 +1247,9 @@ class App:
     def _atender_frase(self, audio, generacion: int):
         t0 = time.time()
         try:
-            crudo = self.frases.transcribir(audio)
+            # Espera como máximo al parcial que ya estaba inferenciando.
+            with self._turno_final():
+                crudo = self.frases.transcribir(audio)
         except Exception as exc:
             self._registrar_fallo_etapa("stt", exc, generacion)
             crudo = ""
@@ -1172,7 +1264,8 @@ class App:
     def _paso_streaming(self, generacion: int):
         antes = self._snapshot_streaming()
         try:
-            trozo = self.streaming.procesar()
+            with self._turno_final():
+                trozo = self.streaming.procesar()
         except Exception as exc:
             if not self._actualizar_salud_streaming(
                     antes, generacion, permitir_recuperacion=False):
@@ -1191,7 +1284,8 @@ class App:
     def _vaciar_streaming(self, generacion: int):
         antes = self._snapshot_streaming()
         try:
-            cola = self.streaming.finalizar()
+            with self._turno_final():
+                cola = self.streaming.finalizar()
         except Exception as exc:
             if not self._actualizar_salud_streaming(
                     antes, generacion, permitir_recuperacion=False):
@@ -1247,15 +1341,8 @@ class App:
             estado_operativo.fijar_componente(
                 "output", EstadoComponente.READY)
 
-        estado_guionar = getattr(resultado, "guionar", None)
-        guionar_activo = getattr(getattr(self, "cfg", None), "guionar", False)
-        if guionar_activo and estado_guionar == EstadoEntrega.FAILED:
-            estado_operativo.reportar_problema(ProblemaOperativo(
-                "guionar_no_disponible", "guionar", Severidad.WARNING,
-                "GuionAR no está disponible; el dictado seguirá en la salida principal.",
-            ))
-        elif estado_guionar == EstadoEntrega.MIRRORED:
-            estado_operativo.resolver_problema("guionar_no_disponible")
+        # GuionAR es un espejo opcional: que no esté abierto o se cierre a
+        # mitad de un envío no afecta la entrega principal ni es un aviso.
 
     # ------------------------------------------------------------ emisión
 

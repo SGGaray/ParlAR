@@ -6,7 +6,7 @@ tiene el foco. No tiene telemetría ni requiere una cuenta o una API cloud.
 
 La captura y la transcripción son locales. Solo sale texto de la máquina si
 configurás deliberadamente un servicio externo, por ejemplo un `ollama_url`
-remoto. GuionAR, cuando se habilita, usa un socket Unix local.
+remoto. La integración con GuionAR usa sólo un socket Unix local.
 
 > English: [README.en.md](README.en.md)
 
@@ -262,18 +262,24 @@ modo de error.
 
 ## GuionAR opcional
 
-[GuionAR](https://github.com/SGGaray/GuionAR) puede recibir VAD, parciales y
-texto final mediante IPC Unix local:
+[GuionAR](https://github.com/SGGaray/GuionAR) puede seguir tu dictado como
+teleprompter. No hace falta configurar nada:
 
-```bash
-parlar --guionar --modo streaming
-```
+- Si GuionAR está abierto, ParlAR se conecta automáticamente.
+- Si no está abierto, ParlAR continúa normalmente.
+- El orden de apertura no importa. Si GuionAR se cierra y vuelve a abrirse,
+  ParlAR se reconecta solo, sin reiniciarse.
 
-Es best-effort y no forma parte del camino crítico: si no está corriendo,
-ParlAR continúa dictando. Una reconexión publica el snapshot actual, no
-reproduce texto final histórico. El transporte IPC tiene cobertura
-automatizada; la aplicación GuionAR real no fue validada end-to-end para
-v1.0.0.
+Settings → Avanzado → GuionAR muestra si está conectado y permite desactivar
+la integración con «Integrar con GuionAR».
+
+Detalles avanzados: es best-effort y no forma parte del camino crítico. Tras
+una reconexión sólo se envían eventos nuevos; lo dictado mientras GuionAR no
+estaba no se reproduce. El socket predeterminado es
+`$XDG_RUNTIME_DIR/guionar.sock` y sólo se acepta un peer del mismo usuario.
+Para depuración existen `--guionar-socket RUTA` y `--sin-guionar`
+(`--no-guionar`); `--guionar` se conserva por compatibilidad y es el
+comportamiento predeterminado.
 
 ## Privacidad y transcripts
 

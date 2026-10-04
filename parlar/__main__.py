@@ -7,6 +7,7 @@ como alias, por si preferís esa nomenclatura.
 import argparse
 from dataclasses import asdict
 import json
+import os
 import signal
 import sys
 import threading
@@ -93,9 +94,14 @@ def _crear_parser(cfg: Config) -> argparse.ArgumentParser:
                     choices=sorted(Config.INYECTORES))
     ap.add_argument("--sin-indicador", "--no-overlay", dest="sin_indicador",
                     action="store_true", help="corre sin el punto indicador")
-    ap.add_argument("--guionar", "--guionar-enabled", dest="guionar",
-                    action="store_true", default=cfg.guionar,
-                    help="envía texto y estado VAD al teleprompter GuionAR")
+    guionar = ap.add_mutually_exclusive_group()
+    guionar.add_argument("--guionar", "--guionar-enabled", dest="guionar",
+                         action="store_true", default=cfg.guionar,
+                         help="integra con GuionAR cuando está abierto "
+                              "(predeterminado)")
+    guionar.add_argument("--sin-guionar", "--no-guionar", dest="guionar",
+                         action="store_false", default=cfg.guionar,
+                         help="desactiva la integración con GuionAR")
     ap.add_argument("--guionar-socket", dest="guionar_socket",
                     default=cfg.guionar_socket,
                     help="ruta del socket de GuionAR "
@@ -203,6 +209,8 @@ def main():
     cfg.injector = args.inyector
     if args.sin_indicador:
         cfg.overlay = False
+    if args.guionar != cfg.guionar:
+        cfg.guionar_explicit = True
     cfg.guionar = args.guionar
     cfg.guionar_socket = args.guionar_socket
     cfg.guardar_sesion = args.guardar_sesion
@@ -230,6 +238,12 @@ def main():
     if args.mostrar_atajo:
         print(cfg.hotkey_toggle)
         return
+
+    # OpenBLAS (numpy: features mel de Whisper) hace spin con varios hilos
+    # sin bajar la latencia: medido ~1 s de CPU por inferencia contra ~0.3 s
+    # con un hilo. Se fija antes de cargar numpy y viaja al reexec NVIDIA;
+    # un valor explícito del usuario se respeta.
+    os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 
     guardia = None
     try:

@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 from parlar.capturador_audio import CapturadorMic
-from parlar.cliente_guionar import ClienteGuionAR
+from parlar.cliente_guionar import HELLO, ClienteGuionAR
 
 
 class PeerGuionAR:
@@ -20,12 +20,15 @@ class PeerGuionAR:
         self.listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.listener.bind(str(self.ruta))
         self.listener.listen(1)
-        self.listener.settimeout(1)
+        self.listener.settimeout(3)
         self.conn = None
 
     def aceptar_lineas(self, cantidad=1):
         self.conn, _ = self.listener.accept()
         self.conn.settimeout(1)
+        return self.leer_lineas(cantidad)
+
+    def leer_lineas(self, cantidad=1):
         datos = bytearray()
         while datos.count(b"\n") < cantidad:
             datos.extend(self.conn.recv(8192))
@@ -66,8 +69,10 @@ class PruebasLivenessGuionAR(unittest.TestCase):
     def conectar_parcial(self, texto="hipotesis estable"):
         peer = self.peer()
         self.cliente = ClienteGuionAR(str(self.ruta))
+        self.cliente.iniciar()
+        self.assertEqual(peer.aceptar_lineas(), [HELLO])
         self.assertTrue(self.cliente.enviar_parcial(texto))
-        self.assertEqual(peer.aceptar_lineas(), [
+        self.assertEqual(peer.leer_lineas(), [
             {"type": "partial", "data": texto},
         ])
         return peer
@@ -89,34 +94,25 @@ class PruebasLivenessGuionAR(unittest.TestCase):
         with self.assertRaises(socket.timeout):
             peer.listener.accept()
 
-    def test_probe_distingue_sin_datos_de_reset_pipe_y_eof(self):
+    def test_drenaje_distingue_sin_datos_de_reset_pipe_y_eof(self):
         cliente = ClienteGuionAR(str(self.ruta))
         sock = mock.Mock()
-        cliente._sock = sock
-
-        with mock.patch("parlar.cliente_guionar.select.select",
-                        return_value=([], [], [])):
-            self.assertTrue(cliente._conexion_viva())
-        sock.recv.assert_not_called()
-
-        with mock.patch("parlar.cliente_guionar.select.select",
-                        return_value=([sock], [], [])):
-            for codigo in (errno.EAGAIN, errno.EWOULDBLOCK):
-                with self.subTest(codigo=codigo):
-                    sock.recv.side_effect = BlockingIOError(codigo, "sin datos")
-                    self.assertTrue(cliente._conexion_viva())
-            for error in (
-                    ConnectionResetError(errno.ECONNRESET, "reset"),
-                    BrokenPipeError(errno.EPIPE, "pipe")):
-                with self.subTest(error=type(error).__name__):
-                    sock.recv.side_effect = error
-                    self.assertFalse(cliente._conexion_viva())
-            sock.recv.side_effect = None
-            sock.recv.return_value = b""
-            self.assertFalse(cliente._conexion_viva())
-            sock.recv.return_value = b"dato inesperado"
-            self.assertTrue(cliente._conexion_viva())
-
+        for codigo in (errno.EAGAIN, errno.EWOULDBLOCK):
+            with self.subTest(codigo=codigo):
+                sock.recv.side_effect = BlockingIOError(codigo, "sin datos")
+                self.assertTrue(cliente._drenar(sock))
+        for error in (
+                ConnectionResetError(errno.ECONNRESET, "reset"),
+                BrokenPipeError(errno.EPIPE, "pipe")):
+            with self.subTest(error=type(error).__name__):
+                sock.recv.side_effect = error
+                self.assertFalse(cliente._drenar(sock))
+        sock.recv.side_effect = None
+        sock.recv.return_value = b""
+        self.assertFalse(cliente._drenar(sock))
+        # Datos inesperados se descartan sin cortar la conexión.
+        sock.recv.return_value = b"dato inesperado"
+        self.assertTrue(cliente._drenar(sock))
         cliente.cerrar()
 
     def test_pipeline_1000_frames_sin_drops_por_liveness(self):
@@ -192,8 +188,10 @@ class PruebasLivenessGuionAR(unittest.TestCase):
         peer.cerrar()
         self.peers.remove(peer)
         nuevo = self.peer()
+        # Sin replay: la conexión nueva sólo trae el hello y lo posterior.
+        self.assertEqual(nuevo.aceptar_lineas(), [HELLO])
         self.assertTrue(self.cliente.enviar_parcial("recuperado"))
-        self.assertEqual(nuevo.aceptar_lineas(), [
+        self.assertEqual(nuevo.leer_lineas(), [
             {"type": "partial", "data": "recuperado"},
         ])
 

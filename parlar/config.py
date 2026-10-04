@@ -119,7 +119,10 @@ class Config:
     notify: bool = True                # notificaciones de escritorio vía notify-send
 
     # --- GuionAR (teleprompter, opcional) ---
-    guionar: bool = False              # enviar texto/VAD al overlay GuionAR
+    guionar: bool = True               # integración automática si GuionAR
+                                       # está abierto; ausente = sin costo
+    guionar_explicit: bool = False     # True sólo si el usuario eligió el
+                                       # valor de ``guionar`` (Settings/CLI)
     guionar_socket: str = ""           # vacío = $XDG_RUNTIME_DIR/guionar.sock
 
     # --- Sesión (transcript en disco, opcional) ---
@@ -200,13 +203,20 @@ class Config:
             # Una versión anterior trataría campos aditivos como desconocidos
             # y los preservaría en extras. Recuperarlos mantiene rollback seguro.
             extras_migrados = dict(extras)
-            for nombre in ("audio_input_device", "overlay_position"):
+            for nombre in ("audio_input_device", "overlay_position",
+                           "guionar_explicit"):
                 if nombre not in extras_migrados:
                     continue
                 preservada = extras_migrados.pop(nombre)
                 if nombre not in migrados:
                     migrados[nombre] = preservada
             migrados["extras"] = extras_migrados
+        if migrados.get("guionar_explicit") is not True \
+                and migrados.get("guionar") is False:
+            # Antes ``guionar`` era opt-in y save() persistía siempre el
+            # default False: no distingue una elección real. Sin la marca
+            # explícita, vale el nuevo default automático.
+            del migrados["guionar"]
         while version < cls.SCHEMA_VERSION:
             if version == 0:
                 # El formato sin versión no registraba si hotkey_toggle era

@@ -555,10 +555,14 @@ class PruebasArquitecturaSettings(unittest.TestCase):
 
         self.assertTrue({
             "model_size", "device", "compute_type", "mode",
-            "rewrite_mode", "injector", "guardar_sesion", "guionar",
-            "guionar_socket",
+            "rewrite_mode", "injector", "guardar_sesion",
+            "guionar_status", "guionar",
         }.issubset(avanzado.campos))
         self.assertEqual(avanzado.orden_foco, avanzado.campos)
+        # La ruta del socket es CLI/config: no es una opción de uso normal.
+        self.assertFalse(any(
+            "guionar_socket" in pestaña.campos
+            for pestaña in ARQUITECTURA_SETTINGS.pestañas))
 
     def test_footer_es_fijo_y_no_pertenece_al_scroll(self):
         self.assertTrue(ARQUITECTURA_SETTINGS.footer_fijo)

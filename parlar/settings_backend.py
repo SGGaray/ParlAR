@@ -97,6 +97,8 @@ class EstadoParlARSettings:
     titulo: str
     mensaje: str
     ejecutandose: bool
+    # "connected", "disconnected" o None (desactivado/desconocido).
+    guionar: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,7 +185,10 @@ def representar_estado_parlar(
     else:
         categoria = "unavailable"
         titulo = "No disponible"
-    return EstadoParlARSettings(categoria, titulo, mensaje, True)
+    guionar = datos.get("guionar")
+    if guionar not in ("connected", "disconnected"):
+        guionar = None
+    return EstadoParlARSettings(categoria, titulo, mensaje, True, guionar)
 
 
 def estado_preparando_parlar() -> EstadoParlARSettings:
@@ -274,6 +279,10 @@ def construir_configuracion_candidata(
     datos = asdict(base)
     datos.update(asdict(snapshot))
     datos["context_terms"] = list(snapshot.context_terms)
+    if snapshot.guionar != base.guionar:
+        # Sólo un cambio real registra la elección; guardar otras opciones
+        # no congela el default automático de GuionAR.
+        datos["guionar_explicit"] = True
     candidata = Config(**datos)
     candidata.validate()
     return candidata

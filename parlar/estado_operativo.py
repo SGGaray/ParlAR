@@ -59,6 +59,9 @@ class EstadoOperativo:
     gesto_requerido: bool = True
     backend_salida: str | None = None
     dispositivo_audio: str | None = None
+    # Integración opcional: "connected", "disconnected" o None si está
+    # desactivada. No es un componente: nunca afecta ``puede_dictar``.
+    guionar: str | None = None
     problemas: tuple[ProblemaOperativo, ...] = ()
 
     @property
@@ -157,6 +160,7 @@ def serializar_estado(estado: EstadoOperativo) -> str:
         "message": mensaje,
         "output_backend": estado.backend_salida,
         "audio_device": estado.dispositivo_audio,
+        "guionar": estado.guionar,
         "warnings": [
             {
                 "code": aviso.codigo,
@@ -219,6 +223,18 @@ class EstadoOperativoStore:
                 return True
             self._estado = replace(
                 actual, revision=actual.revision + 1, pausado=pausado)
+            return True
+
+    def actualizar_guionar(self, estado: str | None) -> bool:
+        """Publica presencia de GuionAR sin tocar salud ni capacidad."""
+        with self._lock:
+            actual = self._estado
+            if actual.runtime in _TERMINALES:
+                return False
+            if actual.guionar == estado:
+                return True
+            self._estado = replace(
+                actual, revision=actual.revision + 1, guionar=estado)
             return True
 
     def fijar_componente(
