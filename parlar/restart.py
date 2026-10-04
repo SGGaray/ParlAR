@@ -13,7 +13,6 @@ import os
 import secrets
 import stat
 import subprocess
-import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -23,6 +22,7 @@ from typing import Callable
 
 from .config import SOCKET_PATH
 from .control import enviar_comando, lock_instancia_ocupado
+from .instalacion import python_estable
 
 
 UNIDAD_SYSTEMD = "parlar.service"
@@ -478,7 +478,8 @@ def comando_reinicio(
         *, executable: str | None = None,
         terminar_dictado: bool = False,
         reintentar_gestor: str | None = None) -> list[str]:
-    comando = [executable or sys.executable, "-m", "parlar", "--reiniciar"]
+    # Instalado: el Python de current, no el de la versión que se reemplaza.
+    comando = [executable or python_estable(), "-m", "parlar", "--reiniciar"]
     if reintentar_gestor is not None:
         if reintentar_gestor not in {"systemd", "manual"}:
             raise ValueError("gestor de reinicio inválido")

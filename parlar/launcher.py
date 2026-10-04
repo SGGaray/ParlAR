@@ -20,6 +20,7 @@ from typing import Callable
 
 from .config import SOCKET_PATH
 from .control import enviar_comando, lock_instancia_ocupado
+from .instalacion import python_estable
 from .settings_backend import (
     EstadoParlARSettings,
     consultar_estado_parlar,
@@ -75,7 +76,8 @@ def iniciar_runtime(
         *, popen: Callable = subprocess.Popen,
         executable: str | None = None):
     """Inicia el CLI histórico desacoplado de la vida de Settings."""
-    python = executable or sys.executable
+    # Instalado: arranca la versión de current aunque este proceso sea viejo.
+    python = executable or python_estable()
     return popen(
         [python, "-m", "parlar"],
         stdin=subprocess.DEVNULL,

@@ -28,7 +28,7 @@ body:
     id: version
     attributes:
       label: Versión o commit de ParlAR
-      placeholder: "Por ejemplo: 1.0.1, o el resultado de `git -C ParlAR log -1 --oneline`"
+      placeholder: "El resultado de `parlar --version`, o el commit si usás el código fuente"
     validations:
       required: true
   - type: input

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-04
+
 ### Agregado
 - **Ventana de Configuración.** Todo lo que antes requería editar la
   configuración o usar opciones de línea de comandos se ajusta desde una
@@ -30,6 +32,16 @@
   aplicación con foco.
 - **Identidad visual propia**: ícono de la aplicación, íconos de bandeja con
   estado y Configuración con la marca de ParlAR.
+- **Release descargable para Linux x86_64** con suma SHA256: se instala con
+  `./install.sh` sin clonar el repositorio ni compilar, en Python 3.12, 3.13
+  o 3.14.
+- **Actualización segura**: cada versión se instala al lado de la anterior y
+  sólo se activa cuando quedó completa; si algo falla, la versión vigente no
+  cambia. Las instalaciones 1.0.x se migran conservando configuración, atajo
+  y transcripciones.
+- **`parlar-uninstall`** desinstala sin necesitar la release; con
+  `--purge-data` borra también la configuración y las transcripciones.
+- **`parlar --version`** muestra la versión instalada.
 
 ### Cambiado
 - **Nuevo atajo predeterminado: Ctrl derecho + Super derecha**, para evitar

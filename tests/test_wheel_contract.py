@@ -1,6 +1,7 @@
 """Regresiones del contrato CI para el wheel instalable."""
 
 import tempfile
+import tomllib
 import unittest
 import zipfile
 from pathlib import Path
@@ -9,12 +10,14 @@ from scripts.check_wheel_contract import ContractError, validar_wheel
 
 
 ROOT = Path(__file__).resolve().parents[1]
+VERSION = tomllib.loads(
+    (ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
 
 
 class ContratoWheel(unittest.TestCase):
-    def _crear_wheel(self, directorio, *, omitir=(), version_metadata="1.0.1"):
-        wheel = directorio / "parlar-1.0.1-py3-none-any.whl"
-        dist_info = "parlar-1.0.1.dist-info"
+    def _crear_wheel(self, directorio, *, omitir=(), version_metadata=VERSION):
+        wheel = directorio / f"parlar-{VERSION}-py3-none-any.whl"
+        dist_info = f"parlar-{VERSION}.dist-info"
         miembros = {
             str(ruta.relative_to(ROOT)): ruta.read_bytes()
             for ruta in (ROOT / "parlar").glob("*.py")
@@ -73,7 +76,7 @@ class ContratoWheel(unittest.TestCase):
             directorio = Path(tmp)
             self._crear_wheel(
                 directorio,
-                omitir={"parlar-1.0.1.dist-info/licenses/LICENSE"},
+                omitir={f"parlar-{VERSION}.dist-info/licenses/LICENSE"},
             )
 
             with self.assertRaisesRegex(ContractError, "LICENSE"):
@@ -84,7 +87,7 @@ class ContratoWheel(unittest.TestCase):
             directorio = Path(tmp)
             self._crear_wheel(
                 directorio,
-                omitir={"parlar-1.0.1.dist-info/entry_points.txt"},
+                omitir={f"parlar-{VERSION}.dist-info/entry_points.txt"},
             )
 
             with self.assertRaisesRegex(ContractError, "entry_points.txt"):

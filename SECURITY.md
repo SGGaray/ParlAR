@@ -4,7 +4,7 @@
 
 | Versión | Soporte de seguridad |
 | --- | --- |
-| Release pública más reciente (`v1.0.1`) | Sí |
+| Release pública más reciente (`1.1.x`) | Sí |
 | Releases anteriores | No, salvo indicación explícita |
 | `main` y otras ramas de desarrollo | No son releases soportadas |
 

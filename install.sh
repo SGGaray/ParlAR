@@ -1,21 +1,12 @@
 #!/usr/bin/env bash
-# Instalación de usuario autocontenida de ParlAR. No activa el servicio.
+# Instalación de usuario de ParlAR. No activa el servicio.
+#
+# Funciona desde un release extraído (VERSION + wheels/ + share/: instala sólo
+# wheels, sin compilar) o desde un checkout de mantenimiento. No depende de
+# .git. La lógica de staging y swap atómico vive en parlar_installer.py.
 set -euo pipefail
 
-REPO_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-DATA_BASE="${XDG_DATA_HOME:-$HOME/.local/share}"
-CONFIG_BASE="${XDG_CONFIG_HOME:-$HOME/.config}"
-INSTALL_HOME_ORIGINAL="${PARLAR_INSTALL_HOME:-$DATA_BASE/parlar}"
-INSTALL_HOME="$INSTALL_HOME_ORIGINAL"
-BIN_DIR="${PARLAR_BIN_DIR:-$HOME/.local/bin}"
-DESKTOP_PATH="$DATA_BASE/applications/parlar.desktop"
-ICON_PATH="$DATA_BASE/icons/hicolor/scalable/apps/parlar.svg"
-UNIT_PATH="$CONFIG_BASE/systemd/user/parlar.service"
-AUTOSTART_PATH="$CONFIG_BASE/autostart/parlar-systemd.desktop"
-LEGACY_ENABLE_PATH="$CONFIG_BASE/systemd/user/default.target.wants/parlar.service"
-INSTALL_SERVICE=0
-PRELOAD_MODEL=0
-CPU_ONLY=0
+ORIGEN="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 
 uso() {
     cat <<'EOF'
@@ -25,146 +16,107 @@ Uso: ./install.sh [opciones]
   --preload-model    descarga/precarga Whisper small
   --cpu-only         no instala las runtimes CUDA aunque haya NVIDIA
   -h, --help         muestra esta ayuda sin modificar el sistema
+
+Instala en ~/.local/share/parlar y crea parlar, parlarctl y parlar-uninstall
+en ~/.local/bin. Actualizar: extraé la release nueva y ejecutá su install.sh.
 EOF
 }
 
-while (($#)); do
-    case "$1" in
-        --install-service) INSTALL_SERVICE=1 ;;
-        --preload-model) PRELOAD_MODEL=1 ;;
-        --cpu-only) CPU_ONLY=1 ;;
+for argumento in "$@"; do
+    case "$argumento" in
+        --install-service|--preload-model|--cpu-only) ;;
         -h|--help) uso; exit 0 ;;
-        *) echo "!! opción desconocida: $1" >&2; uso >&2; exit 2 ;;
+        *) echo "!! opción desconocida: $argumento" >&2; uso >&2; exit 2 ;;
     esac
-    shift
 done
 
-# Una única identidad léxica evita grabar targets distintos para la misma raíz.
-while [[ "$INSTALL_HOME" != "/" && "$INSTALL_HOME" == */ ]]; do
-    INSTALL_HOME="${INSTALL_HOME%/}"
-done
-case "$INSTALL_HOME" in
-    */./*|*/.|*/../*|*/..)
-        echo "!! ruta de instalación insegura: $INSTALL_HOME_ORIGINAL" >&2
-        exit 1
-        ;;
-esac
-
-if [[ "$INSTALL_HOME" != /* \
-        || "$(basename -- "$INSTALL_HOME")" != "parlar" \
-        || "$(dirname -- "$INSTALL_HOME")" == "/" ]]; then
-    echo "!! ruta de instalación insegura: $INSTALL_HOME_ORIGINAL" >&2
+if [[ -f "$ORIGEN/VERSION" && -d "$ORIGEN/wheels" && -d "$ORIGEN/share" ]]; then
+    MODO=release
+    INSTALADOR="$ORIGEN/share/parlar_installer.py"
+    mapfile -t VERSIONES < "$ORIGEN/share/python-versions.txt"
+elif [[ -f "$ORIGEN/pyproject.toml" && -f "$ORIGEN/scripts/parlar_installer.py" ]]; then
+    MODO=checkout
+    INSTALADOR="$ORIGEN/scripts/parlar_installer.py"
+    VERSIONES=()
+else
+    echo "!! $ORIGEN no es un release de ParlAR ni un checkout del proyecto" >&2
     exit 1
 fi
-case "$INSTALL_HOME" in
-    /|"$HOME"|"$HOME"/)
-        echo "!! ruta de instalación insegura: $INSTALL_HOME" >&2
-        exit 1
-        ;;
-esac
-VENV_DIR="$INSTALL_HOME/venv"
-VENV_PYTHON="$VENV_DIR/bin/python"
 
-BOOTSTRAP_PYTHON="${PARLAR_BOOTSTRAP_PYTHON:-python3}"
-"$BOOTSTRAP_PYTHON" - <<'PY'
-import sys
-if sys.version_info < (3, 12):
-    raise SystemExit(
-        f"ParlAR requiere Python 3.12 o posterior; encontrado "
-        f"{sys.version.split()[0]}"
-    )
-PY
-
-if [[ -x "$VENV_PYTHON" ]]; then
-    echo "==> Reutilizando instalación en $INSTALL_HOME"
-elif [[ -e "$VENV_DIR" ]]; then
-    echo "!! $VENV_DIR existe pero no contiene un Python ejecutable" >&2
-    exit 1
-else
-    echo "==> Creando entorno aislado en $INSTALL_HOME"
-    mkdir -p -- "$INSTALL_HOME"
-    "$BOOTSTRAP_PYTHON" -m venv "$VENV_DIR"
-fi
-
-echo "==> Instalando ParlAR"
-"$VENV_PYTHON" -m pip install "$REPO_DIR"
-
-if ((CPU_ONLY)); then
-    echo "==> Instalación CPU solicitada; se omiten runtimes NVIDIA"
-elif "$VENV_PYTHON" - <<'PYCUDA' >/dev/null 2>&1
-import ctranslate2
-
-raise SystemExit(
-    0 if ctranslate2.get_cuda_device_count() > 0 else 1
-)
-PYCUDA
-then
-    echo "==> GPU CUDA detectada por CTranslate2; instalando runtime NVIDIA de ParlAR"
-    "$VENV_PYTHON" -m pip install "$REPO_DIR[cuda]"
-else
-    echo "==> CTranslate2 no detectó GPU CUDA; ParlAR usará CPU"
-fi
-
-echo "==> Intentando instalar WebRTC VAD opcional"
-if ! "$VENV_PYTHON" -m pip install --no-deps 'webrtcvad-wheels==2.0.14'; then
-    echo "!! WebRTC VAD no disponible; se usará el VAD de energía probado" >&2
-fi
-
-if ((PRELOAD_MODEL)); then
-    "$VENV_PYTHON" - <<'PY'
-from faster_whisper import WhisperModel
-WhisperModel("small", device="cpu", compute_type="int8")
-print("==> Modelo small disponible en caché")
-PY
-fi
-
-mkdir -p -- "$BIN_DIR"
-instalar_enlace() {
-    local origen="$1"
-    local destino="$2"
-    if [[ -L "$destino" && "$(readlink -- "$destino")" == "$origen" ]]; then
-        return
-    fi
-    if [[ -e "$destino" || -L "$destino" ]]; then
-        echo "!! $destino existe y no pertenece a esta instalación" >&2
-        exit 1
-    fi
-    ln -s -- "$origen" "$destino"
+version_de() {
+    "$1" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null
 }
-instalar_enlace "$VENV_DIR/bin/parlar" "$BIN_DIR/parlar"
-instalar_enlace "$VENV_DIR/bin/parlarctl" "$BIN_DIR/parlarctl"
 
-"$VENV_PYTHON" "$REPO_DIR/scripts/render_desktop.py" \
-    --icon-source "$REPO_DIR/parlar/assets/parlar.svg" --output "$ICON_PATH"
-"$VENV_PYTHON" "$REPO_DIR/scripts/render_desktop.py" \
-    --executable "$VENV_DIR/bin/parlar" --output "$DESKTOP_PATH"
+version_soportada() {
+    local version
+    version="$(version_de "$1")" || return 1
+    if [[ "$MODO" == release ]]; then
+        local soportada
+        for soportada in "${VERSIONES[@]}"; do
+            [[ "$version" == "$soportada" ]] && return 0
+        done
+        return 1
+    fi
+    "$1" -c 'import sys; raise SystemExit(sys.version_info < (3, 12))' 2>/dev/null
+}
 
-if ((INSTALL_SERVICE)); then
-    "$VENV_PYTHON" "$REPO_DIR/scripts/render_service.py" \
-        --workdir "$INSTALL_HOME" \
-        --executable "$VENV_DIR/bin/parlar" \
-        --output "$UNIT_PATH"
-    "$VENV_PYTHON" "$REPO_DIR/scripts/render_desktop.py" \
-        --autostart-service --output "$AUTOSTART_PATH"
-    if command -v systemctl >/dev/null 2>&1; then
-        # Upgrade desde la unit antigua habilitada en default.target. La unit
-        # nueva es static y el login gráfico es dueño del autostart.
-        systemctl --user disable parlar.service >/dev/null 2>&1 || true
-    fi
-    if [[ -L "$LEGACY_ENABLE_PATH" ]]; then
-        rm -f -- "$LEGACY_ENABLE_PATH"
-    fi
-    if command -v systemctl >/dev/null 2>&1; then
-        systemctl --user daemon-reload || echo \
-            "!! daemon-reload queda pendiente en la sesión gráfica" >&2
-    fi
+# La Configuración usa Tk: un Python sin tkinter instalaría un ParlAR cuya
+# ventana principal no abre. Se exige junto con venv para todo candidato.
+con_tk_y_venv() {
+    "$1" -c 'import tkinter' >/dev/null 2>&1 \
+        && "$1" -c 'import ensurepip, venv' >/dev/null 2>&1
+}
+
+# Orden: Python pedido explícitamente, python3 del sistema y luego versiones
+# soportadas de la más nueva a la más vieja.
+CANDIDATOS=()
+if [[ -n "${PARLAR_BOOTSTRAP_PYTHON:-}" ]]; then
+    CANDIDATOS+=("$PARLAR_BOOTSTRAP_PYTHON")
+else
+    CANDIDATOS+=(python3)
+    for ((i = ${#VERSIONES[@]} - 1; i >= 0; i--)); do
+        CANDIDATOS+=("python${VERSIONES[i]}")
+    done
 fi
 
-echo "==> ParlAR instalado. Comandos: $BIN_DIR/parlar y $BIN_DIR/parlarctl"
-if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
-    echo "!! $BIN_DIR no está en PATH; agregalo para invocar los comandos por nombre" >&2
+PYTHON=""
+SIN_TK=()
+for candidato in "${CANDIDATOS[@]}"; do
+    resuelto="$(command -v -- "$candidato" 2>/dev/null)" || continue
+    version_soportada "$resuelto" || continue
+    if con_tk_y_venv "$resuelto"; then
+        PYTHON="$resuelto"
+        break
+    fi
+    SIN_TK+=("$resuelto (Python $(version_de "$resuelto"))")
+done
+
+if [[ -z "$PYTHON" && ${#SIN_TK[@]} -gt 0 ]]; then
+    if [[ "$MODO" == release ]]; then
+        echo "!! ParlAR necesita Python ${VERSIONES[0]}–${VERSIONES[-1]} con Tk (tkinter) y venv." >&2
+    else
+        echo "!! ParlAR necesita Python 3.12 o posterior con Tk (tkinter) y venv." >&2
+    fi
+    echo "   La ventana de Configuración usa Tk. Encontrados sin tkinter o sin venv:" >&2
+    printf '     %s\n' "${SIN_TK[@]}" >&2
+    echo "   Debian/Ubuntu: sudo apt install python3-tk python3-venv" >&2
+    echo "   Fedora:        sudo dnf install python3-tkinter" >&2
+    echo "   No se modificó nada." >&2
+    exit 1
 fi
-if ((INSTALL_SERVICE)); then
-    echo "    Autostart gráfico instalado: $AUTOSTART_PATH"
-    echo "    Inicio opcional ahora: systemctl --user start parlar.service"
+
+if [[ -z "$PYTHON" ]]; then
+    encontrado="$(version_de "${CANDIDATOS[0]}" || true)"
+    if [[ "$MODO" == release ]]; then
+        echo "!! Esta versión de ParlAR soporta Python ${VERSIONES[0]}–${VERSIONES[-1]}." >&2
+        echo "   Instalá una versión compatible o descargá una release más nueva." >&2
+    else
+        echo "!! ParlAR requiere Python 3.12 o posterior." >&2
+    fi
+    if [[ -n "$encontrado" ]]; then
+        echo "   Encontrado: Python $encontrado (${CANDIDATOS[0]})" >&2
+    fi
+    exit 1
 fi
+
+exec "$PYTHON" "$INSTALADOR" --origen "$ORIGEN" "$@"

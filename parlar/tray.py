@@ -17,6 +17,7 @@ import threading
 from typing import Callable
 
 from .config import SOCKET_PATH
+from .instalacion import python_estable
 from .estado_operativo import (
     EstadoOperativo,
     EstadoRuntime,
@@ -123,7 +124,7 @@ class TrayLinux:
             al_fallo: Callable[[str], object] | None = None,
             entorno=None):
         self.ruta_socket = Path(ruta_socket)
-        self.python_launcher = python_launcher or sys.executable
+        self.python_launcher = python_launcher or python_estable()
         self.helper_python = helper_python
         self._popen = popen
         self._al_fallo = al_fallo

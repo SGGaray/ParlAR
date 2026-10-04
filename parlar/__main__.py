@@ -8,6 +8,7 @@ import argparse
 from dataclasses import asdict
 import json
 import os
+from pathlib import Path
 import signal
 import sys
 import threading
@@ -54,12 +55,39 @@ def _ejecutar_con_sigterm(app):
         signal.signal(signal.SIGTERM, handler_anterior)
 
 
+def version_parlar() -> str:
+    """Versión desde la fuente única: pyproject del checkout o metadata.
+
+    Desde un checkout manda ``pyproject.toml`` aunque el entorno tenga otra
+    ParlAR instalada; instalado, manda la metadata del paquete.
+    """
+    pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
+    if pyproject.is_file():
+        import tomllib
+
+        try:
+            proyecto = tomllib.loads(
+                pyproject.read_text(encoding="utf-8"))["project"]
+            if proyecto.get("name") == "ParlAR":
+                return proyecto["version"]
+        except (OSError, KeyError, tomllib.TOMLDecodeError):
+            pass
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return version("ParlAR")
+    except PackageNotFoundError:
+        return "desconocida"
+
+
 def _crear_parser(cfg: Config) -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="parlar",
         description="ParlAR: dictado local a nivel sistema para Linux. "
                     "Sin telemetría; la red solo se usa si configurás un "
                     "servicio externo, como Ollama remoto.")
+    ap.add_argument("--version", action="version",
+                    version=f"ParlAR {version_parlar()}")
     ap.add_argument("--modelo", "--model", dest="modelo", default=cfg.model_size,
                     help="tiny|base|small|medium|large-v3 (por defecto: %(default)s)")
     ap.add_argument("--dispositivo", "--device", dest="dispositivo", default=cfg.device,
@@ -159,6 +187,10 @@ def _crear_parser(cfg: Config) -> argparse.ArgumentParser:
 
 
 def main():
+    if sys.argv[1:] == ["--version"]:
+        # Sin config, audio, hotkeys, GUI ni CUDA: responde al instante.
+        print(f"ParlAR {version_parlar()}")
+        return
     if sys.argv[1:] == ["--abrir-configuracion"]:
         from .launcher import main as launcher_main
 

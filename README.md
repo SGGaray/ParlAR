@@ -40,34 +40,50 @@ Sin cuenta. Sin telemetría. El reconocimiento de voz corre en tu computadora.
 | Debian/Ubuntu y Fedora | Distribuciones con instrucciones de instalación. |
 | Windows, macOS | No soportados. |
 
-Necesitás Python 3.12 o posterior (lo trae la mayoría de las distribuciones
-actuales) y un micrófono que funcione en tu escritorio.
+**Requisitos:** Linux x86_64 con glibc 2.28 o posterior, Python 3.12, 3.13
+o 3.14 con el módulo `venv` (lo trae la mayoría de las distribuciones
+actuales) y un micrófono que funcione en tu escritorio. No hace falta
+compilador. Espacio: unos 450 MB por versión instalada (al actualizar se
+conserva la anterior hasta la siguiente actualización), más el modelo de voz
+(unos 500 MB con el modelo `small`) y, con GPU NVIDIA, unos 2,5 GB para sus
+librerías.
 
 ## Instalar
 
-Por ahora ParlAR se instala desde una copia de este repositorio con un
-instalador incluido. El instalador deja ParlAR en tu cuenta de usuario, con
-su propio entorno, y agrega la entrada al menú de aplicaciones. No hace falta
-`sudo` salvo para los paquetes del sistema.
+ParlAR se instala desde la release publicada: un archivo con todo lo
+necesario para tu cuenta de usuario. El instalador deja ParlAR con su propio
+entorno y agrega la entrada al menú de aplicaciones. No hace falta `sudo`
+salvo para los paquetes del sistema.
 
 **1. Paquetes del sistema**
 
 ```bash
 # Debian / Ubuntu
-sudo apt install git python3 python3-venv python3-dev portaudio19-dev \
-  python3-tk python3-gi gir1.2-gtk-3.0 libnotify-bin xdotool xclip wtype \
-  wl-clipboard
+sudo apt install python3 python3-venv libportaudio2 python3-tk python3-gi \
+  gir1.2-gtk-3.0 libnotify-bin xdotool xclip wtype wl-clipboard
 
 # Fedora
-sudo dnf install git python3 python3-devel portaudio-devel python3-tkinter \
-  python3-gobject gtk3 libnotify xdotool xclip wtype wl-clipboard
+sudo dnf install python3 portaudio python3-tkinter python3-gobject gtk3 \
+  libnotify xdotool xclip wtype wl-clipboard
 ```
 
-**2. Descargar e instalar**
+**2. Descargar** desde la página de
+[releases](https://github.com/SGGaray/ParlAR/releases/latest) el archivo
+`parlar-<versión>-linux-x86_64.tar.gz` y `SHA256SUMS`, en la misma carpeta.
+
+**3. Verificar** que la descarga esté completa y sin modificaciones:
 
 ```bash
-git clone https://github.com/SGGaray/ParlAR.git
-cd ParlAR
+sha256sum -c --ignore-missing SHA256SUMS
+```
+
+Tiene que responder `OK` para el archivo descargado.
+
+**4. Extraer e instalar**
+
+```bash
+tar -xzf parlar-*-linux-x86_64.tar.gz
+cd parlar-*/
 ./install.sh --preload-model
 ```
 
@@ -84,7 +100,11 @@ Para que ParlAR pueda **iniciarse solo al entrar a tu sesión**, instalá con:
 
 Después lo activás o desactivás desde Configuración → Aplicación.
 
-Guardá la carpeta `ParlAR`: se usa para actualizar y desinstalar.
+**5. Abrir** ParlAR desde el menú de aplicaciones.
+
+La carpeta extraída ya no hace falta después de instalar: podés borrarla.
+ParlAR queda en `~/.local/share/parlar` y los comandos `parlar`, `parlarctl`
+y `parlar-uninstall` en `~/.local/bin`.
 
 ## Abrir ParlAR
 
@@ -237,47 +257,62 @@ Los detalles del modelo de seguridad están en [SECURITY.md](SECURITY.md).
 
 ## Actualizar
 
-Por ahora la actualización se hace desde la misma carpeta `ParlAR` que usaste
-para instalar:
+Descargá y verificá la release nueva como en la instalación, extraela y
+ejecutá su instalador con las mismas opciones que usaste antes (por ejemplo
+`--install-service`):
 
 ```bash
-cd ParlAR
-git pull
+tar -xzf parlar-*-linux-x86_64.tar.gz
+cd parlar-*/
 ./install.sh
 ```
 
-Usá las mismas opciones que en la instalación (por ejemplo
-`--install-service`). Tu configuración y tus transcripciones se conservan.
-Después, reiniciá ParlAR desde el menú de la bandeja o desde Configuración.
+La versión nueva se instala al lado de la actual y sólo se activa cuando
+quedó completa y validada. Si algo falla, la versión que tenías sigue
+funcionando sin cambios. Tu configuración, tu atajo y tus transcripciones se
+conservan.
+
+Después, **Salir** desde el menú de la bandeja y volvé a abrir ParlAR desde
+el menú de aplicaciones. Si lo usás como servicio:
+`systemctl --user restart parlar.service`.
+
+**Si tenías ParlAR 1.0.x** instalado desde una copia del repositorio, el
+instalador nuevo lo reconoce y lo reemplaza sin tocar tu configuración ni
+tus transcripciones. La copia del repositorio ya no hace falta.
+
+`parlar --version` muestra la versión instalada.
 
 ## Desinstalar
 
-Cerrá ParlAR (**Salir** en el menú de la bandeja) y, desde la carpeta
-`ParlAR`:
+Cerrá ParlAR (**Salir** en el menú de la bandeja) y ejecutá:
 
 ```bash
-./uninstall.sh
+parlar-uninstall
 ```
 
-**Elimina:** la aplicación instalada y su entorno, los comandos `parlar` y
-`parlarctl`, la entrada del menú, el ícono y, si existía, el inicio
-automático con la sesión.
+No necesita la carpeta de la release. Si `~/.local/bin` no está en tu
+`PATH`: `~/.local/share/parlar/uninstall.sh`.
+
+**Elimina:** la aplicación instalada y sus versiones, los comandos `parlar`,
+`parlarctl` y `parlar-uninstall`, la entrada del menú, el ícono y, si
+existía, el inicio automático con la sesión.
 
 **Conserva:** tu configuración (`~/.config/parlar/`) y las transcripciones
 guardadas (`~/.local/share/parlar/sesiones/`).
 
-**También puede quedar** el modelo de voz descargado, en la caché de
-Hugging Face (`~/.cache/huggingface/`). Ocupa varios cientos de MB y otras
-aplicaciones pueden compartirla.
-
-Para borrar también tus datos:
+Para borrar también tu configuración y tus transcripciones:
 
 ```bash
-rm -r ~/.config/parlar
-rm -r ~/.local/share/parlar/sesiones
+parlar-uninstall --purge-data
 ```
 
-Después podés borrar la carpeta `ParlAR`.
+**Modelo de voz:** queda en la caché de Hugging Face
+(`~/.cache/huggingface/`), que otras aplicaciones pueden compartir, así que
+ninguna opción la borra. Para eliminar sólo los modelos que usa ParlAR:
+
+```bash
+rm -rf ~/.cache/huggingface/hub/models--Systran--faster-whisper-*
+```
 
 ## Solución de problemas
 
@@ -302,6 +337,12 @@ Después podés borrar la carpeta `ParlAR`.
   con `--install-service`.
 - **Va lento.** En Configuración → Avanzado probá un modelo más chico, o
   revisá que el Acelerador use la GPU si tenés una NVIDIA.
+- **El instalador dice que tu Python no es compatible.** Cada release
+  incluye lo necesario para las versiones de Python que indica el mensaje.
+  Instalá una de ellas (por ejemplo `python3.13` desde tu distribución) y
+  volvé a ejecutar `./install.sh`; el instalador la busca solo.
+- **Aviso de PortAudio al instalar.** Instalá `libportaudio2` (Debian/Ubuntu)
+  o `portaudio` (Fedora); sin esa librería ParlAR no puede usar el micrófono.
 
 ## Limitaciones conocidas
 
@@ -328,7 +369,8 @@ eso no hay guía de contribución ni roadmap público.
 
 ## Código fuente y licencia
 
-El código se publica bajo licencia [MIT](LICENSE).
+El código fuente está en este repositorio y se publica bajo licencia
+[MIT](LICENSE). Para usar ParlAR, instalá la release.
 
 ## Reportar un problema
 

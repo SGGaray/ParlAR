@@ -96,8 +96,13 @@ class PruebasArchivos(unittest.TestCase):
         plantilla = (ROOT / "scripts/parlar.desktop.in").read_text(
             encoding="utf-8")
         self.assertRegex(plantilla, re.compile(r"^Icon=parlar$", re.M))
-        instalador = (ROOT / "install.sh").read_text(encoding="utf-8")
-        self.assertIn("parlar/assets/parlar.svg", instalador)
+        # Checkout: ícono del paquete; release: la copia en share/.
+        instalador = (ROOT / "scripts/parlar_installer.py").read_text(
+            encoding="utf-8")
+        self.assertIn('"parlar" / "assets" / "parlar.svg"', instalador)
+        self.assertIn('share / "parlar.svg"', instalador)
+        build = (ROOT / "scripts/build_release.py").read_text(encoding="utf-8")
+        self.assertIn('("parlar/assets/parlar.svg", "parlar.svg")', build)
 
 
 def _rects(ruta):
