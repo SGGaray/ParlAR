@@ -344,8 +344,9 @@ class PruebasConfigYSettings(unittest.TestCase):
         control = ControlSettings(base, snapshot,
                                   persistir=lambda *_: None)
         self.assertTrue(control.esta_sucio(valores))   # se puede guardar
-        avanzado = ARQUITECTURA_SETTINGS.pestañas[2]
-        self.assertIn("guionar_exclusive_output", avanzado.campos)
+        guionar = next(p for p in ARQUITECTURA_SETTINGS.pestañas
+                       if p.nombre == "GuionAR")
+        self.assertIn("guionar_exclusive_output", guionar.campos)
 
     def test_cambio_en_vivo_afecta_la_siguiente_unidad(self):
         self.escribir({"schema_version": 1})

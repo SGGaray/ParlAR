@@ -46,6 +46,7 @@ from .settings_backend import (
     resolver_dispositivo_entrada,
     snapshot_configuracion,
 )
+from .ui_tema import PALETA, IndicadorEstado, Interruptor, Tema
 from .restart import (
     EstadoResultadoReinicio,
     comando_reinicio,
@@ -136,34 +137,33 @@ ARQUITECTURA_SETTINGS = ArquitecturaSettings(
         PestañaSettings(
             "Dictado",
             (
-                "hotkey_toggle", "audio_input_device", "audio_refresh",
-                "audio_test", "language", "context_terms",
+                "hotkey_toggle", "mode", "rewrite_mode", "language",
+                "context_terms",
             ),
             (
-                "hotkey_toggle", "audio_input_device", "audio_refresh",
-                "audio_test", "language", "context_terms",
+                "hotkey_toggle", "mode", "rewrite_mode", "language",
+                "context_terms",
             ),
+        ),
+        PestañaSettings(
+            "Micrófono",
+            ("audio_input_device", "audio_refresh", "audio_test"),
+            ("audio_input_device", "audio_refresh", "audio_test"),
+        ),
+        PestañaSettings(
+            "GuionAR",
+            ("guionar_status", "guionar", "guionar_exclusive_output"),
+            ("guionar", "guionar_exclusive_output"),
         ),
         PestañaSettings(
             "Aplicación",
-            (
-                "runtime_status", "overlay", "overlay_position",
-                "autostart",
-            ),
-            ("overlay", "overlay_position", "autostart"),
+            ("overlay", "overlay_position", "autostart", "guardar_sesion"),
+            ("overlay", "overlay_position", "autostart", "guardar_sesion"),
         ),
         PestañaSettings(
             "Avanzado",
-            (
-                "model_size", "device", "compute_type", "mode",
-                "rewrite_mode", "injector", "guardar_sesion",
-                "guionar_status", "guionar", "guionar_exclusive_output",
-            ),
-            (
-                "model_size", "device", "compute_type", "mode",
-                "rewrite_mode", "injector", "guardar_sesion",
-                "guionar_status", "guionar", "guionar_exclusive_output",
-            ),
+            ("model_size", "device", "compute_type", "injector"),
+            ("model_size", "device", "compute_type", "injector"),
         ),
     ),
     footer_fijo=True,
@@ -620,6 +620,11 @@ def texto_estado_guionar(estado) -> tuple[str, bool]:
     return "○ Integración desactivada", False
 
 
+def _sin_marca(texto: str) -> str:
+    """El punto de estado se dibuja aparte (relleno/anillo), no como glifo."""
+    return texto[2:] if texto[:2] in ("● ", "○ ") else texto
+
+
 def mensaje_persistencia(resultado: ResultadoPersistencia) -> str:
     if resultado.requires_restart:
         return (
@@ -791,17 +796,13 @@ class VentanaSettings:
         self.selectores = {}
 
         self.root.title("Configuración de ParlAR")
-        self.root.geometry("700x700")
-        self.root.minsize(640, 600)
         self.root.protocol("WM_DELETE_WINDOW", self._solicitar_cierre)
         self.root.bind("<Escape>", self._al_escape)
-        self.root.columnconfigure(0, weight=1)
-        self.root.rowconfigure(0, weight=1)
-
         self._configurar_estilos()
         self._crear_variables(
             valores_desde_snapshot(control.snapshot_inicial))
         self._crear_contenido()
+        self._ajustar_geometria()
         self._conectar_cambios()
         self._creando = False
         self._actualizar_dependencias()
@@ -813,9 +814,25 @@ class VentanaSettings:
             self.root.after_idle(self._presentar)
 
     def _configurar_estilos(self):
-        estilo = self.ttk.Style(self.root)
-        estilo.configure(
-            "Section.TLabel", font=("TkDefaultFont", 11, "bold"))
+        self.tema = Tema(self.root)
+
+    def _px(self, valor):
+        return self.tema.px(valor)
+
+    def _ajustar_geometria(self):
+        """Tamaño compacto escalado por DPI y acotado a la pantalla."""
+        ancho, alto = self._px(820), self._px(600)
+        try:
+            pantalla_w = self.root.winfo_screenwidth()
+            pantalla_h = self.root.winfo_screenheight()
+        except Exception:
+            pantalla_w = pantalla_h = 0
+        if pantalla_w and pantalla_h:
+            ancho = min(ancho, int(pantalla_w * 0.92))
+            alto = min(alto, int(pantalla_h * 0.9))
+        self.root.geometry(f"{ancho}x{alto}")
+        self.root.minsize(min(ancho, self._px(620)),
+                          min(alto, self._px(440)))
 
     def _crear_variables(self, valores: ValoresFormulario):
         tk = self.tk
@@ -856,76 +873,204 @@ class VentanaSettings:
 
     def _crear_contenido(self):
         ttk = self.ttk
-        self.notebook = ttk.Notebook(self.root)
-        self.notebook.grid(
-            row=0, column=0, sticky="nsew", padx=16, pady=(16, 0))
-        self.notebook.enable_traversal()
+        e = self.tema.espacio
+        self.root.columnconfigure(0, weight=1)
+        self.root.rowconfigure(1, weight=1)
 
-        dictado = self._crear_pestana_scroll("Dictado")
-        aplicacion = self._crear_pestana_scroll("Aplicación")
-        avanzado = self._crear_pestana_scroll("Avanzado")
-        self._crear_dictado(dictado)
-        self._crear_aplicacion(aplicacion)
-        self._crear_avanzado(avanzado)
+        # Encabezado: qué es y cómo está ParlAR, siempre a la vista.
+        header = ttk.Frame(self.root, style="Header.TFrame",
+                           padding=(e("xl"), e("l"), e("xl"), e("m")))
+        header.grid(row=0, column=0, sticky="ew")
+        header.columnconfigure(1, weight=1)
+        ttk.Label(header, text="ParlAR", style="Titulo.TLabel").grid(
+            row=0, column=0, sticky="w")
+        ttk.Label(header, text="Configuración",
+                  style="Header.Status.TLabel").grid(
+            row=0, column=1, sticky="sw", padx=(e("s"), 0), pady=(0, 2))
+        estado = ttk.Frame(header, style="Header.TFrame")
+        estado.grid(row=0, column=2, sticky="e")
+        self.indicador_runtime = IndicadorEstado(
+            estado, self.tema, PALETA.lateral)
+        self.indicador_runtime.grid(row=0, column=0, padx=(0, e("s")))
+        self.etiqueta_runtime_titulo = ttk.Label(
+            estado, textvariable=self.estado_runtime_titulo,
+            style="Estado.TLabel")
+        self.etiqueta_runtime_titulo.grid(row=0, column=1, sticky="e")
+        self.etiqueta_runtime_mensaje = ttk.Label(
+            header, textvariable=self.estado_runtime_mensaje,
+            style="Header.Status.TLabel", wraplength=self._px(640))
+        self.etiqueta_runtime_mensaje.grid(
+            row=1, column=0, columnspan=3, sticky="w", pady=(e("xs"), 0))
+        header.bind(
+            "<Configure>", lambda ev: self.etiqueta_runtime_mensaje.configure(
+                wraplength=max(self._px(200), ev.width - 2 * e("xl"))),
+            add="+")
+        ttk.Frame(self.root, style="Linea.TFrame", height=1).grid(
+            row=0, column=0, sticky="sew")
 
-        self.footer = ttk.Frame(self.root, padding=(16, 10, 16, 12))
-        self.footer.grid(row=1, column=0, sticky="ew")
+        cuerpo = ttk.Frame(self.root)
+        cuerpo.grid(row=1, column=0, sticky="nsew")
+        cuerpo.columnconfigure(1, weight=1)
+        cuerpo.rowconfigure(0, weight=1)
+
+        # Navegación lateral compacta.
+        self.lateral = ttk.Frame(cuerpo, style="Lateral.TFrame",
+                                 padding=(e("s"), e("m"), e("s"), e("m")))
+        self.lateral.grid(row=0, column=0, sticky="ns")
+        ttk.Frame(cuerpo, style="Linea.TFrame", width=1).grid(
+            row=0, column=0, sticky="nse")
+        self.paginas = ttk.Frame(cuerpo)
+        self.paginas.grid(row=0, column=1, sticky="nsew")
+        self.paginas.columnconfigure(0, weight=1)
+        self.paginas.rowconfigure(0, weight=1)
+
+        self._navegacion = {}
+        self._seccion_actual = None
+        constructores = (
+            ("Dictado", self._crear_dictado,
+             "Atajo, estrategia e idioma del dictado."),
+            ("Micrófono", self._crear_audio,
+             "Qué entrada escucha ParlAR."),
+            ("GuionAR", self._crear_guionar,
+             "Teleprompter que sigue tu voz."),
+            ("Aplicación", self._crear_aplicacion,
+             "Indicador, inicio y privacidad."),
+            ("Avanzado", self._crear_avanzado,
+             "Modelo y método de escritura."),
+        )
+        for indice, (nombre, crear, descripcion) in enumerate(constructores):
+            boton = ttk.Button(
+                self.lateral, text=nombre, style="Nav.TButton",
+                command=lambda n=nombre: self.seleccionar_seccion(n))
+            boton.grid(row=indice, column=0, sticky="ew", pady=(0, 2))
+            boton.bind("<Return>", lambda _e, n=nombre:
+                       self._activar_navegacion(n), add="+")
+            boton.bind("<Down>", lambda _e, i=indice: self._mover_nav(i, 1))
+            boton.bind("<Up>", lambda _e, i=indice: self._mover_nav(i, -1))
+            self._navegacion[nombre] = boton
+            contenido = self._crear_pestana_scroll(nombre, descripcion)
+            crear(contenido)
+        self._orden_secciones = tuple(n for n, _c, _d in constructores)
+        self.lateral.columnconfigure(0, minsize=self._px(150))
+
+        # Pie fijo: estado de guardado y acciones.
+        ttk.Frame(self.root, style="Linea.TFrame", height=1).grid(
+            row=2, column=0, sticky="new")
+        self.footer = ttk.Frame(
+            self.root, padding=(e("xl"), e("m"), e("xl"), e("m")))
+        self.footer.grid(row=2, column=0, sticky="ew")
         self.footer.columnconfigure(0, weight=1)
         self.etiqueta_estado = ttk.Label(
             self.footer,
             textvariable=self.estado,
             style="Status.TLabel",
-            wraplength=420,
+            wraplength=self._px(380),
         )
         self.etiqueta_estado.grid(row=0, column=0, sticky="w")
         if self._advertencia_config:
             self.etiqueta_estado.configure(style="Error.Status.TLabel")
-        self.boton_cancelar = ttk.Button(
-            self.footer,
-            text="Cerrar",
-            command=self._solicitar_cierre,
-        )
-        self.boton_cancelar.grid(row=0, column=1, padx=(16, 8))
-        self._vincular_enter(
-            self.boton_cancelar, self._solicitar_cierre)
-        self.boton_guardar = ttk.Button(
-            self.footer, text="Guardar cambios", command=self._guardar)
-        self.boton_guardar.grid(row=0, column=2)
-        self._vincular_enter(self.boton_guardar, self._guardar)
         self.boton_reiniciar = ttk.Button(
             self.footer,
             text="Reiniciar ParlAR",
             command=self._iniciar_reinicio,
         )
-        self.boton_reiniciar.grid(
-            row=1, column=0, sticky="w", pady=(10, 0))
+        self.boton_reiniciar.grid(row=0, column=1, padx=(e("m"), 0))
         self._vincular_enter(
             self.boton_reiniciar, self._iniciar_reinicio)
         self.boton_reiniciar.grid_remove()
+        self.boton_cancelar = ttk.Button(
+            self.footer,
+            text="Cerrar",
+            command=self._solicitar_cierre,
+        )
+        self.boton_cancelar.grid(row=0, column=2, padx=(e("s"), 0))
+        self._vincular_enter(
+            self.boton_cancelar, self._solicitar_cierre)
+        self.boton_guardar = ttk.Button(
+            self.footer, text="Guardar cambios", style="Primario.TButton",
+            command=self._guardar)
+        self.boton_guardar.grid(row=0, column=3, padx=(e("s"), 0))
+        self._vincular_enter(self.boton_guardar, self._guardar)
 
         self.root.bind("<MouseWheel>", self._rueda_scroll, add="+")
         self.root.bind("<Button-4>", self._rueda_scroll, add="+")
         self.root.bind("<Button-5>", self._rueda_scroll, add="+")
         self.root.bind("<Prior>", self._pagina_scroll, add="+")
         self.root.bind("<Next>", self._pagina_scroll, add="+")
+        for secuencia, delta in (("<Control-Tab>", 1),
+                                 ("<Control-ISO_Left_Tab>", -1),
+                                 ("<Control-Shift-Tab>", -1),
+                                 ("<Control-Next>", 1),
+                                 ("<Control-Prior>", -1)):
+            self.root.bind(secuencia, lambda _e, d=delta:
+                           self._ciclar_seccion(d), add="+")
+        self.seleccionar_seccion(self._orden_secciones[0])
+        self._aplicar_estado_parlar(self.estado_parlar)
 
-    def _crear_pestana_scroll(self, nombre):
+    # ------------------------------------------------------- navegación
+    def seleccionar_seccion(self, nombre):
+        if nombre not in self._areas_scroll:
+            return
+        for otro, area in self._areas_scroll.items():
+            if otro == nombre:
+                area["pestana"].grid()
+            else:
+                area["pestana"].grid_remove()
+        for otro, boton in self._navegacion.items():
+            boton.state(["selected"] if otro == nombre else ["!selected"])
+        self._seccion_actual = nombre
+
+    @property
+    def seccion_actual(self):
+        return self._seccion_actual
+
+    def _activar_navegacion(self, nombre):
+        self.seleccionar_seccion(nombre)
+        return "break"
+
+    def _mover_nav(self, indice, delta):
+        nombres = self._orden_secciones
+        destino = nombres[(indice + delta) % len(nombres)]
+        self._navegacion[destino].focus_set()
+        self.seleccionar_seccion(destino)
+        return "break"
+
+    def _ciclar_seccion(self, delta):
+        nombres = self._orden_secciones
+        actual = nombres.index(self._seccion_actual)
+        destino = nombres[(actual + delta) % len(nombres)]
+        self.seleccionar_seccion(destino)
+        self._navegacion[destino].focus_set()
+        return "break"
+
+    def _crear_pestana_scroll(self, nombre, descripcion=""):
         ttk = self.ttk
-        pestana = ttk.Frame(self.notebook)
+        e = self.tema.espacio
+        pestana = ttk.Frame(self.paginas)
         pestana.columnconfigure(0, weight=1)
         pestana.rowconfigure(0, weight=1)
-        self.notebook.add(pestana, text=nombre)
+        pestana.grid(row=0, column=0, sticky="nsew")
 
         canvas = self.tk.Canvas(
-            pestana, borderwidth=0, highlightthickness=0, takefocus=0)
+            pestana, borderwidth=0, highlightthickness=0, takefocus=0,
+            background=PALETA.fondo)
         barra = ttk.Scrollbar(
-            pestana, orient="vertical", command=canvas.yview)
+            pestana, orient="vertical", command=canvas.yview,
+            style="Fina.Vertical.TScrollbar")
         canvas.configure(yscrollcommand=barra.set)
         canvas.grid(row=0, column=0, sticky="nsew")
-        barra.grid(row=0, column=1, sticky="ns")
+        barra.grid(row=0, column=1, sticky="ns", padx=(0, 2))
 
-        contenido = ttk.Frame(canvas, padding=(24, 20, 24, 24))
-        contenido.columnconfigure(1, weight=1)
+        contenido = ttk.Frame(
+            canvas, padding=(e("xl"), e("l"), e("xl"), e("xl")))
+        contenido.columnconfigure(0, weight=1)
+        ttk.Label(contenido, text=nombre, style="Section.TLabel").grid(
+            row=0, column=0, sticky="w")
+        if descripcion:
+            ttk.Label(contenido, text=descripcion,
+                      style="Status.TLabel").grid(
+                row=1, column=0, sticky="w", pady=(2, 0))
+        contenido._siguiente_fila = 2
         ventana = canvas.create_window(
             (0, 0), window=contenido, anchor="nw")
         area = {
@@ -933,6 +1078,7 @@ class VentanaSettings:
             "contenido": contenido,
             "ventana": ventana,
             "pestana": pestana,
+            "barra": barra,
         }
         self._areas_scroll[nombre] = area
         contenido.bind(
@@ -947,19 +1093,115 @@ class VentanaSettings:
         )
         return contenido
 
-    def _titulo_seccion(self, padre, texto, fila):
-        self.ttk.Label(
-            padre, text=texto, style="Section.TLabel").grid(
-                row=fila,
-                column=0,
-                columnspan=3,
-                sticky="w",
-                pady=((0 if fila == 0 else 20), 8),
-            )
+    # ------------------------------------------------------- piezas
+    def _siguiente_fila(self, contenido):
+        fila = contenido._siguiente_fila
+        contenido._siguiente_fila += 1
+        return fila
 
-    def _separador(self, padre, fila):
-        self.ttk.Separator(padre).grid(
-            row=fila, column=0, columnspan=3, sticky="ew", pady=(20, 0))
+    def _titulo_seccion(self, padre, texto, fila=None):
+        """Subtítulo de grupo dentro de una sección."""
+        if fila is None:
+            fila = self._siguiente_fila(padre)
+        etiqueta = self.ttk.Label(padre, text=texto, style="Grupo.TLabel")
+        etiqueta.grid(row=fila, column=0, sticky="w",
+                      pady=(self.tema.espacio("l"), self.tema.espacio("s")))
+        return etiqueta
+
+    def _grupo(self, contenido, titulo=None):
+        if titulo:
+            self._titulo_seccion(contenido, titulo)
+        grupo = self.ttk.Frame(contenido, style="Grupo.TFrame", padding=1)
+        grupo.grid(row=self._siguiente_fila(contenido), column=0,
+                   sticky="ew", pady=(0 if titulo else self.tema.espacio("l"),
+                                      0))
+        grupo.columnconfigure(0, weight=1)
+        grupo._filas = 0
+        return grupo
+
+    def _nota(self, contenido, texto=None, *, variable=None, estilo=None):
+        """Texto secundario debajo de un grupo (estado o aclaración)."""
+        opciones = dict(style=estilo or "Status.TLabel",
+                        wraplength=self._px(560))
+        if variable is not None:
+            opciones["textvariable"] = variable
+        else:
+            opciones["text"] = texto
+        etiqueta = self.ttk.Label(contenido, **opciones)
+        etiqueta.grid(row=self._siguiente_fila(contenido), column=0,
+                      sticky="w", pady=(self.tema.espacio("s"), 0))
+        return etiqueta
+
+    def _fila(self, grupo, titulo=None, ayuda=None):
+        """Fila de un grupo: texto a la izquierda, control a la derecha.
+
+        Devuelve el contenedor del control."""
+        ttk = self.ttk
+        e = self.tema.espacio
+        if grupo._filas:
+            ttk.Frame(grupo, style="Linea.TFrame", height=1).grid(
+                row=grupo._filas * 2 - 1, column=0, sticky="ew",
+                padx=(e("m"), 0))
+        fila = ttk.Frame(grupo, style="Grupo.TFrame",
+                         padding=(e("m"), e("s") + 2, e("m"), e("s") + 2))
+        fila.grid(row=grupo._filas * 2, column=0, sticky="ew")
+        fila.columnconfigure(0, weight=1)
+        grupo._filas += 1
+        if titulo is not None:
+            ttk.Label(fila, text=titulo, style="Etiqueta.TLabel").grid(
+                row=0, column=0, sticky="w")
+        control = ttk.Frame(fila, style="Grupo.TFrame")
+        control.grid(row=0, column=1, rowspan=2, sticky="e",
+                     padx=(e("l"), 0))
+        ayuda_lbl = None
+        if ayuda:
+            ayuda_lbl = ttk.Label(fila, text=ayuda, style="Ayuda.TLabel",
+                                  wraplength=self._px(260))
+            ayuda_lbl.grid(row=1, column=0, sticky="w", pady=(2, 0))
+        estado = {"apilado": False}
+
+        def ajustar(_evento, etiqueta=ayuda_lbl, fila=fila,
+                    control=control):
+            # Ventana angosta: el control baja debajo del texto en vez de
+            # aplastarlo. La ayuda usa el ancho que queda, nunca lo pisa.
+            ancho_fila = fila.winfo_width()
+            libre = ancho_fila - control.winfo_reqwidth() - self._px(48)
+            apilar = libre < self._px(170)
+            if apilar != estado["apilado"]:
+                estado["apilado"] = apilar
+                if apilar:
+                    control.grid_configure(row=2, column=0, rowspan=1,
+                                           sticky="w", padx=0,
+                                           pady=(e("s"), 0))
+                else:
+                    control.grid_configure(row=0, column=1, rowspan=2,
+                                           sticky="e", padx=(e("l"), 0),
+                                           pady=0)
+            if etiqueta is not None:
+                ancho = (ancho_fila - self._px(32) if apilar
+                         else max(self._px(160), libre))
+                if int(str(etiqueta.cget("wraplength")) or 0) != ancho:
+                    etiqueta.configure(wraplength=ancho)
+
+        fila.bind("<Configure>", ajustar, add="+")
+        return control
+
+    def _fila_interruptor(self, grupo, nombre_foco, texto, variable, *,
+                          ayuda=None, command=None):
+        """Toggle a lo ancho de una fila del grupo."""
+        e = self.tema.espacio
+        if grupo._filas:
+            self.ttk.Frame(grupo, style="Linea.TFrame", height=1).grid(
+                row=grupo._filas * 2 - 1, column=0, sticky="ew",
+                padx=(e("m"), 0))
+        interruptor = Interruptor(
+            grupo, self.tema, text=texto, variable=variable, ayuda=ayuda,
+            command=command)
+        interruptor.fila.configure(padx=e("m"), pady=e("s") + 2)
+        interruptor.grid(row=grupo._filas * 2, column=0, sticky="ew")
+        grupo._filas += 1
+        self._registrar_foco(nombre_foco, interruptor)
+        return interruptor
 
     def _registrar_foco(self, nombre, widget):
         self._widgets_foco[nombre] = widget
@@ -981,136 +1223,122 @@ class VentanaSettings:
 
     def _crear_dictado(self, contenido):
         ttk = self.ttk
-        self._titulo_seccion(contenido, "Atajo", 0)
-        ttk.Label(contenido, text="Atajo de dictado").grid(
-            row=1, column=0, padx=(0, 16), sticky="w")
-        fila_atajo = ttk.Frame(contenido)
-        fila_atajo.grid(row=1, column=1, columnspan=2, sticky="ew")
-        fila_atajo.columnconfigure(0, weight=1)
+        e = self.tema.espacio
+        grupo = self._grupo(contenido, "Atajo")
+        control = self._fila(
+            grupo, "Atajo de dictado",
+            "Mantenelo para hablar y soltalo para terminar. Doble toque: "
+            "dictado continuo. Escape cancela lo pendiente.")
         self.etiqueta_hotkey = ttk.Label(
-            fila_atajo,
+            control,
             textvariable=self.hotkey_etiqueta,
-            anchor="w",
-            padding=(10, 6),
-            relief="sunken",
+            anchor="center",
+            style="Teclas.TLabel",
         )
-        self.etiqueta_hotkey.grid(row=0, column=0, sticky="ew")
+        self.etiqueta_hotkey.grid(row=0, column=0, columnspan=2, sticky="ew")
         self.boton_cambiar_atajo = ttk.Button(
-            fila_atajo,
+            control,
             text="Cambiar…",
             command=self._mostrar_captura_atajo,
         )
-        self.boton_cambiar_atajo.grid(row=0, column=1, padx=(10, 0))
+        self.boton_cambiar_atajo.grid(row=1, column=0, sticky="ew",
+                                      pady=(e("s"), 0))
         self._vincular_enter(
             self.boton_cambiar_atajo, self._mostrar_captura_atajo)
         self._registrar_foco("hotkey_toggle", self.boton_cambiar_atajo)
-        ttk.Label(
-            contenido,
-            text="Mantené el atajo para hablar. Soltalo para terminar.",
-            style="Status.TLabel",
-        ).grid(row=2, column=1, columnspan=2, sticky="w", pady=(6, 0))
-        ttk.Label(
-            contenido,
-            text=(
-                "Doble toque activa el dictado continuo. "
-                "Escape cancela lo pendiente."
-            ),
-            style="Status.TLabel",
-            wraplength=270,
-        ).grid(row=3, column=1, sticky="w", pady=(2, 0))
         self.boton_restaurar_atajo = ttk.Button(
-            contenido,
-            text="Restaurar predeterminado",
+            control,
+            text="Predeterminado",
             command=self._restaurar_atajo,
         )
-        self.boton_restaurar_atajo.grid(
-            row=3, column=2, sticky="e", padx=(10, 0))
+        self.boton_restaurar_atajo.grid(row=1, column=1, sticky="ew",
+                                        padx=(e("s"), 0), pady=(e("s"), 0))
         self._vincular_enter(
             self.boton_restaurar_atajo, self._restaurar_atajo)
 
-        self._separador(contenido, 4)
-        self._titulo_seccion(contenido, "Micrófono", 5)
-        ttk.Label(contenido, text="Entrada de audio").grid(
-            row=6, column=0, padx=(0, 16), sticky="w")
+        grupo = self._grupo(contenido, "Reconocimiento")
+        self._campo(
+            grupo, "Estrategia", "mode",
+            opciones=self.opciones_selectores["mode"],
+            ayuda="Por frases espera una pausa; Incremental escribe "
+                  "mientras hablás.")
+        self._campo(
+            grupo, "Reescritura", "rewrite_mode",
+            opciones=self.opciones_selectores["rewrite_mode"],
+            ayuda="Ajusta el estilo del texto después de reconocerlo.")
+        control = self._fila(
+            grupo, "Idioma",
+            "Código como es o en. Vacío detecta el idioma.")
+        idioma = ttk.Entry(
+            control, textvariable=self.variables["language"], width=8)
+        idioma.grid(row=0, column=0, sticky="e")
+        self._registrar_foco("language", idioma)
+
+        grupo = self._grupo(contenido, "Palabras y nombres")
+        fila = self._fila(
+            grupo, None,
+            "Nombres propios, siglas o términos que ParlAR debería "
+            "reconocer mejor. Uno por línea.")
+        fila.master.columnconfigure(0, weight=1)
+        self.contexto = self.tk.Text(
+            fila.master,
+            height=5,
+            width=40,
+            wrap="word",
+            undo=True,
+            **self.tema.estilo_texto_libre(),
+        )
+        self.contexto.grid(
+            row=2, column=0, columnspan=2, sticky="nsew", pady=(e("s"), 0))
+        self.contexto.insert("1.0", self._contexto_inicial)
+        self.contexto.edit_modified(False)
+        self._registrar_foco("context_terms", self.contexto)
+
+    def _crear_audio(self, contenido):
+        ttk = self.ttk
+        e = self.tema.espacio
+        grupo = self._grupo(contenido, "Entrada")
+        control = self._fila(grupo, "Micrófono")
         self.selector_audio = ttk.Combobox(
-            contenido,
+            control,
             textvariable=self.audio_seleccion,
             values=tuple(opcion.etiqueta for opcion in self.opciones_audio),
             state="readonly",
+            width=26,
         )
-        self.selector_audio.grid(row=6, column=1, sticky="ew")
+        self.selector_audio.grid(row=0, column=0, sticky="e")
         self._registrar_foco("audio_input_device", self.selector_audio)
         if self._indice_audio_inicial >= 0:
             self.selector_audio.current(self._indice_audio_inicial)
         self.boton_actualizar_audio = ttk.Button(
-            contenido,
+            control,
             text="Actualizar",
             command=self._actualizar_dispositivos,
         )
-        self.boton_actualizar_audio.grid(row=6, column=2, padx=(10, 0))
+        self.boton_actualizar_audio.grid(row=0, column=1, padx=(e("s"), 0))
         self._vincular_enter(
             self.boton_actualizar_audio, self._actualizar_dispositivos)
         self._registrar_foco("audio_refresh", self.boton_actualizar_audio)
+
+        control = self._fila(
+            grupo, "Prueba", "Escuchá el nivel antes de dictar. "
+            "El audio no se guarda.")
+        self.medidor_audio = ttk.Progressbar(
+            control, maximum=100, mode="determinate",
+            length=self._px(140), style="Medidor.Horizontal.TProgressbar")
+        self.medidor_audio.grid(row=0, column=0, sticky="ew",
+                                padx=(0, e("m")))
         self.boton_prueba = ttk.Button(
-            contenido,
+            control,
             text="Probar micrófono",
             command=self._alternar_prueba_audio,
         )
-        self.boton_prueba.grid(row=7, column=1, sticky="w", pady=(12, 0))
+        self.boton_prueba.grid(row=0, column=1)
         self._vincular_enter(
             self.boton_prueba, self._alternar_prueba_audio)
         self._registrar_foco("audio_test", self.boton_prueba)
-        self.medidor_audio = ttk.Progressbar(
-            contenido, maximum=100, mode="determinate", length=180)
-        self.medidor_audio.grid(
-            row=7, column=2, sticky="ew", padx=(10, 0), pady=(12, 0))
-        self.etiqueta_estado_audio = ttk.Label(
-            contenido,
-            textvariable=self.estado_audio,
-            style="Status.TLabel",
-            wraplength=560,
-        )
-        self.etiqueta_estado_audio.grid(
-            row=8, column=1, columnspan=2, sticky="w", pady=(6, 0))
-
-        self._separador(contenido, 9)
-        self._titulo_seccion(contenido, "Idioma", 10)
-        ttk.Label(contenido, text="Idioma del dictado").grid(
-            row=11, column=0, padx=(0, 16), sticky="w")
-        idioma = ttk.Entry(
-            contenido, textvariable=self.variables["language"])
-        idioma.grid(row=11, column=1, columnspan=2, sticky="ew")
-        self._registrar_foco("language", idioma)
-        ttk.Label(
-            contenido,
-            text="Usá un código como es o en. Vacío detecta el idioma.",
-            style="Status.TLabel",
-        ).grid(row=12, column=1, columnspan=2, sticky="w", pady=(6, 0))
-
-        self._separador(contenido, 13)
-        self._titulo_seccion(contenido, "Palabras y nombres", 14)
-        ttk.Label(
-            contenido,
-            text=(
-                "Agregá nombres propios, siglas o términos que ParlAR "
-                "debería reconocer mejor. Un término por línea."
-            ),
-            style="Status.TLabel",
-            wraplength=560,
-        ).grid(row=15, column=0, columnspan=3, sticky="w")
-        self.contexto = self.tk.Text(
-            contenido,
-            height=6,
-            wrap="word",
-            undo=True,
-            relief="solid",
-            borderwidth=1,
-        )
-        self.contexto.grid(
-            row=16, column=0, columnspan=3, sticky="nsew", pady=(8, 0))
-        self.contexto.insert("1.0", self._contexto_inicial)
-        self.contexto.edit_modified(False)
-        self._registrar_foco("context_terms", self.contexto)
+        self.etiqueta_estado_audio = self._nota(
+            contenido, variable=self.estado_audio)
 
     def _actualizar_valor_atajo(self, valor: str) -> None:
         self.variables["hotkey_toggle"].set(valor)
@@ -1178,7 +1406,8 @@ class VentanaSettings:
         cancelar.grid(row=4, column=0, sticky="e", padx=(0, 8))
         self._vincular_enter(cancelar, self._cancelar_captura_atajo)
         self._boton_usar_atajo = self.ttk.Button(
-            cuerpo, text="Usar combinación", command=self._usar_captura_atajo)
+            cuerpo, text="Usar combinación", style="Primario.TButton",
+            command=self._usar_captura_atajo)
         self._boton_usar_atajo.grid(row=4, column=1, sticky="e")
         self._vincular_enter(
             self._boton_usar_atajo, self._usar_captura_atajo)
@@ -1320,77 +1549,74 @@ class VentanaSettings:
             except Exception:
                 pass
 
-    def _crear_aplicacion(self, contenido):
+    def _crear_guionar(self, contenido):
         ttk = self.ttk
-        self._titulo_seccion(contenido, "Estado de ParlAR", 0)
-        self.etiqueta_runtime_titulo = ttk.Label(
-            contenido,
-            textvariable=self.estado_runtime_titulo,
-            style="Section.TLabel",
+        e = self.tema.espacio
+        estado = ttk.Frame(contenido)
+        estado.grid(row=self._siguiente_fila(contenido), column=0,
+                    sticky="w", pady=(e("m"), 0))
+        texto, conectado = texto_estado_guionar(self.estado_parlar)
+        self.indicador_guionar = IndicadorEstado(estado, self.tema,
+                                                 PALETA.fondo)
+        self.indicador_guionar.grid(row=0, column=0, padx=(0, e("s")))
+        self.estado_guionar.set(_sin_marca(texto))
+        self.etiqueta_estado_guionar = ttk.Label(
+            estado,
+            textvariable=self.estado_guionar,
+            style="Success.Status.TLabel" if conectado else "Status.TLabel",
         )
-        self.etiqueta_runtime_titulo.grid(
-            row=1, column=0, columnspan=3, sticky="w")
-        self.etiqueta_runtime_mensaje = ttk.Label(
-            contenido,
-            textvariable=self.estado_runtime_mensaje,
-            wraplength=560,
-        )
-        self.etiqueta_runtime_mensaje.grid(
-            row=2, column=0, columnspan=3, sticky="w", pady=(4, 0))
-        self._aplicar_estado_parlar(self.estado_parlar)
+        self.etiqueta_estado_guionar.grid(row=0, column=1, sticky="w")
+        self._pintar_indicador_guionar(conectado)
 
-        self._separador(contenido, 3)
-        self._titulo_seccion(contenido, "Indicador", 4)
-        self.check_overlay = ttk.Checkbutton(
-            contenido,
-            text="Mostrar indicador durante el dictado",
-            variable=self.variables["overlay"],
-        )
-        self.check_overlay.grid(
-            row=5, column=0, columnspan=3, sticky="w")
-        self._registrar_foco("overlay", self.check_overlay)
+        grupo = self._grupo(contenido)
+        self.check_guionar = self._fila_interruptor(
+            grupo, "guionar", "Integrar con GuionAR",
+            self.variables["guionar"],
+            ayuda="Cuando GuionAR está abierto, ParlAR puede enviarle el "
+                  "dictado automáticamente.")
+        self.check_guionar_exclusivo = self._fila_interruptor(
+            grupo, "guionar_exclusive_output",
+            "Usar GuionAR como salida exclusiva",
+            self.variables["guionar_exclusive_output"],
+            ayuda="Cuando GuionAR esté conectado, ParlAR no escribirá el "
+                  "dictado en otras aplicaciones.")
+        self._nota(contenido, "La salida exclusiva se aplica desde la "
+                              "siguiente frase, sin reiniciar.")
+
+    def _pintar_indicador_guionar(self, conectado):
+        if not hasattr(self, "indicador_guionar"):
+            return
+        self.indicador_guionar.fijar(
+            "ready" if conectado else "stopped", lleno=conectado)
+
+    def _crear_aplicacion(self, contenido):
+        grupo = self._grupo(contenido, "Indicador")
+        self.check_overlay = self._fila_interruptor(
+            grupo, "overlay", "Mostrar indicador durante el dictado",
+            self.variables["overlay"])
         self._campo(
-            contenido,
-            "Posición del indicador",
+            grupo,
+            "Posición",
             "overlay_position",
-            6,
-            0,
             opciones=self.opciones_selectores["overlay_position"],
-            ayuda="Elegí dónde aparece la señal visual mientras dictás.",
+            ayuda="Dónde aparece la señal visual mientras dictás.",
         )
 
-        self._separador(contenido, 8)
-        self._titulo_seccion(contenido, "Inicio de sesión", 9)
-        self.check_autostart = ttk.Checkbutton(
-            contenido,
-            text="Iniciar ParlAR al iniciar sesión",
-            variable=self.autostart_activado,
-            command=self._alternar_autostart,
-        )
-        self.check_autostart.grid(
-            row=10, column=0, columnspan=3, sticky="w")
-        self._registrar_foco("autostart", self.check_autostart)
-        self.etiqueta_autostart = ttk.Label(
-            contenido,
-            textvariable=self.estado_autostart,
-            style="Status.TLabel",
-            wraplength=560,
-        )
-        self.etiqueta_autostart.grid(
-            row=11, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        grupo = self._grupo(contenido, "Inicio")
+        self.check_autostart = self._fila_interruptor(
+            grupo, "autostart", "Iniciar ParlAR al iniciar sesión",
+            self.autostart_activado, command=self._alternar_autostart,
+            ayuda=mensaje_autostart_inmediato())
+        self.etiqueta_autostart = self._nota(
+            contenido, variable=self.estado_autostart)
         self._aplicar_estado_autostart(self.control_autostart.estado)
-        ttk.Label(
-            contenido,
-            text=mensaje_autostart_inmediato(),
-            style="Status.TLabel",
-            wraplength=560,
-        ).grid(row=12, column=0, columnspan=3, sticky="w", pady=(4, 0))
-        ttk.Label(
-            contenido,
-            text=mensaje_reinicio_previo(),
-            style="Status.TLabel",
-            wraplength=560,
-        ).grid(row=13, column=0, columnspan=3, sticky="w", pady=(18, 0))
+
+        grupo = self._grupo(contenido, "Privacidad")
+        self.check_guardar_sesion = self._fila_interruptor(
+            grupo, "guardar_sesion", "Conservar transcripciones",
+            self.variables["guardar_sesion"],
+            ayuda="Guarda una copia local de cada dictado confirmado. "
+                  "Apagado por defecto.")
 
     def _aplicar_estado_autostart(
             self, estado: EstadoAutostart, *, mensaje: str | None = None):
@@ -1416,97 +1642,44 @@ class VentanaSettings:
         )
 
     def _crear_avanzado(self, contenido):
-        ttk = self.ttk
-        self._titulo_seccion(contenido, "Reconocimiento", 0)
+        grupo = self._grupo(contenido, "Reconocimiento")
         self._campo(
-            contenido, "Modelo de reconocimiento", "model_size", 1, 0,
+            grupo, "Modelo", "model_size",
             ayuda="Tamaño del modelo de voz, por ejemplo small o medium.")
         self._campo(
-            contenido, "Acelerador", "device", 3, 0,
+            grupo, "Acelerador", "device",
             opciones=self.opciones_selectores["device"],
             ayuda="Automático elige CPU o NVIDIA CUDA al iniciar.")
         self._campo(
-            contenido, "Precisión de cálculo", "compute_type", 5, 0,
+            grupo, "Precisión de cálculo", "compute_type",
             opciones=self.opciones_selectores["compute_type"],
-            ayuda="Formato numérico usado por el modelo de reconocimiento.")
-        self._campo(
-            contenido, "Estrategia de transcripción", "mode", 7, 0,
-            opciones=self.opciones_selectores["mode"],
-            ayuda="Por frases espera una pausa; Incremental actualiza el texto.")
+            ayuda="Formato numérico del modelo de reconocimiento.")
 
-        self._separador(contenido, 9)
-        self._titulo_seccion(contenido, "Salida y texto", 10)
+        grupo = self._grupo(contenido, "Salida")
         self._campo(
-            contenido, "Reescritura", "rewrite_mode", 11, 0,
-            opciones=self.opciones_selectores["rewrite_mode"],
-            ayuda="Ajusta el estilo del texto después del reconocimiento.")
-        self._campo(
-            contenido, "Método de escritura", "injector", 13, 0,
+            grupo, "Método de escritura", "injector",
             opciones=self.opciones_selectores["injector"],
             ayuda="Cómo se entrega el texto a la aplicación con foco.")
-        self.check_guardar_sesion = ttk.Checkbutton(
-            contenido,
-            text="Conservar transcripciones",
-            variable=self.variables["guardar_sesion"],
-        )
-        self.check_guardar_sesion.grid(
-            row=15, column=0, columnspan=3, sticky="w", pady=(8, 0))
-        self._registrar_foco("guardar_sesion", self.check_guardar_sesion)
-
-        self._separador(contenido, 16)
-        self._titulo_seccion(contenido, "GuionAR", 17)
-        texto, conectado = texto_estado_guionar(self.estado_parlar)
-        self.estado_guionar.set(texto)
-        self.etiqueta_estado_guionar = ttk.Label(
-            contenido,
-            textvariable=self.estado_guionar,
-            style="Success.Status.TLabel" if conectado else "Status.TLabel",
-        )
-        self.etiqueta_estado_guionar.grid(
-            row=18, column=0, columnspan=3, sticky="w")
-        self.check_guionar = ttk.Checkbutton(
-            contenido,
-            text="Integrar con GuionAR",
-            variable=self.variables["guionar"],
-        )
-        self.check_guionar.grid(
-            row=19, column=0, columnspan=3, sticky="w", pady=(8, 0))
-        self._registrar_foco("guionar", self.check_guionar)
-        ttk.Label(
-            contenido,
-            text=(
-                "Cuando GuionAR está abierto, ParlAR puede enviarle el "
-                "dictado automáticamente."
-            ),
-            style="Status.TLabel",
-            wraplength=560,
-        ).grid(row=20, column=0, columnspan=3, sticky="w", pady=(6, 0))
-        self.check_guionar_exclusivo = ttk.Checkbutton(
-            contenido,
-            text="Usar GuionAR como salida exclusiva",
-            variable=self.variables["guionar_exclusive_output"],
-        )
-        self.check_guionar_exclusivo.grid(
-            row=21, column=0, columnspan=3, sticky="w", pady=(10, 0))
-        self._registrar_foco(
-            "guionar_exclusive_output", self.check_guionar_exclusivo)
-        ttk.Label(
-            contenido,
-            text=(
-                "Cuando GuionAR esté conectado, ParlAR no escribirá el "
-                "dictado en otras aplicaciones."
-            ),
-            style="Status.TLabel",
-            wraplength=560,
-        ).grid(row=22, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        self._nota(contenido, mensaje_reinicio_previo())
 
     def _actualizar_region_scroll(self, canvas):
         region = canvas.bbox("all")
         if region is not None:
             canvas.configure(scrollregion=region)
+        # La barra sólo aparece si el contenido no entra.
+        for area in self._areas_scroll.values():
+            if area["canvas"] is canvas and "barra" in area:
+                sobra = (area["contenido"].winfo_reqheight()
+                         <= max(1, canvas.winfo_height()))
+                if sobra:
+                    area["barra"].grid_remove()
+                    canvas.yview_moveto(0)
+                else:
+                    area["barra"].grid()
 
     def _ajustar_ancho_contenido(self, evento, canvas, ventana):
         canvas.itemconfigure(ventana, width=evento.width)
+        self._actualizar_region_scroll(canvas)
 
     def _area_scroll_de_widget(self, widget):
         actual = widget
@@ -1573,44 +1746,28 @@ class VentanaSettings:
             canvas.yview_moveto(min(1.0, max(0.0, destino)))
 
     def _campo(
-            self, padre, etiqueta, nombre, fila, columna, *, opciones=None,
-            ayuda=None):
-        self.ttk.Label(padre, text=etiqueta).grid(
-            row=fila, column=columna, padx=(0, 8), pady=5, sticky="w")
+            self, grupo, etiqueta, nombre, *, opciones=None, ayuda=None,
+            ancho=22):
+        control = self._fila(grupo, etiqueta, ayuda)
         if opciones is None:
             widget = self.ttk.Entry(
-                padre, textvariable=self.variables[nombre])
+                control, textvariable=self.variables[nombre], width=ancho)
         else:
             widget = self.ttk.Combobox(
-                padre,
+                control,
                 textvariable=self.variables[nombre],
                 values=tuple(opcion.etiqueta for opcion in opciones),
                 state="readonly",
+                width=ancho,
             )
             indice = indice_opcion_selector(
                 opciones, self.variables[nombre].get())
             if indice >= 0:
                 widget.current(indice)
             self.selectores[nombre] = (widget, opciones)
-        widget.grid(
-            row=fila, column=columna + 1,
-            columnspan=2,
-            pady=5,
-            sticky="ew")
+        widget.grid(row=0, column=0, sticky="e")
         self._registrar_foco(nombre, widget)
-        if ayuda:
-            self.ttk.Label(
-                padre,
-                text=ayuda,
-                style="Status.TLabel",
-                wraplength=560,
-            ).grid(
-                row=fila + 1,
-                column=columna + 1,
-                columnspan=2,
-                pady=(0, 5),
-                sticky="nw",
-            )
+        return widget
 
     def _valor_selector_actual(self, nombre: str) -> str:
         selector, opciones = self.selectores[nombre]
@@ -1800,6 +1957,7 @@ class VentanaSettings:
             daemon=True,
         )
         self._refresh_audio_thread.start()
+        self._acelerar_poll_audio()
         self._actualizar_audio()
 
     def _consumir_refresco_audio(self):
@@ -1830,9 +1988,26 @@ class VentanaSettings:
         elif estado.fase == "idle":
             self.control_prueba.iniciar(self._audio_actual())
         self._actualizar_audio()
+        self._acelerar_poll_audio()
+
+    def _acelerar_poll_audio(self):
+        """Pasa al ritmo rápido ya, sin esperar el próximo poll de reposo."""
+        pendiente, self._poll_audio_id = self._poll_audio_id, None
+        if pendiente is not None:
+            try:
+                self.root.after_cancel(pendiente)
+            except Exception:
+                pass
+        if not self._cerrando or pendiente is not None:
+            self._poll_audio_id = self.root.after(100, self._poll_audio)
 
     def _programar_poll_audio(self):
-        self._poll_audio_id = self.root.after(100, self._poll_audio)
+        # Rápido sólo mientras el medidor o el inventario cambian; en reposo
+        # el formulario ya se actualiza por eventos (trazas de variables).
+        activo = (self._cerrando or self._refresh_activo()
+                  or self.control_prueba.estado().fase != "idle")
+        self._poll_audio_id = self.root.after(
+            100 if activo else 500, self._poll_audio)
 
     def _programar_poll_runtime(self):
         self._poll_runtime_id = self.root.after(500, self._poll_runtime)
@@ -1841,25 +2016,30 @@ class VentanaSettings:
         self.estado_parlar = estado
         if not hasattr(self, "estado_runtime_titulo"):
             return
-        self.estado_runtime_titulo.set(estado.titulo)
-        self.estado_runtime_mensaje.set(estado.mensaje)
+        # El poll corre cada 500 ms: sólo se toca la UI si algo cambió.
+        if self.estado_runtime_titulo.get() != estado.titulo:
+            self.estado_runtime_titulo.set(estado.titulo)
+        if self.estado_runtime_mensaje.get() != estado.mensaje:
+            self.estado_runtime_mensaje.set(estado.mensaje)
         estilo = {
-            "ready": "Success.Status.TLabel",
-            "paused": "Warning.Status.TLabel",
-            "starting": "Warning.Status.TLabel",
-            "attention": "Warning.Status.TLabel",
-            "unavailable": "Error.Status.TLabel",
-            "stopped": "Status.TLabel",
-        }.get(estado.categoria, "Status.TLabel")
-        if hasattr(self, "etiqueta_runtime_mensaje"):
+            "attention": "Warning.Header.Status.TLabel",
+            "unavailable": "Error.Header.Status.TLabel",
+        }.get(estado.categoria, "Header.Status.TLabel")
+        if (hasattr(self, "etiqueta_runtime_mensaje")
+                and str(self.etiqueta_runtime_mensaje.cget("style")) != estilo):
             self.etiqueta_runtime_mensaje.configure(style=estilo)
+        indicador = getattr(self, "indicador_runtime", None)
+        if indicador is not None and indicador.categoria != estado.categoria:
+            indicador.fijar(estado.categoria)
         if hasattr(self, "etiqueta_estado_guionar"):
             texto, conectado = texto_estado_guionar(estado)
+            texto = _sin_marca(texto)
             if self.estado_guionar.get() != texto:
                 self.estado_guionar.set(texto)
                 self.etiqueta_estado_guionar.configure(
                     style="Success.Status.TLabel" if conectado
                     else "Status.TLabel")
+                self._pintar_indicador_guionar(conectado)
         if hasattr(self, "boton_cambiar_atajo"):
             if estado.categoria == "starting" or self._cerrando:
                 self.boton_cambiar_atajo.state(["disabled"])
@@ -2071,6 +2251,7 @@ class VentanaSettings:
         terminar = self.ttk.Button(
             cuerpo,
             text="Terminar y reiniciar",
+            style="Primario.TButton",
             command=self._terminar_y_reiniciar,
         )
         terminar.grid(row=2, column=1)
@@ -2145,6 +2326,7 @@ class VentanaSettings:
         descartar = self.ttk.Button(
             cuerpo,
             text="Descartar cambios",
+            style="Peligro.TButton",
             command=self._descartar_confirmado,
         )
         descartar.grid(row=2, column=1)

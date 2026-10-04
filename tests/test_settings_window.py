@@ -453,10 +453,10 @@ class PruebasSelectoresHumanos(unittest.TestCase):
 
 
 class PruebasArquitecturaSettings(unittest.TestCase):
-    def test_tres_pestanas_tienen_orden_final(self):
+    def test_secciones_tienen_orden_final(self):
         self.assertEqual(
             tuple(pestana.nombre for pestana in ARQUITECTURA_SETTINGS.pestañas),
-            ("Dictado", "Aplicación", "Avanzado"),
+            ("Dictado", "Micrófono", "GuionAR", "Aplicación", "Avanzado"),
         )
 
     def test_dictado_concentra_recorrido_principal(self):
@@ -464,22 +464,22 @@ class PruebasArquitecturaSettings(unittest.TestCase):
 
         self.assertEqual(
             dictado.campos,
-            (
-                "hotkey_toggle", "audio_input_device", "audio_refresh",
-                "audio_test", "language", "context_terms",
-            ),
+            ("hotkey_toggle", "mode", "rewrite_mode", "language",
+             "context_terms"),
         )
         self.assertEqual(dictado.orden_foco, dictado.campos)
+        microfono = ARQUITECTURA_SETTINGS.pestañas[1]
+        self.assertEqual(
+            microfono.campos,
+            ("audio_input_device", "audio_refresh", "audio_test"))
 
-    def test_aplicacion_contiene_estado_indicador_y_posicion(self):
-        aplicacion = ARQUITECTURA_SETTINGS.pestañas[1]
+    def test_aplicacion_contiene_indicador_inicio_y_privacidad(self):
+        aplicacion = ARQUITECTURA_SETTINGS.pestañas[3]
 
         self.assertEqual(
             aplicacion.campos,
-            ("runtime_status", "overlay", "overlay_position", "autostart"))
-        self.assertEqual(
-            aplicacion.orden_foco,
-            ("overlay", "overlay_position", "autostart"))
+            ("overlay", "overlay_position", "autostart", "guardar_sesion"))
+        self.assertEqual(aplicacion.orden_foco, aplicacion.campos)
 
     def test_autostart_aplica_inmediato_sin_marcar_config_dirty(self):
         base = Config()
@@ -551,14 +551,16 @@ class PruebasArquitecturaSettings(unittest.TestCase):
         self.assertFalse(control.estado.modificable)
 
     def test_avanzado_contiene_opciones_tecnicas(self):
-        avanzado = ARQUITECTURA_SETTINGS.pestañas[2]
+        avanzado = ARQUITECTURA_SETTINGS.pestañas[4]
 
-        self.assertTrue({
-            "model_size", "device", "compute_type", "mode",
-            "rewrite_mode", "injector", "guardar_sesion",
-            "guionar_status", "guionar",
-        }.issubset(avanzado.campos))
+        self.assertEqual(
+            avanzado.campos,
+            ("model_size", "device", "compute_type", "injector"))
         self.assertEqual(avanzado.orden_foco, avanzado.campos)
+        guionar = ARQUITECTURA_SETTINGS.pestañas[2]
+        self.assertEqual(
+            guionar.campos,
+            ("guionar_status", "guionar", "guionar_exclusive_output"))
         # La ruta del socket es CLI/config: no es una opción de uso normal.
         self.assertFalse(any(
             "guionar_socket" in pestaña.campos
