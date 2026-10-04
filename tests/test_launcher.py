@@ -221,6 +221,19 @@ class PruebasProcesoLauncher(unittest.TestCase):
         cargar.assert_not_called()
         grafico.assert_called_once_with()
 
+    def test_cli_reinicio_evade_config_y_runtime_pesado(self):
+        with (
+            mock.patch.object(sys, "argv", ["parlar", "--reiniciar"]),
+            mock.patch.object(entrada.Config, "load") as cargar,
+            mock.patch("parlar.restart.reiniciar_main", return_value=0) as reiniciar,
+        ):
+            self.assertEqual(entrada.main(), 0)
+        cargar.assert_not_called()
+        reiniciar.assert_called_once_with(
+            terminar_dictado=False,
+            reintentar_gestor=None,
+        )
+
     def test_import_launcher_no_carga_tk_whisper_ni_app(self):
         codigo = """
 import sys

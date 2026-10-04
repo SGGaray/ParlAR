@@ -26,9 +26,11 @@ from parlar.tray import (
 )
 from parlar.tray_gtk import (
     ETIQUETA_CONFIGURACION,
+    ETIQUETA_REINICIAR,
     ETIQUETA_SALIR,
     TITULO_MENU,
     comando_abrir_configuracion,
+    comando_reiniciar,
     validar_estado,
 )
 from tests.test_lifecycle import FrasesFalsas, UIFalsa, crear_app
@@ -164,6 +166,7 @@ class PruebasModeloTray(unittest.TestCase):
         self.assertEqual(set(datos), {
             "schema_version", "category", "status", "tooltip",
             "pause_action", "pause_command", "pause_enabled",
+            "restart_pending",
         })
 
     def test_serializacion_no_expone_contenido_ni_dispositivos(self):
@@ -176,12 +179,14 @@ class PruebasModeloTray(unittest.TestCase):
 
     def test_menu_estatico_es_minimo(self):
         self.assertEqual(
-            (TITULO_MENU, ETIQUETA_CONFIGURACION, ETIQUETA_SALIR),
-            ("ParlAR", "Configuración…", "Salir"))
+            (TITULO_MENU, ETIQUETA_CONFIGURACION,
+             ETIQUETA_REINICIAR, ETIQUETA_SALIR),
+            ("ParlAR", "Configuración…", "Reiniciar", "Salir"))
 
     def test_menu_no_incluye_ajustes_ni_historial(self):
         menu = " ".join(
-            (TITULO_MENU, ETIQUETA_CONFIGURACION, ETIQUETA_SALIR)).lower()
+            (TITULO_MENU, ETIQUETA_CONFIGURACION,
+             ETIQUETA_REINICIAR, ETIQUETA_SALIR)).lower()
         for prohibido in ("modelo", "micrófono", "idioma", "historial"):
             self.assertNotIn(prohibido, menu)
 
@@ -189,6 +194,28 @@ class PruebasModeloTray(unittest.TestCase):
         self.assertEqual(
             comando_abrir_configuracion("/opt/parlar/python"),
             ["/opt/parlar/python", "-m", "parlar", "--abrir-configuracion"])
+
+    def test_reinicio_tray_usa_coordinador_cli_compartido(self):
+        self.assertEqual(
+            comando_reiniciar("/opt/parlar/python"),
+            ["/opt/parlar/python", "-m", "parlar", "--reiniciar"],
+        )
+        self.assertEqual(
+            comando_reiniciar(
+                "/opt/parlar/python", terminar_dictado=True),
+            [
+                "/opt/parlar/python", "-m", "parlar", "--reiniciar",
+                "--terminar-dictado",
+            ],
+        )
+
+    def test_reinicio_pendiente_deshabilita_acciones_del_tray(self):
+        estado = resumir_estado_tray(
+            "stopping", store_listo().snapshot(),
+            reinicio_pendiente=True)
+        self.assertTrue(estado.reinicio_pendiente)
+        self.assertFalse(estado.pausa_habilitada)
+        self.assertIn("reinicio pendiente", estado.estado)
 
     def test_helper_valida_payload(self):
         payload = serializar_estado_tray(

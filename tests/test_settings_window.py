@@ -1,12 +1,14 @@
 """Lógica de Settings testeable sin crear una ventana ni requerir display."""
 
 import dataclasses
+import io
 import subprocess
 import sys
 import threading
 import unittest
 from unittest import mock
 
+import parlar.settings_window as settings_window_mod
 from parlar.audio_test import EstadoPruebaAudio
 from parlar.config import Config, ErrorConfiguracion
 from parlar.settings_backend import (
@@ -18,6 +20,11 @@ from parlar.settings_backend import (
     crear_identidad_entrada,
     resolver_dispositivo_entrada,
     snapshot_configuracion,
+)
+from parlar.restart import (
+    EstadoResultadoReinicio,
+    ResultadoReinicio,
+    serializar_resultado,
 )
 from parlar.settings_window import (
     ARQUITECTURA_SETTINGS,
@@ -40,6 +47,7 @@ from parlar.settings_window import (
     mensaje_reinicio_previo,
     mensaje_resolucion_entrada,
     mensaje_persistencia,
+    mensaje_persistencia_contextual,
     parsear_context_terms,
     refrescar_entradas,
     snapshot_desde_valores,
@@ -220,6 +228,19 @@ class PruebasLogicaSettings(unittest.TestCase):
         self.assertEqual(
             mensaje_persistencia(sin_reinicio),
             "Configuración guardada. No es necesario reiniciar ParlAR.",
+        )
+
+    def test_mensaje_reinicio_contextual_depende_del_runtime(self):
+        resultado = ResultadoPersistencia(self.snapshot, True)
+        self.assertEqual(
+            mensaje_persistencia_contextual(
+                resultado, runtime_activo=True),
+            "Cambios guardados. Reiniciá ParlAR para aplicarlos.",
+        )
+        self.assertEqual(
+            mensaje_persistencia_contextual(
+                resultado, runtime_activo=False),
+            "Cambios guardados. Se aplicarán al iniciar ParlAR.",
         )
 
     def test_cancelar_cierra_sin_persistir(self):
@@ -542,6 +563,88 @@ class PruebasArquitecturaSettings(unittest.TestCase):
     def test_footer_es_fijo_y_no_pertenece_al_scroll(self):
         self.assertTrue(ARQUITECTURA_SETTINGS.footer_fijo)
         self.assertFalse(ARQUITECTURA_SETTINGS.footer_dentro_scroll)
+
+    def _ventana_reinicio(self, *, ejecutandose=True):
+        ventana = VentanaSettings.__new__(VentanaSettings)
+        ventana.boton_reiniciar = mock.Mock()
+        ventana._proceso_reinicio = None
+        ventana._reinicio_requerido = True
+        ventana._gestor_reintento = None
+        ventana._cerrando = False
+        ventana.estado_parlar = mock.Mock(ejecutandose=ejecutandose)
+        ventana.estado = mock.Mock()
+        ventana.etiqueta_estado = mock.Mock()
+        return ventana
+
+    def test_settings_sin_runtime_no_ofrece_restart_normal(self):
+        ventana = self._ventana_reinicio(ejecutandose=False)
+
+        ventana._actualizar_boton_reinicio()
+
+        ventana.boton_reiniciar.grid_remove.assert_called_once_with()
+
+    def test_requires_restart_con_runtime_muestra_boton(self):
+        ventana = self._ventana_reinicio(ejecutandose=True)
+
+        ventana._actualizar_boton_reinicio()
+
+        ventana.boton_reiniciar.grid.assert_called_once_with()
+        ventana.boton_reiniciar.configure.assert_called_once_with(
+            text="Reiniciar ParlAR")
+
+    def test_restart_exitoso_limpia_aviso(self):
+        ventana = self._ventana_reinicio()
+        proceso = mock.Mock()
+        proceso.poll.return_value = 0
+        proceso.stdout = io.StringIO(serializar_resultado(
+            ResultadoReinicio(EstadoResultadoReinicio.LISTO, "Listo")))
+        ventana._proceso_reinicio = proceso
+
+        ventana._poll_reinicio()
+
+        self.assertFalse(ventana._reinicio_requerido)
+        ventana.estado.set.assert_called_with("Listo")
+
+    def test_restart_fallido_deja_reintento_usable_sin_runtime(self):
+        ventana = self._ventana_reinicio(ejecutandose=False)
+        proceso = mock.Mock()
+        proceso.poll.return_value = 1
+        proceso.stdout = io.StringIO(serializar_resultado(ResultadoReinicio(
+            EstadoResultadoReinicio.FALLIDO,
+            "Revisá la configuración.",
+            "manual",
+        )))
+        ventana._proceso_reinicio = proceso
+
+        ventana._poll_reinicio()
+
+        self.assertTrue(ventana._reinicio_requerido)
+        self.assertEqual(ventana._gestor_reintento, "manual")
+        ventana.boton_reiniciar.grid.assert_called()
+        self.assertIn(
+            "No se pudo reiniciar ParlAR.",
+            ventana.estado.set.call_args.args[0],
+        )
+
+    def test_settings_invoca_el_mismo_coordinador_cli(self):
+        ventana = self._ventana_reinicio()
+        proceso = mock.Mock()
+        proceso.poll.return_value = None
+        ventana._popen = mock.Mock(return_value=proceso)
+        ventana._programar_poll_reinicio = mock.Mock()
+        ventana._actualizar_boton_reinicio = mock.Mock()
+        with mock.patch.object(
+                settings_window_mod, "comando_reinicio",
+                return_value=["coordinador"]) as construir:
+            ventana._iniciar_reinicio()
+
+        construir.assert_called_once_with(
+            terminar_dictado=False,
+            reintentar_gestor=None,
+        )
+        ventana._popen.assert_called_once()
+        self.assertEqual(
+            ventana._popen.call_args.args[0], ["coordinador"])
 
     def test_mode_usa_por_frases_incremental_sin_continuo(self):
         capacidades = SettingsCapabilities(

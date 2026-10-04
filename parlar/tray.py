@@ -34,13 +34,15 @@ class EstadoTray:
     accion_pausa: str
     comando_pausa: str
     pausa_habilitada: bool = True
+    reinicio_pendiente: bool = False
 
 
 def resumir_estado_tray(
         estado_app: str,
         operativo: EstadoOperativo,
         *,
-        pausa_pendiente: bool = False) -> EstadoTray:
+        pausa_pendiente: bool = False,
+        reinicio_pendiente: bool = False) -> EstadoTray:
     """Reduce lifecycle y salud a metadatos breves, sin contenido dictado."""
     if operativo.runtime != EstadoRuntime.READY:
         if operativo.runtime == EstadoRuntime.STARTING:
@@ -49,7 +51,17 @@ def resumir_estado_tray(
             estado = "No disponible"
         return EstadoTray(
             "unavailable", estado, f"ParlAR — {estado}",
-            "Pausar", "pausar", False)
+            "Pausar", "pausar", False, reinicio_pendiente)
+
+    if reinicio_pendiente:
+        estado = (
+            "Procesando · reinicio pendiente"
+            if estado_app == "stopping"
+            else "Reiniciando…"
+        )
+        return EstadoTray(
+            "busy", estado, f"ParlAR — {estado}",
+            "Pausar", "pausar", False, True)
 
     if pausa_pendiente:
         estado = (
@@ -98,6 +110,7 @@ def serializar_estado_tray(estado: EstadoTray) -> str:
         "pause_action": estado.accion_pausa,
         "pause_command": estado.comando_pausa,
         "pause_enabled": estado.pausa_habilitada,
+        "restart_pending": estado.reinicio_pendiente,
     }, ensure_ascii=False, separators=(",", ":"))
 
 

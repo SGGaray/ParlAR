@@ -134,6 +134,21 @@ def _crear_parser(cfg: Config) -> argparse.ArgumentParser:
         action="store_true",
         help="abre Settings y prepara el runtime si todavía no está activo",
     )
+    ap.add_argument(
+        "--reiniciar",
+        action="store_true",
+        help="reinicia de forma segura una instancia activa",
+    )
+    ap.add_argument(
+        "--terminar-dictado",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    ap.add_argument(
+        "--reintentar-reinicio",
+        choices=("systemd", "manual"),
+        help=argparse.SUPPRESS,
+    )
     return ap
 
 
@@ -142,6 +157,25 @@ def main():
         from .launcher import main as launcher_main
 
         return launcher_main()
+    if sys.argv[1:] in (
+            ["--reiniciar"],
+            ["--reiniciar", "--terminar-dictado"]
+    ) or (
+        len(sys.argv[1:]) == 3
+        and sys.argv[1] == "--reiniciar"
+        and sys.argv[2] == "--reintentar-reinicio"
+        and sys.argv[3] in {"systemd", "manual"}
+    ):
+        from .restart import reiniciar_main
+
+        return reiniciar_main(
+            terminar_dictado="--terminar-dictado" in sys.argv[1:],
+            reintentar_gestor=(
+                sys.argv[3]
+                if "--reintentar-reinicio" in sys.argv[1:]
+                else None
+            ),
+        )
     if any(argumento in {"-h", "--help"} for argumento in sys.argv[1:]):
         _crear_parser(Config()).parse_args()
 
@@ -154,6 +188,8 @@ def main():
     args = ap.parse_args()
     if args.abrir_configuracion:
         ap.error("--abrir-configuracion no se combina con flags del runtime")
+    if args.reiniciar or args.terminar_dictado or args.reintentar_reinicio:
+        ap.error("--reiniciar no se combina con flags del runtime")
 
     cfg.model_size = args.modelo
     cfg.device = args.dispositivo
@@ -218,4 +254,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

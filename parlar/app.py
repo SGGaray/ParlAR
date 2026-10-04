@@ -16,6 +16,7 @@ y recién entonces cierra sinks.
 """
 
 import json
+import os
 import re
 import sys
 import threading
@@ -126,6 +127,9 @@ class App:
         self._estado = EstadoApp.IDLE
         self._pausado = False
         self._pausa_pendiente = False
+        self._reinicio_pendiente = False
+        self._reinicio_token: str | None = None
+        self._reinicio_expira_en = 0.0
         self._ultimo_error = ""
         self._fallo_fatal_worker = False
         self._generacion = 0
@@ -562,11 +566,15 @@ class App:
         self._iniciar_trabajador()
         with self._transicion_lock:
             with self._estado_cv:
+                self._expirar_reinicio_locked()
                 if self._estado in (EstadoApp.SHUTTING_DOWN, EstadoApp.CLOSED):
                     self._ultimo_error = "la aplicación se está cerrando"
                     return False
                 if self._pausado:
                     self._ultimo_error = "ParlAR está pausado"
+                    return False
+                if self._reinicio_pendiente:
+                    self._ultimo_error = "reinicio pendiente"
                     return False
                 if self._fallo_fatal_worker:
                     self._ultimo_error = "el worker no está operativo"
@@ -1612,11 +1620,22 @@ class App:
             return serializar_estado(self.estado_operativo.snapshot())
         if op == "estado-tray":
             with self._estado_cv:
+                self._expirar_reinicio_locked()
                 estado = self._estado.value
                 pausa_pendiente = self._pausa_pendiente
+                reinicio_pendiente = self._reinicio_pendiente
             return serializar_estado_tray(resumir_estado_tray(
                 estado, self.estado_operativo.snapshot(),
-                pausa_pendiente=pausa_pendiente))
+                pausa_pendiente=pausa_pendiente,
+                reinicio_pendiente=reinicio_pendiente))
+        if op == "contexto-reinicio":
+            return json.dumps({
+                "schema_version": 1,
+                "pid": os.getpid(),
+                "systemd_invocation": bool(os.environ.get("INVOCATION_ID")),
+            }, separators=(",", ":"))
+        if op == "reiniciar":
+            return self._comando_reinicio(partes)
         if op == "abrir-configuracion":
             with self._estado_cv:
                 estado = self._estado
@@ -1641,6 +1660,97 @@ class App:
             self.salir(esperar=False)
             return "OK chau"
         return "ERR comando desconocido"
+
+    def _comando_reinicio(self, partes: list[str]) -> str:
+        """Prepara una frontera segura; nunca inicia el proceso reemplazo."""
+        if (
+            len(partes) != 4
+            or partes[1] != "v1"
+            or self._TOKEN_SUSPENSION_RE.fullmatch(partes[2]) is None
+            or partes[3] not in {"solicitar", "terminar", "estado", "cancelar"}
+        ):
+            return self._respuesta_reinicio("unavailable")
+        token, accion = partes[2], partes[3]
+        detener = False
+        with self._estado_cv:
+            self._expirar_reinicio_locked()
+            estado = self._estado
+            if accion == "cancelar":
+                if self._reinicio_token == token:
+                    self._reinicio_pendiente = False
+                    self._reinicio_token = None
+                    self._reinicio_expira_en = 0.0
+                    self._ultimo_error = ""
+                    self._estado_cv.notify_all()
+                    return self._respuesta_reinicio_locked("accepted")
+                return self._respuesta_reinicio_locked("unavailable")
+
+            if accion == "estado":
+                if self._reinicio_token == token:
+                    self._reinicio_expira_en = time.monotonic() + 15.0
+                    return self._respuesta_reinicio_locked("deferred")
+                if self._reinicio_pendiente:
+                    return self._respuesta_reinicio_locked(
+                        "already_restarting")
+                return self._respuesta_reinicio_locked("unavailable")
+
+            if estado in {EstadoApp.SHUTTING_DOWN, EstadoApp.CLOSED}:
+                return self._respuesta_reinicio_locked("unavailable")
+            if self._reinicio_pendiente:
+                return self._respuesta_reinicio_locked(
+                    "already_restarting")
+            if accion == "solicitar" and estado in {
+                    EstadoApp.STARTING, EstadoApp.RECORDING}:
+                return self._respuesta_reinicio_locked(
+                    "confirmation_required")
+
+            self._reinicio_pendiente = True
+            self._reinicio_token = token
+            self._reinicio_expira_en = time.monotonic() + 15.0
+            self._ultimo_error = ""
+            detener = (
+                accion == "terminar" and estado == EstadoApp.RECORDING)
+            seguro = estado in {EstadoApp.IDLE, EstadoApp.ERROR}
+            self._estado_cv.notify_all()
+
+        if detener:
+            self.detener_grabacion()
+        return self._respuesta_reinicio(
+            "accepted" if seguro else "deferred")
+
+    def _expirar_reinicio_locked(self) -> None:
+        if (
+            self._reinicio_pendiente
+            and time.monotonic() >= self._reinicio_expira_en
+        ):
+            self._reinicio_pendiente = False
+            self._reinicio_token = None
+            self._reinicio_expira_en = 0.0
+            if self._ultimo_error == "reinicio pendiente":
+                self._ultimo_error = ""
+            self._estado_cv.notify_all()
+
+    def _respuesta_reinicio(self, status: str) -> str:
+        with self._estado_cv:
+            return self._respuesta_reinicio_locked(status)
+
+    def _respuesta_reinicio_locked(self, status: str) -> str:
+        estado = self._estado
+        seguro = (
+            self._reinicio_pendiente
+            and estado in {EstadoApp.IDLE, EstadoApp.ERROR}
+            and self._sesion_activa is None
+        )
+        return json.dumps({
+            "schema_version": 1,
+            "status": status,
+            "runtime": estado.value,
+            "safe_to_stop": seguro,
+            "needs_stop": (
+                self._reinicio_pendiente
+                and estado == EstadoApp.RECORDING
+            ),
+        }, separators=(",", ":"))
 
     def _respuesta_control_lifecycle(self, ok: bool) -> str:
         with self._estado_cv:

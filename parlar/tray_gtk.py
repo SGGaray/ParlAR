@@ -19,11 +19,21 @@ INTERVALO_SONDEO_MS = 600
 MAX_RESPUESTA = 4096
 TITULO_MENU = "ParlAR"
 ETIQUETA_CONFIGURACION = "Configuración…"
+ETIQUETA_REINICIAR = "Reiniciar"
 ETIQUETA_SALIR = "Salir"
+CODIGO_REQUIERE_CONFIRMACION = 3
 
 
 def comando_abrir_configuracion(python: str) -> list[str]:
     return [python, "-m", "parlar", "--abrir-configuracion"]
+
+
+def comando_reiniciar(
+        python: str, *, terminar_dictado: bool = False) -> list[str]:
+    comando = [python, "-m", "parlar", "--reiniciar"]
+    if terminar_dictado:
+        comando.append("--terminar-dictado")
+    return comando
 
 
 def enviar_comando(ruta: Path, comando: str, *, timeout=0.6) -> str:
@@ -41,7 +51,7 @@ def validar_estado(payload: str) -> dict:
     datos = json.loads(payload)
     requeridos = {
         "schema_version", "category", "status", "tooltip",
-        "pause_action", "pause_command", "pause_enabled",
+        "pause_action", "pause_command", "pause_enabled", "restart_pending",
     }
     if not isinstance(datos, dict) or datos.get("schema_version") != 1:
         raise ValueError("estado de tray incompatible")
@@ -60,6 +70,7 @@ class TrayGtk:
         self.launcher_python = launcher_python
         self._fallos_socket = 0
         self._comando_pausa = "pausar"
+        self._proceso_reinicio = None
 
         self.menu = Gtk.Menu()
         titulo = Gtk.MenuItem(label=TITULO_MENU)
@@ -75,6 +86,9 @@ class TrayGtk:
         self.item_configuracion = Gtk.MenuItem(label=ETIQUETA_CONFIGURACION)
         self.item_configuracion.connect("activate", self._abrir_configuracion)
         self.menu.append(self.item_configuracion)
+        self.item_reiniciar = Gtk.MenuItem(label=ETIQUETA_REINICIAR)
+        self.item_reiniciar.connect("activate", self._reiniciar)
+        self.menu.append(self.item_reiniciar)
         self.menu.append(Gtk.SeparatorMenuItem())
         self.item_salir = Gtk.MenuItem(label=ETIQUETA_SALIR)
         self.item_salir.connect("activate", self._salir)
@@ -124,6 +138,66 @@ class TrayGtk:
             pass
         self._actualizar()
 
+    def _reiniciar(self, *_args, terminar_dictado=False):
+        if (
+            self._proceso_reinicio is not None
+            and self._proceso_reinicio.poll() is None
+        ):
+            return
+        try:
+            self._proceso_reinicio = subprocess.Popen(
+                comando_reiniciar(
+                    self.launcher_python,
+                    terminar_dictado=terminar_dictado,
+                ),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except OSError:
+            self._proceso_reinicio = None
+            return
+        self.item_reiniciar.set_label("Reiniciando…")
+        self.item_reiniciar.set_sensitive(False)
+        self.GLib.timeout_add(100, self._comprobar_reinicio)
+
+    def _comprobar_reinicio(self):
+        proceso = self._proceso_reinicio
+        if proceso is None:
+            return False
+        codigo = proceso.poll()
+        if codigo is None:
+            return True
+        self._proceso_reinicio = None
+        if codigo == CODIGO_REQUIERE_CONFIRMACION:
+            self._confirmar_reinicio_dictado()
+        else:
+            self.item_reiniciar.set_label(ETIQUETA_REINICIAR)
+            self.item_reiniciar.set_sensitive(True)
+        return False
+
+    def _confirmar_reinicio_dictado(self):
+        dialogo = self.Gtk.MessageDialog(
+            transient_for=None,
+            flags=0,
+            message_type=self.Gtk.MessageType.WARNING,
+            buttons=self.Gtk.ButtonsType.NONE,
+            text="Hay un dictado en curso.",
+        )
+        dialogo.format_secondary_text(
+            "Podés cancelar o terminar el dictado antes de reiniciar.")
+        dialogo.add_button("Cancelar", self.Gtk.ResponseType.CANCEL)
+        dialogo.add_button(
+            "Terminar y reiniciar", self.Gtk.ResponseType.OK)
+        respuesta = dialogo.run()
+        dialogo.destroy()
+        if respuesta == self.Gtk.ResponseType.OK:
+            self._reiniciar(terminar_dictado=True)
+        else:
+            self.item_reiniciar.set_label(ETIQUETA_REINICIAR)
+            self.item_reiniciar.set_sensitive(True)
+
     def _salir(self, *_args):
         self.item_salir.set_sensitive(False)
         try:
@@ -152,6 +226,11 @@ class TrayGtk:
         self.item_pausa.set_label(datos["pause_action"])
         self.item_pausa.set_sensitive(bool(datos["pause_enabled"]))
         self._comando_pausa = datos["pause_command"]
+        pendiente = bool(datos["restart_pending"])
+        self.item_reiniciar.set_label(
+            "Reiniciando…" if pendiente else ETIQUETA_REINICIAR)
+        self.item_reiniciar.set_sensitive(
+            not pendiente and self._proceso_reinicio is None)
         self.icono.set_tooltip_text(datos["tooltip"])
         return True
 

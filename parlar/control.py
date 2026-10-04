@@ -40,6 +40,7 @@ ALIAS_COMANDOS = {
     "operational-status": "estado-operativo",
     "tray-status": "estado-tray",
     "open-settings": "abrir-configuracion",
+    "restart": "reiniciar",
     "pause": "pausar", "resume": "reanudar",
     "quit": "salir",
 }

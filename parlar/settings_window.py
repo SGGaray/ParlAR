@@ -8,6 +8,7 @@ los cambios se escriben para el próximo inicio mediante ``settings_backend``.
 import dataclasses
 import logging
 import queue
+import subprocess
 import sys
 import threading
 from collections.abc import Callable
@@ -45,6 +46,11 @@ from .settings_backend import (
     requiere_reinicio,
     resolver_dispositivo_entrada,
     snapshot_configuracion,
+)
+from .restart import (
+    EstadoResultadoReinicio,
+    comando_reinicio,
+    interpretar_resultado,
 )
 
 
@@ -610,6 +616,15 @@ def mensaje_persistencia(resultado: ResultadoPersistencia) -> str:
     return "Configuración guardada. No es necesario reiniciar ParlAR."
 
 
+def mensaje_persistencia_contextual(
+        resultado: ResultadoPersistencia, *, runtime_activo: bool) -> str:
+    if not resultado.requires_restart:
+        return mensaje_persistencia(resultado)
+    if runtime_activo:
+        return "Cambios guardados. Reiniciá ParlAR para aplicarlos."
+    return "Cambios guardados. Se aplicarán al iniciar ParlAR."
+
+
 class ControlSettings:
     """Coordina formulario y backend sin depender de Tk."""
 
@@ -703,7 +718,8 @@ class VentanaSettings:
             puede_presentar: Callable[[], bool] | None = None,
             advertencia_config: str | None = None,
             crear_suspension_atajo: Callable = SuspensionHotkeyProductivo,
-            control_autostart: ControlAutostart | None = None):
+            control_autostart: ControlAutostart | None = None,
+            popen: Callable = subprocess.Popen):
         import tkinter as tk
         from tkinter import ttk
 
@@ -716,6 +732,7 @@ class VentanaSettings:
         self.error_inventario = error_inventario
         self._listar_entradas = listar_entradas
         self._crear_suspension_atajo = crear_suspension_atajo
+        self._popen = popen
         self._consultar_estado = consultar_estado or consultar_estado_parlar
         self._guardia_settings = guardia_settings
         self._puede_presentar = puede_presentar or (lambda: True)
@@ -733,10 +750,15 @@ class VentanaSettings:
         self._refresh_audio_resultados = queue.Queue()
         self._modal_descarte = None
         self._modal_atajo = None
+        self._modal_reinicio = None
         self._captura_atajo = None
         self._suspension_atajo = None
         self._renovacion_atajo_id = None
         self._boton_origen_atajo = None
+        self._proceso_reinicio = None
+        self._poll_reinicio_id = None
+        self._reinicio_requerido = False
+        self._gestor_reintento = None
         self._areas_scroll = {}
         self._widgets_foco = {}
         self.estado_parlar = estado_parlar or consultar_estado_parlar()
@@ -854,6 +876,16 @@ class VentanaSettings:
             self.footer, text="Guardar cambios", command=self._guardar)
         self.boton_guardar.grid(row=0, column=2)
         self._vincular_enter(self.boton_guardar, self._guardar)
+        self.boton_reiniciar = ttk.Button(
+            self.footer,
+            text="Reiniciar ParlAR",
+            command=self._iniciar_reinicio,
+        )
+        self.boton_reiniciar.grid(
+            row=1, column=0, sticky="w", pady=(10, 0))
+        self._vincular_enter(
+            self.boton_reiniciar, self._iniciar_reinicio)
+        self.boton_reiniciar.grid_remove()
 
         self.root.bind("<MouseWheel>", self._rueda_scroll, add="+")
         self.root.bind("<Button-4>", self._rueda_scroll, add="+")
@@ -1782,6 +1814,8 @@ class VentanaSettings:
                 self.boton_cambiar_atajo.state(["disabled"])
             else:
                 self.boton_cambiar_atajo.state(["!disabled"])
+        if hasattr(self, "boton_reiniciar"):
+            self._actualizar_boton_reinicio()
 
     def _presentar(self):
         try:
@@ -1842,9 +1876,175 @@ class VentanaSettings:
             self.estado.set(f"No se pudo guardar: {exc}")
             self.etiqueta_estado.configure(style="Error.Status.TLabel")
             return
-        self.estado.set(mensaje_persistencia(resultado))
+        self._reinicio_requerido = resultado.requires_restart
+        self.estado.set(mensaje_persistencia_contextual(
+            resultado,
+            runtime_activo=self.estado_parlar.ejecutandose,
+        ))
         self.etiqueta_estado.configure(style="Success.Status.TLabel")
+        self._actualizar_boton_reinicio()
         self._actualizar_sucio()
+
+    def _actualizar_boton_reinicio(self):
+        if not hasattr(self, "boton_reiniciar"):
+            return
+        en_curso = (
+            self._proceso_reinicio is not None
+            and self._proceso_reinicio.poll() is None
+        )
+        visible = (
+            self._reinicio_requerido
+            and (
+                self.estado_parlar.ejecutandose
+                or self._gestor_reintento is not None
+            )
+        )
+        if visible:
+            self.boton_reiniciar.grid()
+            self.boton_reiniciar.configure(
+                text=(
+                    "Reiniciando…"
+                    if en_curso
+                    else "Reintentar reinicio"
+                    if self._gestor_reintento is not None
+                    else "Reiniciar ParlAR"
+                ))
+            self.boton_reiniciar.state(
+                ["disabled"] if en_curso or self._cerrando
+                else ["!disabled"])
+        else:
+            self.boton_reiniciar.grid_remove()
+
+    def _iniciar_reinicio(self, *, terminar_dictado: bool = False):
+        if self._cerrando:
+            return
+        if (
+            self._proceso_reinicio is not None
+            and self._proceso_reinicio.poll() is None
+        ):
+            return
+        try:
+            self._proceso_reinicio = self._popen(
+                comando_reinicio(
+                    terminar_dictado=terminar_dictado,
+                    reintentar_gestor=self._gestor_reintento,
+                ),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                start_new_session=True,
+            )
+        except OSError:
+            self._proceso_reinicio = None
+            self.estado.set("No se pudo reiniciar ParlAR.")
+            self.etiqueta_estado.configure(style="Error.Status.TLabel")
+            return
+        self.estado.set("Reiniciando ParlAR…")
+        self.etiqueta_estado.configure(style="Status.TLabel")
+        self._actualizar_boton_reinicio()
+        self._programar_poll_reinicio()
+
+    def _programar_poll_reinicio(self):
+        self._poll_reinicio_id = self.root.after(
+            100, self._poll_reinicio)
+
+    def _poll_reinicio(self):
+        self._poll_reinicio_id = None
+        proceso = self._proceso_reinicio
+        if proceso is None:
+            return
+        if proceso.poll() is None:
+            self._programar_poll_reinicio()
+            return
+        self._proceso_reinicio = None
+        try:
+            salida = proceso.stdout.read() if proceso.stdout is not None else ""
+            resultado = interpretar_resultado(salida.strip())
+        except (OSError, ValueError):
+            resultado = None
+        finally:
+            if proceso.stdout is not None:
+                proceso.stdout.close()
+
+        if resultado is None:
+            self._mostrar_fallo_reinicio(
+                "No se pudo reiniciar ParlAR.")
+        elif resultado.estado == EstadoResultadoReinicio.LISTO:
+            self._reinicio_requerido = False
+            self._gestor_reintento = None
+            self.estado.set("Listo")
+            self.etiqueta_estado.configure(style="Success.Status.TLabel")
+        elif resultado.estado == EstadoResultadoReinicio.REQUIERE_CONFIRMACION:
+            self._mostrar_confirmacion_reinicio()
+        elif resultado.estado == EstadoResultadoReinicio.YA_EN_CURSO:
+            self.estado.set("ParlAR ya se está reiniciando.")
+            self.etiqueta_estado.configure(style="Status.TLabel")
+        else:
+            if resultado.gestor is not None:
+                self._gestor_reintento = resultado.gestor
+            self._mostrar_fallo_reinicio(resultado.mensaje)
+        self._actualizar_boton_reinicio()
+
+    def _mostrar_fallo_reinicio(self, detalle: str):
+        mensaje = "No se pudo reiniciar ParlAR."
+        if detalle and detalle != mensaje:
+            mensaje += f" {detalle}"
+        self.estado.set(mensaje)
+        self.etiqueta_estado.configure(style="Error.Status.TLabel")
+
+    def _mostrar_confirmacion_reinicio(self):
+        if self._modal_reinicio is not None:
+            return
+        modal = self.tk.Toplevel(self.root)
+        self._modal_reinicio = modal
+        modal.title("Reiniciar ParlAR")
+        modal.resizable(False, False)
+        modal.transient(self.root)
+        modal.protocol("WM_DELETE_WINDOW", self._cancelar_reinicio_dictado)
+        cuerpo = self.ttk.Frame(modal, padding=20)
+        cuerpo.grid(row=0, column=0, sticky="nsew")
+        self.ttk.Label(
+            cuerpo,
+            text="Hay un dictado en curso.",
+            style="Section.TLabel",
+        ).grid(row=0, column=0, columnspan=2, sticky="w")
+        self.ttk.Label(
+            cuerpo,
+            text="Podés cancelar o terminar el dictado antes de reiniciar.",
+            style="Status.TLabel",
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 18))
+        cancelar = self.ttk.Button(
+            cuerpo, text="Cancelar", command=self._cancelar_reinicio_dictado)
+        cancelar.grid(row=2, column=0, padx=(0, 8))
+        terminar = self.ttk.Button(
+            cuerpo,
+            text="Terminar y reiniciar",
+            command=self._terminar_y_reiniciar,
+        )
+        terminar.grid(row=2, column=1)
+        modal.grab_set()
+        cancelar.focus_set()
+
+    def _cerrar_modal_reinicio(self):
+        modal, self._modal_reinicio = self._modal_reinicio, None
+        if modal is not None:
+            try:
+                modal.grab_release()
+                modal.destroy()
+            except Exception:
+                pass
+
+    def _cancelar_reinicio_dictado(self):
+        self._cerrar_modal_reinicio()
+        self.estado.set(
+            "Cambios guardados. Reiniciá ParlAR para aplicarlos.")
+        self.etiqueta_estado.configure(style="Success.Status.TLabel")
+        self._actualizar_boton_reinicio()
+
+    def _terminar_y_reiniciar(self):
+        self._cerrar_modal_reinicio()
+        self._iniciar_reinicio(terminar_dictado=True)
 
     def _al_escape(self, _evento=None):
         if self._modal_descarte is None:
@@ -1923,12 +2123,14 @@ class VentanaSettings:
         if self._cerrando:
             return
         self._cerrando = True
+        self._cerrar_modal_reinicio()
         self._cerrar_captura_atajo()
         self.boton_cancelar.state(["disabled"])
         self.boton_guardar.state(["disabled"])
         self.boton_actualizar_audio.state(["disabled"])
         self.boton_cambiar_atajo.state(["disabled"])
         self.boton_restaurar_atajo.state(["disabled"])
+        self.boton_reiniciar.state(["disabled"])
         self.check_autostart.state(["disabled"])
         self.control_prueba.cerrar()
         self._actualizar_audio()
