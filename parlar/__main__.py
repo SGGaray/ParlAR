@@ -252,7 +252,8 @@ def main():
             preparar_runtime_nvidia(cfg.device)
 
         from .app import App  # import pesado posterior al lock de instancia
-        _ejecutar_con_sigterm(App(cfg, guardia_instancia=guardia))
+        _ejecutar_con_sigterm(App(cfg, guardia_instancia=guardia,
+                                  config_en_vivo=True))
     except InstanciaActivaError:
         print("ParlAR ya está ejecutándose.", file=sys.stderr)
         raise SystemExit(_CODIGO_INSTANCIA_ACTIVA)

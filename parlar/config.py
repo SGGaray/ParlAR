@@ -124,6 +124,9 @@ class Config:
     guionar_explicit: bool = False     # True sólo si el usuario eligió el
                                        # valor de ``guionar`` (Settings/CLI)
     guionar_socket: str = ""           # vacío = $XDG_RUNTIME_DIR/guionar.sock
+    guionar_exclusive_output: bool = True  # con GuionAR conectado al empezar
+                                       # la frase, no escribir en la app
+                                       # con foco
 
     # --- Sesión (transcript en disco, opcional) ---
     guardar_sesion: bool = False       # apagado por defecto: dictados son datos
@@ -204,7 +207,7 @@ class Config:
             # y los preservaría en extras. Recuperarlos mantiene rollback seguro.
             extras_migrados = dict(extras)
             for nombre in ("audio_input_device", "overlay_position",
-                           "guionar_explicit"):
+                           "guionar_explicit", "guionar_exclusive_output"):
                 if nombre not in extras_migrados:
                     continue
                 preservada = extras_migrados.pop(nombre)

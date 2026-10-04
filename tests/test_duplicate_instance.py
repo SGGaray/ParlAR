@@ -137,7 +137,7 @@ class PruebasSegundaInstancia(unittest.TestCase):
         self.assertNotIn("ParlAR ya está ejecutándose", stderr.getvalue())
         self.assertEqual(app.ejecuciones, 1)
         constructor.assert_called_once_with(
-            mock.ANY, guardia_instancia=guardia)
+            mock.ANY, guardia_instancia=guardia, config_en_vivo=True)
         guardia.liberar.assert_called_once_with()
 
 

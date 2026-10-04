@@ -43,7 +43,6 @@ from .settings_backend import (
     listar_dispositivos_entrada,
     obtener_capacidades,
     persistir_configuracion,
-    requiere_reinicio,
     resolver_dispositivo_entrada,
     snapshot_configuracion,
 )
@@ -74,6 +73,7 @@ class ValoresFormulario:
     guardar_sesion: bool
     audio_input_device: str = "default"
     overlay_position: str = "bottom-center"
+    guionar_exclusive_output: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,12 +157,12 @@ ARQUITECTURA_SETTINGS = ArquitecturaSettings(
             (
                 "model_size", "device", "compute_type", "mode",
                 "rewrite_mode", "injector", "guardar_sesion",
-                "guionar_status", "guionar",
+                "guionar_status", "guionar", "guionar_exclusive_output",
             ),
             (
                 "model_size", "device", "compute_type", "mode",
                 "rewrite_mode", "injector", "guardar_sesion",
-                "guionar_status", "guionar",
+                "guionar_status", "guionar", "guionar_exclusive_output",
             ),
         ),
     ),
@@ -596,6 +596,7 @@ def valores_desde_snapshot(snapshot: SettingsSnapshot) -> ValoresFormulario:
         guardar_sesion=snapshot.guardar_sesion,
         audio_input_device=snapshot.audio_input_device,
         overlay_position=snapshot.overlay_position,
+        guionar_exclusive_output=snapshot.guionar_exclusive_output,
     )
 
 
@@ -657,10 +658,10 @@ class ControlSettings:
         return snapshot_desde_valores(self.snapshot_inicial, valores)
 
     def esta_sucio(self, valores: ValoresFormulario) -> bool:
-        return self.requiere_reparacion or requiere_reinicio(
-            self.snapshot_inicial,
-            self.snapshot_candidato(valores),
-        )
+        # Cualquier diferencia se puede guardar, incluso las que ParlAR
+        # aplica en caliente (que no exigen reinicio).
+        return (self.requiere_reparacion
+                or self.snapshot_inicial != self.snapshot_candidato(valores))
 
     def guardar(self, valores: ValoresFormulario) -> ResultadoPersistencia:
         reparacion = self.requiere_reparacion
@@ -829,6 +830,8 @@ class VentanaSettings:
             "hotkey_toggle": tk.StringVar(value=valores.hotkey_toggle),
             "overlay": tk.BooleanVar(value=valores.overlay),
             "guionar": tk.BooleanVar(value=valores.guionar),
+            "guionar_exclusive_output": tk.BooleanVar(
+                value=valores.guionar_exclusive_output),
             "guardar_sesion": tk.BooleanVar(value=valores.guardar_sesion),
             "overlay_position": tk.StringVar(
                 value=valores.overlay_position),
@@ -1478,6 +1481,24 @@ class VentanaSettings:
             style="Status.TLabel",
             wraplength=560,
         ).grid(row=20, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        self.check_guionar_exclusivo = ttk.Checkbutton(
+            contenido,
+            text="Usar GuionAR como salida exclusiva",
+            variable=self.variables["guionar_exclusive_output"],
+        )
+        self.check_guionar_exclusivo.grid(
+            row=21, column=0, columnspan=3, sticky="w", pady=(10, 0))
+        self._registrar_foco(
+            "guionar_exclusive_output", self.check_guionar_exclusivo)
+        ttk.Label(
+            contenido,
+            text=(
+                "Cuando GuionAR esté conectado, ParlAR no escribirá el "
+                "dictado en otras aplicaciones."
+            ),
+            style="Status.TLabel",
+            wraplength=560,
+        ).grid(row=22, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
     def _actualizar_region_scroll(self, canvas):
         region = canvas.bbox("all")
@@ -1620,6 +1641,9 @@ class VentanaSettings:
     def _actualizar_dependencias(self):
         if not hasattr(self, "check_guionar"):
             return
+        # Sólo tiene efecto con la integración activa; el valor se conserva.
+        self.check_guionar_exclusivo.state(
+            ["!disabled"] if self.variables["guionar"].get() else ["disabled"])
         selector_posicion, _opciones = self.selectores["overlay_position"]
         selector_posicion.configure(
             state=(
@@ -1642,6 +1666,8 @@ class VentanaSettings:
             hotkey_toggle=self.variables["hotkey_toggle"].get(),
             overlay=self.variables["overlay"].get(),
             guionar=self.variables["guionar"].get(),
+            guionar_exclusive_output=self.variables[
+                "guionar_exclusive_output"].get(),
             # Sin campo visible: la ruta personalizada (CLI/config) se
             # conserva tal cual al guardar.
             guionar_socket=self.control.snapshot_inicial.guionar_socket,

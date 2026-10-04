@@ -267,6 +267,12 @@ teleprompter. Nothing needs to be configured:
 Settings → Advanced → GuionAR shows whether it is connected and lets you turn
 the integration off with “Integrar con GuionAR”.
 
+With “Usar GuionAR como salida exclusiva” (on by default), while GuionAR is
+connected ParlAR does not type dictation into the focused application: only
+GuionAR receives it. The decision is made when each phrase starts; if GuionAR
+closes mid-phrase, that phrase is not typed elsewhere either. Without GuionAR
+open, ParlAR types normally. Changes apply from the next phrase, no restart.
+
 Advanced details: it is best-effort and not on the critical path. After a
 reconnect only new events are sent; dictation produced while GuionAR was away
 is not replayed. The default socket is `$XDG_RUNTIME_DIR/guionar.sock` and only

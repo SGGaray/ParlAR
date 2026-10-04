@@ -291,6 +291,9 @@ class PruebasApp(unittest.TestCase):
         app, mic, *_ = crear_app(modo=modo, frases=frases, guionar=guionar,
                                  inyector=inyector, sesion=sesion)
         self.apps.append(app)
+        # Estos tests verifican parciales con ambos destinos activos; la
+        # salida exclusiva (Phase 8D) tiene su propia suite.
+        app.cfg.guionar_exclusive_output = False
         self.assertIsInstance(app.parciales, ProgramadorParciales)
         app.parciales = ProgramadorParciales(
             frases.transcribir_parcial, app._emitir_parcial,

@@ -273,6 +273,13 @@ teleprompter. No hace falta configurar nada:
 Settings → Avanzado → GuionAR muestra si está conectado y permite desactivar
 la integración con «Integrar con GuionAR».
 
+Con «Usar GuionAR como salida exclusiva» (activado por defecto), mientras
+GuionAR esté conectado ParlAR no escribe el dictado en la aplicación con foco:
+sólo lo recibe GuionAR. La decisión se toma al empezar cada frase; si GuionAR
+se cierra a mitad de frase, esa frase tampoco se escribe en otra ventana. Sin
+GuionAR abierto, ParlAR escribe normalmente. El cambio se aplica desde la
+siguiente frase, sin reiniciar.
+
 Detalles avanzados: es best-effort y no forma parte del camino crítico. Tras
 una reconexión sólo se envían eventos nuevos; lo dictado mientras GuionAR no
 estaba no se reproduce. El socket predeterminado es

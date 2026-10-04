@@ -20,6 +20,9 @@ class CoordinadorSalida:
         self._salidas = (inyector, guionar, sesion)
         self.ultima_entrega = ResultadoDistribucion.omitido()
         self.necesita_espacio = False
+        # Ruta de la unidad en curso, fijada al empezar y nunca recalculada:
+        # True = GuionAR exclusivo (nada se escribe en la app con foco).
+        self.ruta_exclusiva = False
 
     def iniciar_generacion(self, *, limpiar_parcial: bool):
         if limpiar_parcial:
@@ -31,17 +34,20 @@ class CoordinadorSalida:
         self.guionar.enviar_parcial("")
         self.cancelar_unidad()
 
-    def iniciar_unidad(self, generacion: int):
+    def iniciar_unidad(self, generacion: int, *, exclusiva: bool = False):
+        self.ruta_exclusiva = bool(exclusiva)
         iniciar = getattr(self.inyector, "iniciar_unidad", None)
         if iniciar:
             iniciar(generacion)
 
     def finalizar_unidad(self):
+        self.ruta_exclusiva = False
         finalizar = getattr(self.inyector, "finalizar_unidad", None)
         if finalizar:
             finalizar()
 
     def cancelar_unidad(self):
+        self.ruta_exclusiva = False
         cancelar = getattr(self.inyector, "cancelar_unidad", None)
         if cancelar:
             cancelar()
@@ -71,15 +77,23 @@ class CoordinadorSalida:
             self.necesita_espacio = True
         return resultado
 
+    # Comandos de voz: son teclas en la app con foco. En ruta exclusiva no
+    # hay nada propio que editar allí, así que se omiten.
     def nueva_linea(self, cantidad: int):
+        if self.ruta_exclusiva:
+            return False
         resultado = self.inyector.nueva_linea(cantidad)
         self.necesita_espacio = False
         return resultado
 
     def borrar_ultima_oracion(self):
+        if self.ruta_exclusiva:
+            return False
         return self.inyector.borrar_ultima_oracion()
 
     def presionar_enter(self):
+        if self.ruta_exclusiva:
+            return False
         resultado = self.inyector.presionar_enter()
         self.necesita_espacio = False
         return resultado
@@ -114,14 +128,19 @@ class CoordinadorSalida:
 
     def _distribuir(self, texto_inyector: str, texto_confirmado: str,
                     *, registrar: bool = True) -> ResultadoDistribucion:
-        try:
-            inyector = self._resultado_inyector(
-                self.inyector.escribir_texto(
-                    texto_inyector, registrar=registrar))
-        except Exception as exc:
-            print(f"[app] salida inserted falló: {type(exc).__name__}",
-                  file=sys.stderr)
-            inyector = EstadoEntrega.FAILED
+        if self.ruta_exclusiva:
+            # GuionAR exclusivo: ni teclado ni portapapeles. Sin fallback al
+            # inyector aunque GuionAR falle o ya no esté conectado.
+            inyector = EstadoEntrega.SKIPPED
+        else:
+            try:
+                inyector = self._resultado_inyector(
+                    self.inyector.escribir_texto(
+                        texto_inyector, registrar=registrar))
+            except Exception as exc:
+                print(f"[app] salida inserted falló: {type(exc).__name__}",
+                      file=sys.stderr)
+                inyector = EstadoEntrega.FAILED
         guionar = (
             EstadoEntrega.SKIPPED
             if getattr(self.guionar, "es_nulo", False)

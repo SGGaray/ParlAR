@@ -27,6 +27,7 @@ from typing import Optional
 
 from .capturador_audio import CapturadorMic, Segmentador, crear_vad
 from .cliente_guionar import CONECTADO
+from . import config as config_mod
 from .config import Config
 from .control import ServidorControl, normalizar_comando
 from .control_gesto_dictado import ControlGestoDictado
@@ -110,13 +111,16 @@ class App:
     _turno_modelo = None
     _parcial_generacion = None
     _parcial_en_unidad = False
+    _config_en_vivo = False
+    _firma_config = None
 
     def __init__(self, cfg: Config, *, motor=None, frases=None, streaming=None,
                  proc=None, inyector=None, guionar=None, sesion=None, mic=None,
                  ui=None, control=None, atajos=None, guardia_instancia=None,
                  vad_factory=crear_vad, segmentador_factory=Segmentador,
                  listar_entradas=None, resolver_entrada=None,
-                 estado_operativo=None, tray=None, parciales=None):
+                 estado_operativo=None, tray=None, parciales=None,
+                 config_en_vivo: bool = False):
         self.estado_operativo = estado_operativo or EstadoOperativoStore(
             gesto_requerido=detectar_sesion() != "wayland")
         try:
@@ -273,6 +277,9 @@ class App:
                 transcribir_parcial, self._emitir_parcial,
                 self._parciales_habilitados, self._turno_modelo)
         self.parciales = parciales
+        # Sólo el entry point real relee preferencias en caliente; tests e
+        # integraciones in-process nunca leen el config del usuario.
+        self._config_en_vivo = config_en_vivo
         backend_salida = getattr(self.salida.inyector, "backend", None)
         if backend_salida and not backend_inyector_disponible(backend_salida):
             self.estado_operativo.fijar_componente(
@@ -1089,6 +1096,36 @@ class App:
         turno = self._turno_modelo
         return turno.final() if turno is not None else contextlib.nullcontext()
 
+    def _ruta_guionar_exclusiva(self) -> bool:
+        """Snapshot de ruta al EMPEZAR la unidad: queda fijo hasta su cierre.
+
+        Una desconexión posterior no habilita la inyección (sin fuga a la app
+        con foco) y una conexión posterior no la quita a esta unidad.
+        """
+        return bool(
+            self.cfg.guionar
+            and self._preferencia_exclusiva()
+            and getattr(self.guionar, "estado", None) == CONECTADO)
+
+    def _preferencia_exclusiva(self) -> bool:
+        """Settings guarda en otro proceso: si el config cambió, relee sólo
+        esta clave (un stat por unidad, sin hilos ni IPC nuevos)."""
+        if self._config_en_vivo:
+            try:
+                info = os.stat(config_mod.CONFIG_FILE)
+                firma = (info.st_mtime_ns, info.st_size)
+                if firma != self._firma_config:
+                    self._firma_config = firma
+                    datos = json.loads(
+                        config_mod.CONFIG_FILE.read_text(encoding="utf-8"))
+                    valor = datos.get("guionar_exclusive_output") \
+                        if isinstance(datos, dict) else None
+                    if type(valor) is bool:
+                        self.cfg.guionar_exclusive_output = valor
+            except (OSError, ValueError, UnicodeError):
+                pass   # se conserva el último valor válido
+        return bool(getattr(self.cfg, "guionar_exclusive_output", False))
+
     def _parciales_habilitados(self) -> bool:
         """GuionAR conectado y app viva: si no, cero inferencias extra."""
         return (self.cfg.guionar and not self.saliendo.is_set()
@@ -1170,7 +1207,9 @@ class App:
                     if evento.tipo == "inicio_voz":
                         modo_unidad = modo_entre_unidades
                         self._iniciar_contexto_texto()
-                        self.salida.iniciar_unidad(generacion)
+                        self.salida.iniciar_unidad(
+                            generacion,
+                            exclusiva=self._ruta_guionar_exclusiva())
                         self._evento_vad(True, generacion)
                         self._abrir_unidad_parcial(generacion, modo_unidad)
                     elif evento.tipo == "frame_voz" and modo_unidad == "streaming":

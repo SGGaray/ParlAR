@@ -10,7 +10,7 @@ import secrets
 import socket
 import urllib.parse
 from collections.abc import Iterable, Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Any
 
 from .config import Config, ErrorConfiguracion
@@ -41,6 +41,7 @@ class SettingsSnapshot:
     guardar_sesion: bool
     audio_input_device: str = Config.AUDIO_INPUT_DEFAULT
     overlay_position: str = "bottom-center"
+    guionar_exclusive_output: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -270,7 +271,12 @@ def snapshot_configuracion(cfg: Config) -> SettingsSnapshot:
         guardar_sesion=cfg.guardar_sesion,
         audio_input_device=cfg.audio_input_device,
         overlay_position=cfg.overlay_position,
+        guionar_exclusive_output=cfg.guionar_exclusive_output,
     )
+
+
+# ParlAR relee estas claves en caliente (desde la siguiente utterance).
+CAMPOS_EN_VIVO = frozenset({"guionar_exclusive_output"})
 
 
 def construir_configuracion_candidata(
@@ -290,8 +296,10 @@ def construir_configuracion_candidata(
 
 def requiere_reinicio(
         actual: SettingsSnapshot, candidata: SettingsSnapshot) -> bool:
-    """Settings no hace hot reload: cualquier cambio efectivo exige reinicio."""
-    return actual != candidata
+    """Cualquier cambio efectivo exige reinicio, salvo los campos que
+    ParlAR relee en caliente."""
+    return replace(actual, **{c: getattr(candidata, c) for c in CAMPOS_EN_VIVO}) \
+        != candidata
 
 
 def persistir_configuracion(
