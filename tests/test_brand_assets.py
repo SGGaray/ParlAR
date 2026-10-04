@@ -100,7 +100,43 @@ class PruebasArchivos(unittest.TestCase):
         self.assertIn("parlar/assets/parlar.svg", instalador)
 
 
+def _rects(ruta):
+    raiz = ET.parse(ruta).getroot()
+    return [tuple(float(r.get(a, "0")) for a in ("x", "y", "width", "height"))
+            for r in raiz.iter(SVG_NS + "rect")]
+
+
 class PruebasTray(unittest.TestCase):
+    ESTADOS = ("parlar-tray.svg", "parlar-tray-activo.svg",
+               "parlar-tray-atencion.svg")
+
+    def test_tray_deriva_del_mark_y_estados_comparten_silueta(self):
+        # Máster de 16 sin la baldosa = barras de voz + cursor.
+        master = [r for r in _rects(ASSETS / "brand/parlar-16.svg")
+                  if r[2] != 16]
+        barras_master, cursor_master = master[:3], master[3]
+        for nombre in self.ESTADOS:
+            with self.subTest(estado=nombre):
+                rects = _rects(ASSETS / "tray" / nombre)
+                self.assertEqual(rects[:3], barras_master)   # ritmo 2/6/4
+                cursor = rects[3:]
+                # La columna del cursor ocupa el mismo lugar y alto total.
+                self.assertTrue(all(r[0] == cursor_master[0]
+                                    and r[2] == cursor_master[2]
+                                    for r in cursor))
+                self.assertEqual(min(r[1] for r in cursor), cursor_master[1])
+                self.assertEqual(max(r[1] + r[3] for r in cursor),
+                                 cursor_master[1] + cursor_master[3])
+
+    def test_estados_distinguibles_por_acento(self):
+        def acento(nombre):
+            raiz = ET.parse(ASSETS / "tray" / nombre).getroot()
+            colores = re.findall(r'fill="(#[0-9A-Fa-f]{6})"',
+                                 ET.tostring(raiz, encoding="unicode"))
+            return colores[-1].upper()
+        acentos = {nombre: acento(nombre) for nombre in self.ESTADOS}
+        self.assertEqual(len(set(acentos.values())), 3, acentos)
+
     def test_cada_estado_real_tiene_icono_existente(self):
         app = ASSETS / "parlar.svg"
         esperados = {
@@ -136,7 +172,7 @@ class PruebasRender(unittest.TestCase):
         root = tk.Tk()
         try:
             for ruta in svgs():
-                for lado in (16, 24, 32):
+                for lado in (16, 20, 24, 32):
                     with self.subTest(svg=ruta.name, lado=lado):
                         imagen = tk.PhotoImage(
                             master=root, file=str(ruta),
@@ -149,6 +185,50 @@ class PruebasRender(unittest.TestCase):
                         self.assertGreater(visibles, lado)
         finally:
             root.destroy()
+
+
+@unittest.skipUnless(HAY_DISPLAY, "Tk necesita un display")
+class PruebasSettingsMarca(unittest.TestCase):
+    def ventana(self, escala=1.0):
+        from unittest import mock
+        from parlar.config import Config
+        from parlar.settings_backend import (
+            EstadoParlARSettings, obtener_capacidades, snapshot_configuracion)
+        from parlar.settings_window import ControlSettings, VentanaSettings
+        root = tk.Tk()
+        self.addCleanup(root.destroy)
+        # ``tk scaling`` persiste para el display en todo el proceso:
+        # restaurarlo antes de destruir para no escalar tests posteriores.
+        original = root.tk.call("tk", "scaling")
+        self.addCleanup(root.tk.call, "tk", "scaling", original)
+        root.tk.call("tk", "scaling", escala * 96 / 72)
+        prueba = mock.Mock()
+        prueba.estado.return_value = mock.Mock(fase="idle", error=None, nivel=0.0)
+        auto = mock.Mock()
+        auto.estado = mock.Mock(activado=False, mensaje="", modificable=True,
+                                estado="disabled")
+        estado = EstadoParlARSettings("ready", "Listo", "Listo.", True, None)
+        cfg = Config()
+        return VentanaSettings(
+            root, ControlSettings(cfg, snapshot_configuracion(cfg)),
+            obtener_capacidades(), control_prueba=prueba,
+            estado_parlar=estado, consultar_estado=lambda: estado,
+            permitir_foco_inicial=False, control_autostart=auto,
+            listar_entradas=lambda: ())
+
+    def test_header_muestra_el_app_mark_y_la_ventana_su_icono(self):
+        v = self.ventana()
+        self.assertIsNotNone(v.marca_header)
+        self.assertEqual(v.marca_header.height(), v._px(28))
+        self.assertEqual(len(v._iconos_ventana), 2)        # 16 + 64
+        fuente = Path(__file__).resolve().parents[1] / "parlar/settings_window.py"
+        self.assertIn('"parlar.svg"', fuente.read_text(encoding="utf-8"))
+
+    def test_hidpi_rasteriza_la_marca_a_densidad_real(self):
+        normal = self.ventana(1.0)
+        doble = self.ventana(2.0)
+        self.assertEqual(doble.marca_header.height(),
+                         2 * normal.marca_header.height())
 
 
 if __name__ == "__main__":

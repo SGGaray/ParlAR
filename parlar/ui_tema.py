@@ -84,7 +84,7 @@ class Tema:
         except Exception:
             dpi = 96.0
         self.escala = max(1.0, dpi / 96.0)
-        base = tkfont.nametofont("TkDefaultFont").actual()
+        base = tkfont.nametofont("TkDefaultFont", root=root).actual()
         self.familia = base.get("family") or "TkDefaultFont"
         self.fuentes = {}
         for nombre, (tamano, peso) in TIPOS.items():

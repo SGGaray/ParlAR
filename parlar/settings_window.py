@@ -821,6 +821,17 @@ class VentanaSettings:
     def _px(self, valor):
         return self.tema.px(valor)
 
+    def _imagen_marca(self, lado: int):
+        """App mark rasterizado por Tk a ``lado`` píxeles físicos (ya escalado
+        por DPI): nítido, sin reescalar un bitmap. None si Tk no lee SVG."""
+        try:
+            return self.tk.PhotoImage(
+                master=self.root,
+                file=str(Path(__file__).with_name("assets") / "parlar.svg"),
+                format=f"svg -scaletoheight {int(lado)}")
+        except Exception:
+            return None
+
     def _aplicar_icono_ventana(self):
         """Marca de ParlAR en la ventana: máster de 16 px para tamaños chicos
         y el app mark para el resto. Tk sin SVG: se omite sin error."""
@@ -902,11 +913,19 @@ class VentanaSettings:
                            padding=(e("xl"), e("l"), e("xl"), e("m")))
         header.grid(row=0, column=0, sticky="ew")
         header.columnconfigure(1, weight=1)
-        ttk.Label(header, text="ParlAR", style="Titulo.TLabel").grid(
+        # Marca + nombre: se reconoce qué aplicación se configura.
+        self.marca_header = self._imagen_marca(self._px(28))
+        if self.marca_header is not None:
+            ttk.Label(header, image=self.marca_header,
+                      style="Header.Status.TLabel").grid(
+                row=0, column=0, sticky="w", padx=(0, e("m")))
+        nombre = ttk.Frame(header, style="Header.TFrame")
+        nombre.grid(row=0, column=1, sticky="w")
+        ttk.Label(nombre, text="ParlAR", style="Titulo.TLabel").grid(
             row=0, column=0, sticky="w")
-        ttk.Label(header, text="Configuración",
+        ttk.Label(nombre, text="Configuración",
                   style="Header.Status.TLabel").grid(
-            row=0, column=1, sticky="sw", padx=(e("s"), 0), pady=(0, 2))
+            row=1, column=0, sticky="w")
         estado = ttk.Frame(header, style="Header.TFrame")
         estado.grid(row=0, column=2, sticky="e")
         self.indicador_runtime = IndicadorEstado(

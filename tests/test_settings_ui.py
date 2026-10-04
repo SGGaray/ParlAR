@@ -59,8 +59,14 @@ def autostart_falso():
 class Base(unittest.TestCase):
     def setUp(self):
         self.raices = []
+        self.escalas = []
 
     def tearDown(self):
+        for root, original in getattr(self, "escalas", []):
+            try:
+                root.tk.call("tk", "scaling", original)
+            except Exception:
+                pass
         for root in self.raices:
             try:
                 root.destroy()
@@ -73,6 +79,8 @@ class Base(unittest.TestCase):
         root = tk.Tk()
         self.raices.append(root)
         if escala:
+            # ``tk scaling`` persiste para el display en todo el proceso.
+            self.escalas.append((root, root.tk.call("tk", "scaling")))
             root.tk.call("tk", "scaling", escala * 96 / 72)
         self.guardados = []
 
@@ -285,13 +293,24 @@ class PruebasTecladoYGeometria(Base):
                 posiciones = [visitados.index(w) for w in lienzos]
                 self.assertEqual(posiciones, sorted(posiciones))
 
+    def esperar_ancho(self, root, ancho, timeout=3.0):
+        """El WM aplica la geometría de forma asíncrona (más lento con la
+        suite completa en paralelo): esperar al ancho real, no a un tiempo."""
+        fin = time.monotonic() + timeout
+        while time.monotonic() < fin:
+            self.asentar(root, 0.05)
+            if abs(root.winfo_width() - ancho) <= 2:
+                self.asentar(root, 0.1)     # deja correr los <Configure>
+                return True
+        return False
+
     def test_15_16_resize_pequeno_apila_y_grande_alinea(self):
         v = self.ventana(geometria="620x440")
-        self.asentar(v.root, 0.3)
+        self.assertTrue(self.esperar_ancho(v.root, 620))
         fila_control = v.etiqueta_hotkey.master
         self.assertEqual(int(fila_control.grid_info()["row"]), 2)
         v.root.geometry("1280x860")
-        self.asentar(v.root, 0.3)
+        self.assertTrue(self.esperar_ancho(v.root, 1280))
         self.assertEqual(int(fila_control.grid_info()["row"]), 0)
         # Nada queda fuera del área visible en horizontal.
         canvas = v._areas_scroll["Dictado"]["canvas"]

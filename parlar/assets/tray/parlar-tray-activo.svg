@@ -1,9 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" role="img" aria-label="ParlAR escuchando">
   <title>ParlAR escuchando</title>
-  <g fill="#A6A29C">
-    <rect x="2" y="6" width="2" height="4" rx="1"/>
-    <rect x="5" y="3" width="2" height="10" rx="1"/>
-    <rect x="8" y="5" width="2" height="6" rx="1"/>
+  <!-- Misma silueta que parlar-tray.svg: voz más contrastada y cursor vivo. -->
+  <g fill="#B3AFA9">
+    <rect x="2" y="7" width="2" height="2" rx="1"/>
+    <rect x="5" y="5" width="2" height="6" rx="1"/>
+    <rect x="8" y="6" width="2" height="4" rx="1"/>
   </g>
-  <rect x="11" y="2" width="2" height="12" rx="1" fill="#D2693F"/>
+  <rect x="11" y="3" width="2" height="10" rx="1" fill="#E26B3C"/>
 </svg>
