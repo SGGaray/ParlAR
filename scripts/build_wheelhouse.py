@@ -95,12 +95,26 @@ def minor_de(python: str) -> int:
     return int(salida[1])
 
 
-def compilar(python: str, nombre: str, version: str, auditwheel: str,
-             salida: Path, temporal: Path) -> Path:
-    venv = temporal / f"venv-{Path(python).name}"
-    if not venv.exists():
+def tag_cpython(minor: int) -> str:
+    return f"cp3{minor}"
+
+
+def exigir_abi(wheel: Path, tag: str) -> None:
+    """El wheel compilado tiene que ser exactamente del CPython que lo hizo."""
+    coincidencia = _TAG_WHEEL.match(wheel.name)
+    if (not coincidencia or coincidencia["py"] != tag
+            or coincidencia["abi"] != tag):
+        raise SystemExit(f"{wheel.name} no es un wheel {tag}-{tag}")
+
+
+def compilar(python: str, tag: str, nombre: str, version: str,
+             auditwheel: str, salida: Path, temporal: Path) -> Path:
+    # Staging por CPython (cp312, cp313...): los intérpretes manylinux se
+    # llaman todos .../bin/python, así que el basename no los distingue.
+    venv = temporal / f"venv-{tag}"
+    if not venv.exists():  # un mismo CPython reutiliza su venv entre paquetes
         subprocess.run([python, "-m", "venv", str(venv)], check=True)
-    crudo = temporal / f"crudo-{nombre}-{Path(python).name}"
+    crudo = temporal / f"crudo-{nombre}-{tag}"
     crudo.mkdir()
     subprocess.run([
         str(venv / "bin" / "python"), "-m", "pip", "wheel",
@@ -111,7 +125,8 @@ def compilar(python: str, nombre: str, version: str, auditwheel: str,
     construidos = list(crudo.glob("*.whl"))
     if len(construidos) != 1:
         raise SystemExit(f"se esperaba un wheel de {nombre}: {construidos}")
-    reparado = temporal / f"reparado-{nombre}-{Path(python).name}"
+    exigir_abi(construidos[0], tag)
+    reparado = temporal / f"reparado-{nombre}-{tag}"
     # auditwheel invoca patchelf: se busca junto a auditwheel (pip install
     # patchelf en el mismo entorno) antes que en el PATH del sistema.
     entorno = dict(os.environ)
@@ -121,6 +136,7 @@ def compilar(python: str, nombre: str, version: str, auditwheel: str,
     resultado = list(reparado.glob("*.whl"))
     if len(resultado) != 1:
         raise SystemExit(f"auditwheel no produjo un wheel único: {resultado}")
+    exigir_abi(resultado[0], tag)
     destino = salida / resultado[0].name
     shutil.copy2(resultado[0], destino)
     return destino
@@ -146,15 +162,18 @@ def main(argv=None) -> int:
         temporal = Path(tmp)
         for python in args.python:
             minor = minor_de(python)
+            tag = tag_cpython(minor)
+            if f"3.{minor}" in manifiesto:
+                raise SystemExit(f"{tag} repetido: {python}")
             nativos = [
                 nombre for nombre, version in sorted(pins.items())
                 if requiere_compilacion(nombre, version, minor)
             ]
-            print(f"==> cp3{minor}: compilar {', '.join(nativos) or 'nada'}")
+            print(f"==> {tag}: compilar {', '.join(nativos) or 'nada'}")
             manifiesto[f"3.{minor}"] = []
             for nombre in nativos:
-                wheel = compilar(python, nombre, pins[nombre], args.auditwheel,
-                                 args.out, temporal)
+                wheel = compilar(python, tag, nombre, pins[nombre],
+                                 args.auditwheel, args.out, temporal)
                 manifiesto[f"3.{minor}"].append(wheel.name)
                 print(f"    {wheel.name}")
     (args.out / "wheelhouse.json").write_text(
