@@ -6,6 +6,7 @@ los cambios se escriben para el próximo inicio mediante ``settings_backend``.
 """
 
 import dataclasses
+from pathlib import Path
 import logging
 import queue
 import subprocess
@@ -796,6 +797,7 @@ class VentanaSettings:
         self.selectores = {}
 
         self.root.title("Configuración de ParlAR")
+        self._aplicar_icono_ventana()
         self.root.protocol("WM_DELETE_WINDOW", self._solicitar_cierre)
         self.root.bind("<Escape>", self._al_escape)
         self._configurar_estilos()
@@ -818,6 +820,24 @@ class VentanaSettings:
 
     def _px(self, valor):
         return self.tema.px(valor)
+
+    def _aplicar_icono_ventana(self):
+        """Marca de ParlAR en la ventana: máster de 16 px para tamaños chicos
+        y el app mark para el resto. Tk sin SVG: se omite sin error."""
+        assets = Path(__file__).with_name("assets")
+        try:
+            imagenes = [
+                self.tk.PhotoImage(master=self.root,
+                                   file=str(assets / "brand" / "parlar-16.svg"),
+                                   format="svg -scaletoheight 16"),
+                self.tk.PhotoImage(master=self.root,
+                                   file=str(assets / "parlar.svg"),
+                                   format="svg -scaletoheight 64"),
+            ]
+            self.root.iconphoto(True, *imagenes)
+            self._iconos_ventana = imagenes   # PhotoImage vive mientras la ref
+        except Exception:
+            self._iconos_ventana = []
 
     def _ajustar_geometria(self):
         """Tamaño compacto escalado por DPI y acotado a la pantalla."""

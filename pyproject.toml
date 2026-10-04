@@ -37,4 +37,4 @@ Repository = "https://github.com/SGGaray/ParlAR"
 include = ["parlar*"]
 
 [tool.setuptools.package-data]
-parlar = ["assets/*.svg"]
+parlar = ["assets/*.svg", "assets/brand/*.svg", "assets/tray/*.svg"]

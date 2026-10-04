@@ -62,6 +62,22 @@ def validar_estado(payload: str) -> dict:
     return datos
 
 
+# El estado se ve en el ícono por FORMA (voz alta + cursor ladrillo, o signo
+# de atención) además de color; el texto del menú lo nombra.
+_ICONOS_TRAY = {
+    "busy": "parlar-tray-activo.svg",
+    "attention": "parlar-tray-atencion.svg",
+    "unavailable": "parlar-tray-atencion.svg",
+}
+
+
+def icono_tray_para(categoria: str, icono_app: Path) -> Path:
+    """Variante de tray para la categoría; el ícono de app si falta."""
+    directorio = Path(icono_app).parent / "tray"
+    candidato = directorio / _ICONOS_TRAY.get(categoria, "parlar-tray.svg")
+    return candidato if candidato.is_file() else Path(icono_app)
+
+
 class TrayGtk:
     def __init__(self, Gtk, GLib, *, ruta_socket, launcher_python, icono):
         self.Gtk = Gtk
@@ -77,7 +93,7 @@ class TrayGtk:
         titulo.set_sensitive(False)
         self.menu.append(titulo)
         self.menu.append(Gtk.SeparatorMenuItem())
-        self.item_estado = Gtk.MenuItem(label="● Preparando…")
+        self.item_estado = Gtk.MenuItem(label="Preparando…")
         self.item_estado.set_sensitive(False)
         self.menu.append(self.item_estado)
         self.item_pausa = Gtk.MenuItem(label="Pausar")
@@ -95,7 +111,9 @@ class TrayGtk:
         self.menu.append(self.item_salir)
         self.menu.show_all()
 
-        self.icono = Gtk.StatusIcon.new_from_file(str(icono))
+        self._icono_app = Path(icono)
+        self._icono_actual = icono_tray_para("available", self._icono_app)
+        self.icono = Gtk.StatusIcon.new_from_file(str(self._icono_actual))
         self.icono.set_title("ParlAR")
         self.icono.set_tooltip_text("ParlAR — Preparando…")
         self.icono.connect("activate", self._abrir_configuracion)
@@ -217,12 +235,11 @@ class TrayGtk:
                 return False
             return True
         self._fallos_socket = 0
-        prefijos = {
-            "available": "●", "paused": "⏸", "busy": "●",
-            "attention": "!", "unavailable": "○",
-        }
-        prefijo = prefijos.get(datos["category"], "○")
-        self.item_estado.set_label(f"{prefijo} {datos['status']}")
+        self.item_estado.set_label(datos["status"])
+        icono = icono_tray_para(datos["category"], self._icono_app)
+        if icono != self._icono_actual:
+            self._icono_actual = icono
+            self.icono.set_from_file(str(icono))
         self.item_pausa.set_label(datos["pause_action"])
         self.item_pausa.set_sensitive(bool(datos["pause_enabled"]))
         self._comando_pausa = datos["pause_command"]
