@@ -6,6 +6,7 @@ ownership. ``scripts/test_release_install.sh`` cubre la instalación real.
 """
 
 import contextlib
+import errno
 import hashlib
 import importlib.util
 import io
@@ -274,7 +275,13 @@ class HerramientasFalsas(pi.Herramientas):
         self.version = version
         self.fallar_pip = False
         self.version_reportada = version
+        self.nvidia = False  # sonda del driver previa al venv
+        self.cuda = False  # lo que reporta CTranslate2 dentro del venv
+        self.error_pip = None  # (paquete, excepción) a lanzar
         self.llamadas = []
+
+    def nvidia_presente(self):
+        return self.nvidia
 
     def crear_venv(self, destino):
         self.llamadas.append(("venv", str(destino)))
@@ -287,6 +294,8 @@ class HerramientasFalsas(pi.Herramientas):
         self.llamadas.append(("pip", argumentos))
         if self.fallar_pip:
             return False
+        if self.error_pip and self.error_pip[0] in argumentos[-1]:
+            raise self.error_pip[1]
         for comando in pi.COMANDOS:
             ruta = python.parent / comando
             ruta.write_text("#!/bin/sh\nexit 0\n")
@@ -299,7 +308,7 @@ class HerramientasFalsas(pi.Herramientas):
         if comando[1:] == ["--version"]:
             salida = f"ParlAR {self.version_reportada}\n"
         elif "get_cuda_device_count" in comando[-1]:
-            codigo = 1
+            codigo = 0 if self.cuda else 1
         elif "importlib" in comando[-1]:
             self.assertAislado(comando)
             salida = f"{self.version}\n"
@@ -345,9 +354,10 @@ class InstaladorBase(unittest.TestCase):
         os.environ["PATH"] = self._path
         self._tmp.cleanup()
 
-    def instalar(self, servicio=False, herramientas=None):
+    def instalar(self, servicio=False, herramientas=None, solo_cpu=False):
         instalador = pi.Instalador(
-            self.origen, self.destino, pi.Opciones(servicio=servicio),
+            self.origen, self.destino,
+            pi.Opciones(servicio=servicio, solo_cpu=solo_cpu),
             herramientas or self.herramientas, renderers=RENDERERS)
         with contextlib.redirect_stdout(io.StringIO()), \
                 contextlib.redirect_stderr(io.StringIO()):
@@ -430,7 +440,8 @@ class InstalacionNueva(InstaladorBase):
         self.instalar()
         argumentos = [a for tipo, a in self.herramientas.llamadas if tipo == "pip"]
         self.assertEqual(argumentos[0], [
-            "-c", str(ROOT / "constraints.txt"), "--only-binary=:all:",
+            "--no-cache-dir", "-c", str(ROOT / "constraints.txt"),
+            "--only-binary=:all:",
             "--find-links", str(self.release / "wheels"),
             f"parlar=={VERSION}"])
         self.assertTrue(all("--only-binary=:all:" in a for a in argumentos))
@@ -614,6 +625,144 @@ class MigracionLegacy(InstaladorBase):
         self.instalar()
         self.assertEqual(self.destino.unit.read_text(),
                          "[Service]\nExecStart=/opt/otro\n")
+
+
+GIB = 1024 * pi.MIB
+
+
+class EspacioEnDisco(InstaladorBase):
+    """Preflight CPU/CUDA, pip sin caché y disco lleno durante pip."""
+
+    def disco(self, libres):
+        uso = shutil._ntuple_diskusage(100 * GIB, 100 * GIB - libres, libres)
+        return unittest.mock.patch.object(
+            pi.shutil, "disk_usage", return_value=uso)
+
+    def preparar_vigente(self):
+        """Instalación vigente + datos del usuario para comparar después."""
+        self.instalar()
+        self.sembrar_datos()
+        self.herramientas.llamadas.clear()
+        return arbol(self.home)
+
+    def assertSinEfectos(self, antes):
+        self.assertEqual(arbol(self.home), antes)  # current, datos, staging
+        self.assertEqual(
+            [p.name for p in self.destino.versions.iterdir()
+             if p.name not in {Path(os.readlink(self.destino.current)).name}],
+            [])
+
+    def test_cuda_con_5_5_gib_aborta_antes_de_pip(self):
+        antes = self.preparar_vigente()
+        self.herramientas.nvidia = self.herramientas.cuda = True
+        with self.disco(int(5.5 * GIB)):
+            with self.assertRaises(pi.ErrorInstalacion) as error:
+                self.instalar()
+        mensaje = str(error.exception)
+        for fragmento in ("5632 MiB libres", "al menos 6144 MiB",
+                          "runtimes CUDA", "--cpu-only", "2048 MiB"):
+            self.assertIn(fragmento, mensaje)
+        self.assertEqual(self.herramientas.llamadas, [])  # ni venv ni pip
+        self.assertSinEfectos(antes)
+
+    def test_cuda_con_6_gib_continua_e_instala_extras(self):
+        self.herramientas.nvidia = self.herramientas.cuda = True
+        with self.disco(6 * GIB):
+            resultado = self.instalar()
+        self.assertTrue(resultado.cuda)
+        paquetes = [a[-1] for tipo, a in self.herramientas.llamadas
+                    if tipo == "pip"]
+        self.assertIn(f"parlar[cuda]=={VERSION}", paquetes)
+
+    def test_cpu_only_con_3_gib_continua_aunque_haya_nvidia(self):
+        self.herramientas.nvidia = self.herramientas.cuda = True
+        with self.disco(3 * GIB):
+            resultado = self.instalar(solo_cpu=True)
+        self.assertFalse(resultado.cuda)
+        self.assertNotIn("[cuda]", str(self.herramientas.llamadas))
+
+    def test_cpu_only_con_menos_de_2_gib_aborta(self):
+        antes = self.preparar_vigente()
+        with self.disco(2 * GIB - pi.MIB):
+            with self.assertRaisesRegex(pi.ErrorInstalacion,
+                                        "al menos 2048 MiB") as error:
+                self.instalar(solo_cpu=True)
+        self.assertNotIn("--cpu-only", str(error.exception))
+        self.assertEqual(self.herramientas.llamadas, [])
+        self.assertSinEfectos(antes)
+
+    def test_preflight_en_instalacion_nueva_no_crea_nada(self):
+        self.herramientas.nvidia = True
+        with self.disco(5 * GIB):
+            with self.assertRaises(pi.ErrorInstalacion):
+                self.instalar()
+        self.assertFalse(os.path.lexists(self.destino.install_home))
+
+    def test_gpu_que_solo_detecta_ctranslate2_reverifica_antes_de_cuda(self):
+        antes = self.preparar_vigente()
+        self.herramientas.cuda = True  # sin driver visible para la sonda
+        with self.disco(3 * GIB):
+            with self.assertRaisesRegex(pi.ErrorInstalacion, "4096 MiB"):
+                self.instalar()
+        self.assertNotIn("[cuda]", str(self.herramientas.llamadas))
+        self.assertSinEfectos(antes)
+
+    def test_pip_base_y_cuda_sin_cache(self):
+        self.herramientas.nvidia = self.herramientas.cuda = True
+        with self.disco(8 * GIB):
+            self.instalar()
+        llamadas = [a for tipo, a in self.herramientas.llamadas if tipo == "pip"]
+        self.assertEqual(len(llamadas), 3)  # base, CUDA y VAD
+        for argumentos in llamadas:
+            self.assertEqual(argumentos[0], "--no-cache-dir", argumentos)
+
+    def _disco_lleno_durante(self, paquete, error):
+        antes = self.preparar_vigente()
+        self.herramientas.nvidia = self.herramientas.cuda = True
+        self.herramientas.error_pip = (paquete, error)
+        with self.disco(8 * GIB):
+            with self.assertRaises(pi.ErrorSinEspacio) as capturado:
+                self.instalar()
+        mensaje = str(capturado.exception)
+        self.assertIn("La instalación se quedó sin espacio durante la "
+                      "instalación de dependencias.", mensaje)
+        self.assertIn("La versión anterior sigue intacta.", mensaje)
+        self.assertSinEfectos(antes)
+        return mensaje
+
+    def test_edquot_durante_pip_cuda_conserva_current(self):
+        mensaje = self._disco_lleno_durante("[cuda]", pi.ErrorSinEspacio(
+            "OSError: [Errno 122] Disk quota exceeded"))
+        self.assertIn("Errno 122", mensaje)
+
+    def test_enospc_durante_pip_base_conserva_current(self):
+        mensaje = self._disco_lleno_durante(
+            "parlar==", OSError(errno.ENOSPC, "No space left on device"))
+        self.assertIn("No space left on device", mensaje)
+
+    def test_pip_real_detecta_disco_lleno_en_su_salida(self):
+        falso = self.base / "python-pip-lleno"
+        falso.write_text(
+            "#!/bin/sh\n"
+            "echo 'ERROR: Could not install packages due to an OSError: "
+            "[Errno 122] Disk quota exceeded' >&2\nexit 1\n")
+        falso.chmod(0o755)
+        with contextlib.redirect_stderr(io.StringIO()) as salida:
+            with self.assertRaisesRegex(pi.ErrorSinEspacio, "Errno 122"):
+                pi.Herramientas().pip_install(falso, ["x"])
+        self.assertIn("Disk quota exceeded", salida.getvalue())
+        otro = self.base / "python-pip-roto"
+        otro.write_text("#!/bin/sh\necho 'ERROR: otra cosa' >&2\nexit 1\n")
+        otro.chmod(0o755)
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertFalse(pi.Herramientas().pip_install(otro, ["x"]))
+
+    def test_fallo_sin_espacio_en_instalacion_nueva(self):
+        self.herramientas.error_pip = ("parlar==", pi.ErrorSinEspacio("Errno 28"))
+        with self.disco(8 * GIB), self.assertRaises(pi.ErrorSinEspacio) as error:
+            self.instalar()
+        self.assertIn("No quedó nada instalado a medias.", str(error.exception))
+        self.assertFalse(os.path.lexists(self.destino.install_home))
 
 
 class Desinstalacion(InstaladorBase):

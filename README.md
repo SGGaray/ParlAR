@@ -46,7 +46,9 @@ actuales) y un micrófono que funcione en tu escritorio. No hace falta
 compilador. Espacio: unos 450 MB por versión instalada (al actualizar se
 conserva la anterior hasta la siguiente actualización), más el modelo de voz
 (unos 500 MB con el modelo `small`) y, con GPU NVIDIA, unos 2,5 GB para sus
-librerías.
+librerías. El instalador exige al menos 2 GB libres para instalar (6 GB si
+va a instalar el soporte para GPU NVIDIA; con `--cpu-only` alcanza con 2 GB)
+y no guarda las descargas en la caché de pip.
 
 ## Instalar
 

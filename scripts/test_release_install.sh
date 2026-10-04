@@ -156,6 +156,11 @@ en_home "$INST/current/venv/bin/python" -c 'import evdev, webrtcvad' || falla "w
 ok "evdev y webrtcvad importan sin compilador"
 if grep -q "compilador invocado" "$TMP/limpio/install1.log"; then falla "se invocó un compilador"; fi
 ok "la instalación no invocó compiladores"
+if [[ -z "$PIP_CACHE" ]]; then
+    ausente "$TMP/pip-cache"
+    ausente "$CACHE/pip"
+    ok "la instalación no dejó caché de pip"
+fi
 
 echo "==> Reinstalación (idempotente) con servicio"
 mkdir -p "$CONF/parlar" "$INST/sesiones"

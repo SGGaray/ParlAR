@@ -45,7 +45,9 @@ or 3.14 with the `venv` module (most current distributions ship it) and a
 microphone that works on your desktop. No compiler needed. Disk space: about
 450 MB per installed version (an update keeps the previous one until the
 next update), plus the speech model (about 500 MB for the `small` model)
-and, with an NVIDIA GPU, about 2.5 GB for its libraries.
+and, with an NVIDIA GPU, about 2.5 GB for its libraries. The installer
+requires at least 2 GB free to install (6 GB when it installs NVIDIA GPU
+support; `--cpu-only` needs 2 GB) and does not keep downloads in pip's cache.
 
 ## Install
 

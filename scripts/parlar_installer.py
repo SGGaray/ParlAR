@@ -25,6 +25,7 @@ import argparse
 import contextlib
 from dataclasses import dataclass, field
 import datetime as _dt
+import errno
 import fcntl
 import json
 import os
@@ -43,8 +44,19 @@ MARCA_VERSION = ".parlar-version"
 NOMBRE_VERSION = re.compile(r"^[0-9][0-9A-Za-z.+]*-[0-9a-f]{8}$")
 LEGACY_VENV = "venv"
 MIB = 1024 * 1024
-ESPACIO_MINIMO = 1536 * MIB  # venv CPU + margen de pip
-ESPACIO_CUDA = 4096 * MIB  # runtimes NVIDIA adicionales
+# Mínimos libres en la raíz de instalación, medidos sobre el pico real: el
+# venv CPU ronda 450 MiB; con CUDA, pip descarga ~1.5 GiB de wheels NVIDIA y
+# los desempaqueta en ~2.3 GiB mientras todavía existen los temporales.
+ESPACIO_CPU = 2048 * MIB
+ESPACIO_CUDA = 6144 * MIB
+# Antes del pip CUDA ya está instalada la base: lo que tiene que quedar libre.
+ESPACIO_CUDA_RESTANTE = ESPACIO_CUDA - ESPACIO_CPU
+# Una instalación no conserva descargas en ~/.cache/pip (cientos de MB o GB).
+PIP_SIN_CACHE = "--no-cache-dir"
+DRIVER_NVIDIA = (Path("/proc/driver/nvidia/version"), Path("/dev/nvidiactl"))
+_SIN_ESPACIO = re.compile(
+    r"Errno 28|Errno 122|No space left on device|Disk quota exceeded",
+    re.IGNORECASE)
 COMANDOS = ("parlar", "parlarctl")
 COMANDO_UNINSTALL = "parlar-uninstall"
 MODULOS_VALIDADOS = (
@@ -55,6 +67,28 @@ MODULOS_VALIDADOS = (
 
 class ErrorInstalacion(RuntimeError):
     """Fallo controlado: el mensaje es para la persona usuaria."""
+
+
+class ErrorSinEspacio(ErrorInstalacion):
+    """El disco o la cuota se llenaron mientras se instalaban dependencias."""
+
+    def __init__(self, detalle: str):
+        super().__init__(detalle)
+        self.detalle = detalle
+
+
+def es_sin_espacio(exc: BaseException) -> bool:
+    if isinstance(exc, ErrorSinEspacio):
+        return True
+    return isinstance(exc, OSError) and exc.errno in {
+        errno.ENOSPC, errno.EDQUOT}
+
+
+def mensaje_sin_espacio(previa: bool, detalle: str) -> str:
+    estado = ("La versión anterior sigue intacta." if previa
+              else "No quedó nada instalado a medias.")
+    return ("La instalación se quedó sin espacio durante la instalación de "
+            f"dependencias.\n{estado}\nDetalle técnico: {detalle}")
 
 
 def info(mensaje: str) -> None:
@@ -239,12 +273,29 @@ class Herramientas:
         subprocess.run([sys.executable, "-m", "venv", str(destino)],
                        check=True, cwd="/")
 
+    def nvidia_presente(self) -> bool:
+        """Sonda previa al venv: hay driver NVIDIA cargado en el sistema."""
+        return any(ruta.exists() for ruta in DRIVER_NVIDIA)
+
     def pip_install(self, python: Path, argumentos: list[str]) -> bool:
+        """Corre pip mostrando su salida; detecta disco o cuota llenos."""
         comando = [
             str(python), "-m", "pip", "install",
             "--disable-pip-version-check", "--no-input", *argumentos,
         ]
-        return subprocess.run(comando, check=False, cwd="/").returncode == 0
+        proceso = subprocess.Popen(
+            comando, cwd="/", stderr=subprocess.PIPE, text=True,
+            errors="replace")
+        sin_espacio = None
+        for linea in proceso.stderr:
+            sys.stderr.write(linea)
+            if sin_espacio is None and _SIN_ESPACIO.search(linea):
+                sin_espacio = linea.strip()
+        if proceso.wait() == 0:
+            return True
+        if sin_espacio is not None:
+            raise ErrorSinEspacio(sin_espacio)
+        return False
 
     def ejecutar(self, comando: list[str]) -> subprocess.CompletedProcess:
         return subprocess.run(
@@ -367,15 +418,22 @@ def es_generado(ruta: Path, marca: str) -> bool:
         return False
 
 
-def verificar_espacio(ruta: Path, minimo: int) -> None:
+def verificar_espacio(ruta: Path, minimo: int, *, cuda: bool = False) -> None:
     existente = ruta
     while not existente.exists():
         existente = existente.parent
     libre = shutil.disk_usage(existente).free
-    if libre < minimo:
-        raise ErrorInstalacion(
-            f"espacio insuficiente en {existente}: libres "
-            f"{libre // MIB} MiB, se necesitan al menos {minimo // MIB} MiB")
+    if libre >= minimo:
+        return
+    mensaje = (f"Espacio insuficiente en {existente}: hay {libre // MIB} MiB "
+               f"libres y se necesitan al menos {minimo // MIB} MiB.")
+    if cuda:
+        mensaje += (
+            "\nCon GPU NVIDIA, ParlAR instala además los runtimes CUDA, que "
+            "ocupan varios GB. Liberá espacio y volvé a ejecutar el "
+            "instalador, o instalá sólo para CPU con ./install.sh --cpu-only "
+            f"(necesita {ESPACIO_CPU // MIB} MiB libres).")
+    raise ErrorInstalacion(mensaje)
 
 
 # ---------------------------------------------------------------------------
@@ -412,7 +470,7 @@ class Instalador:
     # -- pip -------------------------------------------------------------
 
     def _argumentos_pip(self) -> list[str]:
-        argumentos = ["-c", str(self.origen.constraints)]
+        argumentos = [PIP_SIN_CACHE, "-c", str(self.origen.constraints)]
         if self.origen.modo == "release":
             # Sin compilación: todo lo nativo viene en wheels/ o como wheel
             # de PyPI. Un Python sin wheel compatible falla aquí, antes del swap.
@@ -445,7 +503,9 @@ class Instalador:
                 "sys.exit(0 if ctranslate2.get_cuda_device_count() > 0 else 1)",
         ]).returncode == 0:
             info("GPU CUDA detectada por CTranslate2; instalando runtime NVIDIA")
-            verificar_espacio(version_dir, ESPACIO_CUDA)
+            # El preflight ya exigió el mínimo CUDA si la sonda vio el driver;
+            # esto cubre una GPU que sólo CTranslate2 detectó.
+            verificar_espacio(version_dir, ESPACIO_CUDA_RESTANTE, cuda=True)
             if not self._pip(python, self.origen.objetivo("[cuda]")):
                 raise ErrorInstalacion("pip no pudo instalar el runtime NVIDIA")
             cuda = True
@@ -589,7 +649,13 @@ class Instalador:
         if d.install_home.is_symlink():
             raise ErrorInstalacion(
                 f"la raíz de instalación es un enlace simbólico: {d.install_home}")
-        verificar_espacio(d.install_home, ESPACIO_MINIMO)
+        # El pico de CUDA se decide antes de crear nada: la sonda del driver
+        # no necesita el venv. La elección CPU/CUDA sigue siendo del usuario.
+        cuda_probable = (not self.opciones.solo_cpu
+                         and self.h.nvidia_presente())
+        verificar_espacio(
+            d.install_home, ESPACIO_CUDA if cuda_probable else ESPACIO_CPU,
+            cuda=cuda_probable)
 
         raiz_nueva = not d.install_home.exists()
         d.install_home.mkdir(parents=True, exist_ok=True)
@@ -614,7 +680,7 @@ class Instalador:
                 (version_dir / MARCA_VERSION).write_text(
                     f"{APP} {self.origen.version}\n", encoding="utf-8")
                 (version_dir / MARCA_INCOMPLETA).unlink()
-            except BaseException:
+            except BaseException as exc:
                 aviso("La instalación nueva falló; se descarta sin tocar la "
                       "instalación vigente")
                 shutil.rmtree(version_dir, ignore_errors=True)
@@ -624,6 +690,10 @@ class Instalador:
                 if raiz_nueva:
                     with contextlib.suppress(OSError):
                         d.install_home.rmdir()
+                if es_sin_espacio(exc):
+                    detalle = getattr(exc, "detalle", None) or str(exc)
+                    raise ErrorSinEspacio(mensaje_sin_espacio(
+                        previous is not None, detalle)) from exc
                 raise
 
             relativo = f"versions/{nombre}"
