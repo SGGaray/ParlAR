@@ -29,7 +29,7 @@ class PruebasModeloAtajo(unittest.TestCase):
     def test_default_interno_tiene_label_humano(self):
         self.assertEqual(
             etiqueta_atajo(ATAJO_PREDETERMINADO),
-            "Ctrl derecho + Mayús derecha",
+            "Ctrl derecho + Meta derecha",
         )
 
     def test_config_existente_se_parsea(self):
@@ -52,8 +52,12 @@ class PruebasModeloAtajo(unittest.TestCase):
         self.assertIn("derecho", derecha.etiqueta)
 
     def test_modifier_only_es_valido(self):
-        atajo = validar_atajo_principal("<shift_r>+<ctrl_r>")
+        atajo = validar_atajo_principal("<cmd_r>+<ctrl_r>")
         self.assertEqual(atajo.persistido, ATAJO_PREDETERMINADO)
+
+    def test_default_anterior_sigue_siendo_valido_para_configs_existentes(self):
+        atajo = validar_atajo_principal("<ctrl_r>+<shift_r>")
+        self.assertEqual(atajo.persistido, "<ctrl_r>+<shift_r>")
 
     def test_vacio_rechazado(self):
         with self.assertRaisesRegex(ErrorAtajo, "vacío"):
@@ -111,7 +115,7 @@ assert {'tkinter', 'pynput', 'sounddevice'}.isdisjoint(sys.modules)
 class PruebasCapturaAtajo(unittest.TestCase):
     def test_orden_de_captura_produce_forma_canonica(self):
         captura = CapturaAtajo()
-        captura.presionar("<shift_r>")
+        captura.presionar("<cmd_r>")
         captura.presionar("<ctrl_r>")
         self.assertEqual(captura.candidata.persistido, ATAJO_PREDETERMINADO)
 
@@ -182,7 +186,7 @@ class PruebasSesionCapturaAtajo(unittest.TestCase):
 
     def test_usar_devuelve_candidato_y_restaura_listener(self):
         sesion, suspension = self.crear()
-        sesion.presionar("<shift_r>")
+        sesion.presionar("<cmd_r>")
         sesion.presionar("<ctrl_r>")
         self.assertEqual(sesion.usar().persistido, ATAJO_PREDETERMINADO)
         self.assertEqual(suspension.liberaciones, 1)

@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from collections.abc import Callable, Iterable
 
-ATAJO_PREDETERMINADO = "<ctrl_r>+<shift_r>"
+ATAJO_PREDETERMINADO = "<ctrl_r>+<cmd_r>"
 
 
 class ErrorAtajo(ValueError):
