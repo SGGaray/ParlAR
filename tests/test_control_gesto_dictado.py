@@ -324,5 +324,51 @@ class PruebasControlGestoDictado(unittest.TestCase):
         )
 
 
+    def test_notifica_interaccion_visual_sin_cambiar_gesto(self):
+        presionado = []
+        continuo = []
+
+        control = ControlGestoDictado(
+            al_iniciar=lambda: True,
+            al_detener=lambda: True,
+            reloj=self.reloj,
+            timer_factory=self.timers,
+            al_presionado=presionado.append,
+            al_continuo=continuo.append,
+        )
+
+        self.reloj.ahora = 1.000
+        control.presionar()
+
+        self.reloj.ahora = 1.080
+        control.soltar()
+
+        self.reloj.ahora = 1.200
+        control.presionar()
+
+        self.assertEqual(
+            presionado,
+            [True, False, True],
+        )
+        self.assertEqual(
+            continuo,
+            [True],
+        )
+
+        self.reloj.ahora = 1.280
+        control.soltar()
+
+        control.reiniciar()
+
+        self.assertEqual(
+            presionado[-2:],
+            [False, False],
+        )
+        self.assertEqual(
+            continuo[-1],
+            False,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

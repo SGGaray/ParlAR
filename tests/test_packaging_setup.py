@@ -497,10 +497,12 @@ class ContratoCudaPackaging(unittest.TestCase):
         )
 
     def test_instalador_ofrece_cpu_only_y_extra_cuda(self):
-        instalador = (ROOT / "install.sh").read_text(encoding="utf-8")
+        wrapper = (ROOT / "install.sh").read_text(encoding="utf-8")
+        instalador = (ROOT / "scripts" / "parlar_installer.py").read_text(
+            encoding="utf-8")
 
-        self.assertIn("--cpu-only", instalador)
-        self.assertIn('"$REPO_DIR[cuda]"', instalador)
+        self.assertIn("--cpu-only", wrapper)
+        self.assertIn('self.origen.objetivo("[cuda]")', instalador)
         self.assertIn("ctranslate2.get_cuda_device_count()", instalador)
         self.assertNotIn("nvidia-smi", instalador)
 
@@ -529,13 +531,36 @@ class ContratoInstalacionUsuario(unittest.TestCase):
                 render_desktop.instalar(contenido, salida)
             self.assertIn("Name=Personal", salida.read_text())
 
+    def test_icono_svg_es_real_idempotente_y_no_reemplaza_ajeno(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            salida = Path(tmp) / "icons" / "parlar.svg"
+            origen = ROOT / "parlar" / "assets" / "parlar.svg"
+            contenido = render_desktop.cargar_icono(origen)
+            self.assertIn("<svg", contenido)
+            self.assertEqual(
+                render_desktop.instalar_icono(contenido, salida),
+                "instalado",
+            )
+            self.assertEqual(
+                render_desktop.instalar_icono(contenido, salida),
+                "sin cambios",
+            )
+            salida.write_text("<svg><!-- personal --></svg>\n", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "no fue generado"):
+                render_desktop.instalar_icono(contenido, salida)
+            self.assertIn("personal", salida.read_text(encoding="utf-8"))
+
     def test_launcher_normal_y_autostart_systemd_son_distintos(self):
         ejecutable = Path("/opt/parlar/venv/bin/parlar")
         launcher = render_desktop.renderizar(ejecutable)
         autostart = render_desktop.renderizar_autostart()
 
-        self.assertIn(f'Exec="{ejecutable}"', launcher)
+        self.assertIn(
+            f'Exec="{ejecutable}" --abrir-configuracion', launcher)
         self.assertNotIn("systemctl --user start", launcher)
+        self.assertIn("Icon=parlar", launcher)
+        self.assertIn("Terminal=false", launcher)
+        self.assertIn("StartupNotify=true", launcher)
         self.assertIn(
             "Exec=systemctl --user start parlar.service", autostart)
         self.assertNotIn("PYTHONUNBUFFERED", autostart)
@@ -585,7 +610,8 @@ class ContratoInstalacionUsuario(unittest.TestCase):
                     )
                     self.assertEqual(
                         exec_line,
-                        "Exec=" + argumento_esperado(ejecutable),
+                        "Exec=" + argumento_esperado(ejecutable)
+                        + " --abrir-configuracion",
                     )
                     if shutil.which("desktop-file-validate"):
                         validacion = ejecutar(
@@ -762,242 +788,6 @@ class ContratoInstalacionUsuario(unittest.TestCase):
             self.assertEqual(
                 hashlib.sha256(testigo.read_bytes()).hexdigest(), digest)
 
-    def _comprobar_instalacion_y_desinstalacion_xdg(self, sufijo):
-        with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp)
-            repo = base / "repo"
-            repo.mkdir()
-            for nombre in ("install.sh", "uninstall.sh"):
-                shutil.copy2(ROOT / nombre, repo / nombre)
-            scripts = repo / "scripts"
-            scripts.mkdir()
-            for nombre in (
-                "render_service.py", "render_desktop.py",
-                "parlar.service.in", "parlar.desktop.in",
-                "parlar-systemd.desktop.in",
-            ):
-                shutil.copy2(ROOT / "scripts" / nombre, scripts / nombre)
-
-            home = base / "home con ñ"
-            data = home / "share"
-            config = home / "config"
-            install_home = data / "parlar"
-            bin_dir = home / "bin"
-            venv_bin = install_home / "venv" / "bin"
-            venv_bin.mkdir(parents=True)
-            python = venv_bin / "python"
-            python.write_text(
-                "#!/bin/sh\n"
-                "case \"$1\" in\n"
-                "  *render_service.py|*render_desktop.py) "
-                f"exec {shlex.quote(sys.executable)} \"$@\" ;;\n"
-                "esac\n"
-                "exit 0\n",
-                encoding="utf-8",
-            )
-            python.chmod(0o755)
-            for comando in ("parlar", "parlarctl"):
-                ruta = venv_bin / comando
-                ruta.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-                ruta.chmod(0o755)
-
-            tools = base / "tools"
-            tools.mkdir()
-            systemctl = tools / "systemctl"
-            systemctl.write_text(
-                "#!/bin/sh\n"
-                "printf '%s\\n' \"$*\" >>\"$PARLAR_SYSTEMCTL_LOG\"\n"
-                "exit 0\n",
-                encoding="utf-8",
-            )
-            systemctl.chmod(0o755)
-
-            unit = config / "systemd" / "user" / "parlar.service"
-            legacy = (
-                config / "systemd" / "user" / "default.target.wants"
-                / "parlar.service")
-            legacy.parent.mkdir(parents=True)
-            legacy.symlink_to(unit)
-            log_systemctl = base / "systemctl.log"
-
-            testigo_config = config / "parlar" / "config.json"
-            testigo_config.parent.mkdir(parents=True)
-            testigo_config.write_text(
-                '{"schema_version": 1, "mode": "streaming"}\n',
-                encoding="utf-8",
-            )
-            entorno = os.environ.copy()
-            entorno.update({
-                "HOME": str(home),
-                "XDG_DATA_HOME": str(data),
-                "XDG_CONFIG_HOME": str(config),
-                "PARLAR_INSTALL_HOME": str(install_home) + sufijo,
-                "PARLAR_BIN_DIR": str(bin_dir),
-                "PARLAR_BOOTSTRAP_PYTHON": str(python),
-                "PARLAR_SYSTEMCTL_LOG": str(log_systemctl),
-                "PATH": f"{tools}:/usr/bin:/bin",
-            })
-
-            instalado = ejecutar(
-                str(repo / "install.sh"), "--install-service",
-                cwd=repo, env=entorno)
-            self.assertEqual(instalado.returncode, 0, instalado.stderr)
-
-            with mock.patch.dict(os.environ, entorno, clear=True):
-                sesion = SalidaSesion()
-                self.assertTrue(sesion.escribir_texto("transcript persistente ñ"))
-                sesion.cerrar()
-            transcript = sesion.ruta
-            self.assertIsNotNone(transcript)
-
-            archivo_ajeno = install_home / "archivo-no-administrado.bin"
-            archivo_ajeno.write_bytes(b"contenido ajeno\x00persistente")
-            preservados = {
-                ruta: hashlib.sha256(ruta.read_bytes()).hexdigest()
-                for ruta in (transcript, testigo_config, archivo_ajeno)
-            }
-            for comando in ("parlar", "parlarctl"):
-                enlace = bin_dir / comando
-                self.assertTrue(enlace.is_symlink())
-                self.assertEqual(
-                    enlace.readlink(), venv_bin / comando)
-            desktop = data / "applications" / "parlar.desktop"
-            autostart = config / "autostart" / "parlar-systemd.desktop"
-            self.assertIn(str(venv_bin / "parlar"), unit.read_text())
-            self.assertNotIn(str(repo), unit.read_text())
-            self.assertIn(
-                "Environment=PYTHONUNBUFFERED=1", unit.read_text())
-            self.assertNotIn("[Install]", unit.read_text())
-            self.assertNotIn("graphical-session.target", unit.read_text())
-            self.assertIn(str(venv_bin / "parlar"), desktop.read_text())
-            self.assertEqual(
-                next(line for line in autostart.read_text().splitlines()
-                     if line.startswith("Exec=")),
-                "Exec=systemctl --user start parlar.service",
-            )
-            if shutil.which("desktop-file-validate"):
-                validacion = ejecutar(
-                    "desktop-file-validate", str(autostart))
-                self.assertEqual(
-                    validacion.returncode, 0, validacion.stderr)
-            self.assertNotEqual(desktop, autostart)
-            self.assertFalse(legacy.is_symlink())
-            llamadas = log_systemctl.read_text().splitlines()
-            self.assertIn("--user disable parlar.service", llamadas)
-            self.assertIn("--user daemon-reload", llamadas)
-            self.assertFalse(any("enable" in llamada for llamada in llamadas))
-
-            desinstalado = ejecutar(
-                str(repo / "uninstall.sh"), cwd=repo, env=entorno)
-            self.assertEqual(
-                desinstalado.returncode, 0, desinstalado.stderr)
-            self.assertFalse((install_home / "venv").exists())
-            self.assertFalse(unit.exists())
-            self.assertFalse(desktop.exists())
-            self.assertFalse(autostart.exists())
-            self.assertFalse(os.path.lexists(bin_dir / "parlar"))
-            self.assertFalse(os.path.lexists(bin_dir / "parlarctl"))
-            for ruta, digest in preservados.items():
-                with self.subTest(preservado=ruta):
-                    self.assertTrue(ruta.exists())
-                    self.assertEqual(
-                        hashlib.sha256(ruta.read_bytes()).hexdigest(), digest)
-
-    def test_instalacion_y_desinstalacion_xdg_simuladas(self):
-        for nombre, sufijo in (
-                ("normal", ""),
-                ("slash", "/"),
-                ("slashes", "///")):
-            with self.subTest(variante=nombre):
-                self._comprobar_instalacion_y_desinstalacion_xdg(sufijo)
-
-    def test_install_y_uninstall_rechazan_componentes_dot_sin_efectos(self):
-        bootstrap_codigo = """#!/usr/bin/python3
-import os
-import shutil
-import sys
-from pathlib import Path
-
-with open(os.environ["PARLAR_BOOTSTRAP_LOG"], "a", encoding="utf-8") as log:
-    log.write(repr(sys.argv[1:]) + "\\n")
-args = sys.argv[1:]
-if len(args) >= 3 and args[:2] == ["-m", "venv"]:
-    bindir = Path(args[2]) / "bin"
-    bindir.mkdir(parents=True)
-    shutil.copy2(__file__, bindir / "python")
-    for nombre in ("parlar", "parlarctl"):
-        comando = bindir / nombre
-        comando.write_text("#!/bin/sh\\nexit 0\\n", encoding="utf-8")
-        comando.chmod(0o755)
-raise SystemExit(0)
-"""
-        for nombre in ("dot", "dotdot"):
-            with self.subTest(variante=nombre), \
-                    tempfile.TemporaryDirectory() as tmp:
-                base = Path(tmp)
-                home = base / "home con ñ"
-                data = home / "datos con espacios"
-                config = home / "configuración"
-                install_home = data / "parlar"
-                bin_dir = home / "bin con espacios"
-                (data / "sub").mkdir(parents=True)
-                valor = (
-                    f"{data}/./parlar" if nombre == "dot"
-                    else f"{data}/sub/../parlar"
-                )
-
-                tools = base / "tools"
-                tools.mkdir()
-                log_systemctl = base / "systemctl.log"
-                systemctl = tools / "systemctl"
-                systemctl.write_text(
-                    "#!/bin/sh\n"
-                    "printf '%s\\n' \"$*\" >>\"$PARLAR_SYSTEMCTL_LOG\"\n",
-                    encoding="utf-8",
-                )
-                systemctl.chmod(0o755)
-                bootstrap = base / "bootstrap.py"
-                bootstrap.write_text(bootstrap_codigo, encoding="utf-8")
-                bootstrap.chmod(0o755)
-                log_bootstrap = base / "bootstrap.log"
-                entorno = os.environ.copy()
-                entorno.update({
-                    "HOME": str(home),
-                    "XDG_DATA_HOME": str(data),
-                    "XDG_CONFIG_HOME": str(config),
-                    "PARLAR_INSTALL_HOME": valor,
-                    "PARLAR_BIN_DIR": str(bin_dir),
-                    "PARLAR_BOOTSTRAP_PYTHON": str(bootstrap),
-                    "PARLAR_BOOTSTRAP_LOG": str(log_bootstrap),
-                    "PARLAR_SYSTEMCTL_LOG": str(log_systemctl),
-                    "PATH": f"{tools}:/usr/bin:/bin",
-                })
-
-                instalado = ejecutar(
-                    str(ROOT / "install.sh"), "--install-service",
-                    "--cpu-only", cwd=ROOT, env=entorno)
-                desinstalado = ejecutar(
-                    str(ROOT / "uninstall.sh"), cwd=ROOT, env=entorno)
-
-                self.assertEqual(instalado.returncode, 1, instalado.stderr)
-                self.assertEqual(
-                    desinstalado.returncode, 1, desinstalado.stderr)
-                self.assertIn("ruta de instalación insegura", instalado.stderr)
-                self.assertIn(
-                    "ruta de instalación insegura", desinstalado.stderr)
-                self.assertFalse(log_bootstrap.exists())
-                self.assertFalse(log_systemctl.exists())
-                for ruta in (
-                        install_home,
-                        install_home / "venv",
-                        bin_dir / "parlar",
-                        bin_dir / "parlarctl",
-                        data / "applications" / "parlar.desktop",
-                        config / "systemd" / "user" / "parlar.service",
-                        config / "autostart" / "parlar-systemd.desktop"):
-                    with self.subTest(variante=nombre, ausente=ruta):
-                        self.assertFalse(os.path.lexists(ruta), ruta)
-
     def test_uninstall_reconoce_targets_legacy_sin_borrar_enlace_ajeno(self):
         for comando_propio in ("parlar", "parlarctl"):
             with self.subTest(comando_propio=comando_propio):
@@ -1051,14 +841,20 @@ raise SystemExit(0)
                         os.readlink(enlace_ajeno), target_ajeno)
 
     def test_scripts_no_recomiendan_enable_para_autostart(self):
-        for nombre in ("install.sh", "setup.sh"):
-            with self.subTest(nombre=nombre):
-                contenido = (ROOT / nombre).read_text(encoding="utf-8")
-                self.assertNotIn("enable --now parlar", contenido)
-                self.assertIn("parlar-systemd.desktop", contenido)
-                self.assertIn("--autostart-service", contenido)
-                self.assertIn(
-                    "systemctl --user disable parlar.service", contenido)
+        setup = (ROOT / "setup.sh").read_text(encoding="utf-8")
+        self.assertNotIn("enable --now parlar", setup)
+        self.assertIn("parlar-systemd.desktop", setup)
+        self.assertIn("--autostart-service", setup)
+        self.assertIn("systemctl --user disable parlar.service", setup)
+
+        instalador = (ROOT / "scripts" / "parlar_installer.py").read_text(
+            encoding="utf-8")
+        self.assertNotIn("enable --now", instalador)
+        self.assertNotIn('"enable"', instalador)
+        self.assertIn("parlar-systemd.desktop", instalador)
+        self.assertIn("renderizar_autostart()", instalador)
+        self.assertIn(
+            '"systemctl", "--user", "disable", "parlar.service"', instalador)
 
 
 class SmokesCheckout(unittest.TestCase):

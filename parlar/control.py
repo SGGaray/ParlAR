@@ -6,6 +6,8 @@ asigná `parlarctl alternar` a un atajo de teclado del compositor/DE.
 
 Comandos (español primero, alias en inglés entre paréntesis):
   alternar (toggle) | iniciar (start) | detener (stop) | estado (status)
+  pausar (pause) | reanudar (resume)
+  abrir-configuracion (open-settings)
   modo <utterance|frase|streaming> (mode) | salir (quit)
   reescritura <none|ninguna|formal|concise|conciso|email|correo> (rewrite)
 """
@@ -35,6 +37,11 @@ ALIAS_COMANDOS = {
     "toggle": "alternar", "start": "iniciar", "stop": "detener",
     "cancel": "cancelar",
     "status": "estado", "mode": "modo", "rewrite": "reescritura",
+    "operational-status": "estado-operativo",
+    "tray-status": "estado-tray",
+    "open-settings": "abrir-configuracion",
+    "restart": "reiniciar",
+    "pause": "pausar", "resume": "reanudar",
     "quit": "salir",
 }
 
@@ -464,10 +471,10 @@ class ServidorControl:
             pass
 
 
-def enviar_comando(cmd: str) -> str:
+def enviar_comando(cmd: str, *, timeout: float = 3.0) -> str:
     """Lado cliente, usado por el punto de entrada parlarctl."""
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.settimeout(3.0)
+    s.settimeout(timeout)
     try:
         s.connect(str(SOCKET_PATH))
         s.sendall((cmd + "\n").encode("utf-8"))
@@ -487,14 +494,14 @@ def parlarctl_main():
         nargs="*",
         metavar="COMANDO",
         help=("alternar|iniciar|detener|cancelar|estado|modo M|"
-              "reescritura M|salir"),
+              "pausar|reanudar|reescritura M|abrir-configuracion|salir"),
     )
     args = parser.parse_args()
     if not args.comando:
         print(
             "uso: parlarctl "
             "<alternar|iniciar|detener|cancelar|estado|modo M|"
-            "reescritura M|salir>"
+            "pausar|reanudar|reescritura M|abrir-configuracion|salir>"
         )
         print("     (los comandos en inglés también funcionan)")
         sys.exit(2)

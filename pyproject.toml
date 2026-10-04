@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ParlAR"
-version = "1.0.1"
+version = "1.1.0"
 description = "Dictado local a nivel sistema para Linux"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -35,3 +35,6 @@ Repository = "https://github.com/SGGaray/ParlAR"
 
 [tool.setuptools.packages.find]
 include = ["parlar*"]
+
+[tool.setuptools.package-data]
+parlar = ["assets/*.svg", "assets/brand/*.svg", "assets/tray/*.svg"]

@@ -7,8 +7,8 @@ Nota: las claves del JSON se mantienen en inglés a propósito, para no romper
 configuraciones existentes (compatibilidad hacia atrás).
 """
 
-import json
 import ipaddress
+import json
 import math
 import os
 import re
@@ -16,6 +16,12 @@ import urllib.parse
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import ClassVar
+
+from .hotkey import (
+    ATAJO_PREDETERMINADO,
+    ErrorAtajo,
+    validar_atajo_principal,
+)
 
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "parlar"
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -32,6 +38,9 @@ class ErrorConfiguracion(ValueError):
 @dataclass
 class Config:
     SCHEMA_VERSION: ClassVar[int] = 1
+    AUDIO_INPUT_DEFAULT: ClassVar[str] = "default"
+    AUDIO_INPUT_PREFIX: ClassVar[str] = "audio-input:"
+    MAX_AUDIO_INPUT_DEVICE_CHARS: ClassVar[int] = 1024
     MODOS: ClassVar[frozenset[str]] = frozenset({"utterance", "streaming"})
     DISPOSITIVOS: ClassVar[frozenset[str]] = frozenset({"auto", "cpu", "cuda"})
     COMPUTE_TYPES: ClassVar[frozenset[str]] = frozenset(
@@ -47,6 +56,11 @@ class Config:
     INYECTORES: ClassVar[frozenset[str]] = frozenset(
         {"auto", "xdotool", "wtype", "ydotool", "clipboard"}
     )
+    OVERLAY_POSITIONS: ClassVar[frozenset[str]] = frozenset({
+        "top-left", "top-center", "top-right",
+        "middle-left", "middle-right",
+        "bottom-left", "bottom-center", "bottom-right",
+    })
     CAMPOS_DINAMICOS: ClassVar[frozenset[str]] = frozenset(
         {"mode", "rewrite_mode"}
     )
@@ -65,6 +79,9 @@ class Config:
     mode: str = "utterance"            # utterance | streaming
 
     # --- Audio / VAD ---
+    # "default" usa la entrada predeterminada del sistema. Una selección
+    # concreta guarda identidad estable (host API + nombre), nunca el índice.
+    audio_input_device: str = AUDIO_INPUT_DEFAULT
     sample_rate: int = 16000
     frame_ms: int = 20                 # webrtcvad soporta 10/20/30
     vad_aggressiveness: int = 2        # 0..3
@@ -93,16 +110,23 @@ class Config:
     # --- Atajos ---
     # X11: mantener para dictar. Conservamos el nombre histórico del campo.
     # Wayland: usar bindings del compositor con parlarctl.
-    hotkey_toggle: str = "<ctrl_r>+<shift_r>"
+    hotkey_toggle: str = ATAJO_PREDETERMINADO
     hotkey_quit: str = "<ctrl>+<alt>+q"
 
     # --- UI ---
     overlay: bool = True
+    overlay_position: str = "bottom-center"
     notify: bool = True                # notificaciones de escritorio vía notify-send
 
     # --- GuionAR (teleprompter, opcional) ---
-    guionar: bool = False              # enviar texto/VAD al overlay GuionAR
+    guionar: bool = True               # integración automática si GuionAR
+                                       # está abierto; ausente = sin costo
+    guionar_explicit: bool = False     # True sólo si el usuario eligió el
+                                       # valor de ``guionar`` (Settings/CLI)
     guionar_socket: str = ""           # vacío = $XDG_RUNTIME_DIR/guionar.sock
+    guionar_exclusive_output: bool = True  # con GuionAR conectado al empezar
+                                       # la frase, no escribir en la app
+                                       # con foco
 
     # --- Sesión (transcript en disco, opcional) ---
     guardar_sesion: bool = False       # apagado por defecto: dictados son datos
@@ -177,6 +201,25 @@ class Config:
             )
 
         migrados = dict(data)
+        extras = migrados.get("extras")
+        if type(extras) is dict:
+            # Una versión anterior trataría campos aditivos como desconocidos
+            # y los preservaría en extras. Recuperarlos mantiene rollback seguro.
+            extras_migrados = dict(extras)
+            for nombre in ("audio_input_device", "overlay_position",
+                           "guionar_explicit", "guionar_exclusive_output"):
+                if nombre not in extras_migrados:
+                    continue
+                preservada = extras_migrados.pop(nombre)
+                if nombre not in migrados:
+                    migrados[nombre] = preservada
+            migrados["extras"] = extras_migrados
+        if migrados.get("guionar_explicit") is not True \
+                and migrados.get("guionar") is False:
+            # Antes ``guionar`` era opt-in y save() persistía siempre el
+            # default False: no distingue una elección real. Sin la marca
+            # explícita, vale el nuevo default automático.
+            del migrados["guionar"]
         while version < cls.SCHEMA_VERSION:
             if version == 0:
                 # El formato sin versión no registraba si hotkey_toggle era
@@ -252,6 +295,15 @@ class Config:
         enum("mode", self.MODOS)
         enum("rewrite_mode", self.REESCRITURAS)
         enum("injector", self.INYECTORES)
+        enum("overlay_position", self.OVERLAY_POSITIONS)
+
+        if (type(self.audio_input_device) is str
+                and not self.preferencia_entrada_valida(
+                    self.audio_input_device)):
+            errores.append(
+                f"'audio_input_device'={self.audio_input_device!r}: debe ser "
+                "'default' o una identidad canónica de dispositivo de entrada"
+            )
 
         if self.schema_version != self.SCHEMA_VERSION:
             errores.append(
@@ -304,6 +356,13 @@ class Config:
 
         if not self.model_size.strip():
             errores.append("'model_size' no puede estar vacío")
+        try:
+            validar_atajo_principal(
+                self.hotkey_toggle,
+                hotkey_salida=self.hotkey_quit,
+            )
+        except ErrorAtajo as exc:
+            errores.append(f"'hotkey_toggle': {exc}")
         if self.sample_rate != 16000:
             errores.append(
                 f"'sample_rate'={self.sample_rate}: solo se admite 16000 Hz "
@@ -396,6 +455,38 @@ class Config:
     def _nombre_tipo(tipo) -> str:
         return {str: "texto", int: "entero", float: "número decimal",
                 bool: "booleano"}.get(tipo, tipo.__name__)
+
+    @classmethod
+    def preferencia_entrada_valida(cls, valor) -> bool:
+        """Valida el formato persistido sin consultar hardware de audio."""
+        if type(valor) is not str:
+            return False
+        if valor == cls.AUDIO_INPUT_DEFAULT:
+            return True
+        if (len(valor) > cls.MAX_AUDIO_INPUT_DEVICE_CHARS
+                or not valor.startswith(cls.AUDIO_INPUT_PREFIX)):
+            return False
+
+        componentes = valor[len(cls.AUDIO_INPUT_PREFIX):].split(":", 1)
+        if len(componentes) != 2:
+            return False
+        host_codificado, nombre_codificado = componentes
+        try:
+            host_api = urllib.parse.unquote(host_codificado, errors="strict")
+            nombre = urllib.parse.unquote(nombre_codificado, errors="strict")
+        except UnicodeError:
+            return False
+        if (not nombre or nombre != nombre.strip()
+                or host_api != host_api.strip()
+                or any(ord(caracter) < 32 for caracter in host_api + nombre)):
+            return False
+        canonica = (
+            cls.AUDIO_INPUT_PREFIX
+            + urllib.parse.quote(host_api, safe="")
+            + ":"
+            + urllib.parse.quote(nombre, safe="")
+        )
+        return valor == canonica
 
     @staticmethod
     def _url_ollama_valida(valor: str) -> bool:

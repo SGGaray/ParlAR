@@ -4,7 +4,6 @@ import contextlib
 import io
 import json
 import socket
-import socketserver
 import threading
 import time
 import unittest
@@ -121,97 +120,6 @@ class ServidorOllama:
         self.thread.join(2)
 
 
-class PlanTrickleInterno:
-    def __init__(self, etapa, *, repeticiones=30, intervalo=0.04):
-        self.etapa = etapa
-        self.repeticiones = repeticiones
-        self.intervalo = intervalo
-        self.request = b""
-        self.request_recibida = threading.Event()
-        self.finalizada = threading.Event()
-
-
-class _ServidorTrickleInterno(socketserver.ThreadingTCPServer):
-    allow_reuse_address = True
-    daemon_threads = True
-
-
-class _HandlerTrickleInterno(socketserver.BaseRequestHandler):
-    def handle(self):
-        plan = self.server.plan
-        recibido = b""
-        while b"\r\n\r\n" not in recibido:
-            trozo = self.request.recv(4096)
-            if not trozo:
-                return
-            recibido += trozo
-        cabeceras, cuerpo = recibido.split(b"\r\n\r\n", 1)
-        cantidad = 0
-        for linea in cabeceras.split(b"\r\n"):
-            if linea.lower().startswith(b"content-length:"):
-                cantidad = int(linea.split(b":", 1)[1])
-        while len(cuerpo) < cantidad:
-            trozo = self.request.recv(4096)
-            if not trozo:
-                return
-            cuerpo += trozo
-        plan.request = cuerpo
-        plan.request_recibida.set()
-
-        try:
-            if plan.etapa == "headers":
-                self.request.sendall(b"HTTP/1.1 200 OK\r\nX-Slow: ")
-                for _ in range(plan.repeticiones):
-                    self.request.sendall(b"a")
-                    time.sleep(plan.intervalo)
-                respuesta = cuerpo_json("tarde")
-                self.request.sendall(
-                    b"\r\nContent-Length: "
-                    + str(len(respuesta)).encode("ascii")
-                    + b"\r\nConnection: close\r\n\r\n"
-                    + respuesta
-                )
-            elif plan.etapa == "framing":
-                self.request.sendall(
-                    b"HTTP/1.1 200 OK\r\n"
-                    b"Transfer-Encoding: chunked\r\n"
-                    b"Connection: close\r\n\r\n1;"
-                )
-                for _ in range(plan.repeticiones):
-                    self.request.sendall(b"a")
-                    time.sleep(plan.intervalo)
-                self.request.sendall(b"\r\nX\r\n0\r\n\r\n")
-            else:
-                raise AssertionError(plan.etapa)
-        except (BrokenPipeError, ConnectionResetError, OSError):
-            pass
-        finally:
-            plan.finalizada.set()
-
-
-class ServidorTrickleInterno:
-    def __init__(self, plan):
-        self.plan = plan
-        self.server = None
-        self.thread = None
-
-    def __enter__(self):
-        self.server = _ServidorTrickleInterno(
-            ("127.0.0.1", 0), _HandlerTrickleInterno)
-        self.server.plan = self.plan
-        self.thread = threading.Thread(
-            target=lambda: self.server.serve_forever(poll_interval=0.01),
-            daemon=True,
-        )
-        self.thread.start()
-        return f"http://127.0.0.1:{self.server.server_address[1]}"
-
-    def __exit__(self, *_args):
-        self.server.shutdown()
-        self.server.server_close()
-        self.thread.join(2)
-
-
 def cuerpo_json(texto):
     return json.dumps({"response": texto}).encode()
 
@@ -225,12 +133,115 @@ def procesador(url):
     )
 
 
+class RelojFalso:
+    def __init__(self, *instantes):
+        self.instantes = iter(instantes)
+        self.llamadas = []
+
+    def monotonic(self):
+        instante = next(self.instantes)
+        self.llamadas.append(instante)
+        return instante
+
+
+class ProcesoFalso:
+    def __init__(self, *, expira=False, salida=b""):
+        self.expira = expira
+        self.salida = salida
+        self.args = None
+        self.kwargs = None
+        self.comunicaciones = []
+        self.kill_llamadas = 0
+        self.recolectado = False
+        self.returncode = None
+
+    def communicate(self, entrada=None, timeout=None):
+        self.comunicaciones.append((entrada, timeout))
+        if self.expira and not self.kill_llamadas:
+            raise procesador_mod.subprocess.TimeoutExpired(
+                self.args, timeout)
+        self.recolectado = True
+        self.returncode = -9 if self.kill_llamadas else 0
+        return (b"" if self.kill_llamadas else self.salida), b""
+
+    def kill(self):
+        self.kill_llamadas += 1
+
+    def poll(self):
+        return self.returncode
+
+
+class FabricaPopenFalsa:
+    def __init__(self, procesos):
+        self.pendientes = list(procesos)
+        self.creados = []
+
+    def __call__(self, args, **kwargs):
+        proceso = self.pendientes.pop(0)
+        proceso.args = args
+        proceso.kwargs = kwargs
+        self.creados.append(proceso)
+        return proceso
+
+
+class ProcesadorControlado:
+    rewrite_mode = "formal"
+
+    def __init__(self, texto="reescrito"):
+        self.texto = texto
+        self.entrado = threading.Event()
+        self.liberar = threading.Event()
+        self.terminado = threading.Event()
+
+    def procesar_frase(self, _texto):
+        self.entrado.set()
+        self.liberar.wait()
+        self.terminado.set()
+        return procesador_mod.Procesado(texto=self.texto)
+
+    def procesar_fragmento(self, texto):
+        return texto
+
+
+_DEADLINE_PRODUCTIVO = procesador_mod._OLLAMA_DEADLINE_S
+
+
 class PruebasLimitesOllama(unittest.TestCase):
-    def test_respuesta_normal_pequena_conserva_resultado(self):
+    def tearDown(self):
+        self.assertEqual(
+            procesador_mod._OLLAMA_DEADLINE_S, _DEADLINE_PRODUCTIVO)
+
+    def _registrar_app(self, app, liberar=None):
+        self.addCleanup(app.salir)
+        if liberar is not None:
+            self.addCleanup(liberar.set)
+
+    def test_transporte_real_comunica_y_recolecta_con_margen_de_ci(self):
+        procesos = []
+        popen_real = procesador_mod.subprocess.Popen
+
+        def capturar_proceso(*args, **kwargs):
+            proceso_hijo = popen_real(*args, **kwargs)
+            procesos.append(proceso_hijo)
+            return proceso_hijo
+
         plan = PlanRespuesta(cuerpo_json("Texto transformado"))
-        with ServidorOllama(plan) as url:
-            resultado = procesador(url).procesar_frase("texto original")
+        with mock.patch.object(
+                procesador_mod.subprocess, "Popen",
+                side_effect=capturar_proceso), \
+                mock.patch.object(
+                    procesador_mod, "_OLLAMA_DEADLINE_S", 5.0), \
+                ServidorOllama(plan) as url:
+            resultado = procesador(url).procesar_frase(
+                "texto original")
         self.assertEqual(resultado.texto, "Texto transformado")
+        self.assertTrue(plan.request_recibida.is_set())
+        self.assertTrue(plan.finalizada.is_set())
+        self.assertEqual(len(procesos), 1)
+        self.assertIsNotNone(procesos[0].poll())
+        self.assertEqual(procesos[0].returncode, 0)
+        self.assertEqual(
+            procesador_mod._OLLAMA_DEADLINE_S, _DEADLINE_PRODUCTIVO)
 
     def test_content_length_excesivo_se_rechaza_antes_del_body(self):
         liberar = threading.Event()
@@ -275,133 +286,119 @@ class PruebasLimitesOllama(unittest.TestCase):
                         esperado,
                     )
 
-    def test_chunked_trickle_respeta_deadline_total(self):
-        plan = PlanRespuesta(
-            cuerpo_json("ok") + b" " * 20,
-            chunked=True,
-            intervalo=0.03,
-        )
+    def test_deadline_absoluto_entrega_solo_el_restante(self):
+        proceso = ProcesoFalso(salida=b"ok")
+        fabrica = FabricaPopenFalsa([proceso])
+        reloj = RelojFalso(100.0, 104.0, 109.0)
+
         with mock.patch.object(
-                procesador_mod, "_OLLAMA_DEADLINE_S", 0.12), \
-                ServidorOllama(plan) as url, \
-                contextlib.redirect_stderr(io.StringIO()):
-            inicio = time.monotonic()
-            salida = procesador(url)._reescribir_ollama("texto")
-            duracion = time.monotonic() - inicio
-        self.assertIsNone(salida)
-        self.assertGreaterEqual(duracion, 0.08)
-        self.assertLess(duracion, 0.5)
+                procesador_mod.subprocess, "Popen", side_effect=fabrica), \
+                mock.patch.object(procesador_mod, "time", reloj):
+            salida = procesador_mod._ejecutar_ollama_aislado(
+                "http://ollama.test", b"{}", 110.0)
 
-    def test_headers_y_framing_trickle_respetan_deadline_absoluto(self):
-        for etapa in ("headers", "framing"):
-            with self.subTest(etapa=etapa):
-                plan = PlanTrickleInterno(etapa)
-                with mock.patch.object(
-                        procesador_mod, "_OLLAMA_DEADLINE_S", 0.25), \
-                        ServidorTrickleInterno(plan) as url, \
-                        contextlib.redirect_stderr(io.StringIO()):
-                    inicio = time.monotonic()
-                    salida = procesador(url)._reescribir_ollama("texto")
-                    duracion = time.monotonic() - inicio
-                self.assertIsNone(salida)
-                self.assertGreaterEqual(duracion, 0.18)
-                self.assertLess(duracion, 0.65)
-                self.assertTrue(plan.finalizada.wait(0.5))
+        self.assertEqual(salida, "ok")
+        self.assertEqual(proceso.args[3], "10.0")
+        self.assertEqual(proceso.comunicaciones[0][1], 6.0)
+        self.assertEqual(reloj.llamadas, [100.0, 104.0, 109.0])
+        self.assertEqual(proceso.kill_llamadas, 0)
+        self.assertTrue(proceso.recolectado)
+        self.assertEqual(proceso.poll(), 0)
 
-    def test_shutdown_durante_headers_y_framing_termina_por_deadline(self):
-        for etapa in ("headers", "framing"):
-            with self.subTest(etapa=etapa):
-                plan = PlanTrickleInterno(etapa)
-                with mock.patch.object(
-                        procesador_mod, "_OLLAMA_DEADLINE_S", 0.25), \
-                        ServidorTrickleInterno(plan) as url, \
-                        contextlib.redirect_stderr(io.StringIO()):
-                    app, mic, *_ = crear_app(
-                        mic=MicFalso(), proc=procesador(url))
-                    self.assertTrue(app.iniciar_grabacion())
-                    self.assertTrue(mic.enviar(1))
-                    mic.enviar(0)
-                    self.assertTrue(plan.request_recibida.wait(2))
-                    inicio = time.monotonic()
-                    app.salir()
-                    duracion = time.monotonic() - inicio
-                self.assertLess(duracion, 0.65)
-                self.assertEqual(app.estado, EstadoApp.CLOSED)
-                self.assertFalse(app._trabajador_hilo.is_alive())
-                self.assertTrue(plan.finalizada.wait(0.5))
+    def test_deadline_agotado_antes_de_comunicar_mata_y_recolecta(self):
+        proceso = ProcesoFalso(salida=b"no debe publicarse")
+        fabrica = FabricaPopenFalsa([proceso])
+        reloj = RelojFalso(100.0, 111.0)
 
-    def test_cancel_y_start_descartan_trickle_viejo_sin_output(self):
-        for etapa in ("headers", "framing"):
-            with self.subTest(etapa=etapa):
-                plan = PlanTrickleInterno(etapa)
-                with mock.patch.object(
-                        procesador_mod, "_OLLAMA_DEADLINE_S", 0.25), \
-                        ServidorTrickleInterno(plan) as url, \
-                        contextlib.redirect_stderr(io.StringIO()):
-                    app, mic, _, _, _, _, sesion, _ = crear_app(
-                        mic=MicFalso(), proc=procesador(url))
-                    self.assertTrue(app.iniciar_grabacion())
-                    generacion_vieja = app.generacion_activa
-                    self.assertTrue(mic.enviar(1))
-                    mic.enviar(0)
-                    self.assertTrue(plan.request_recibida.wait(2))
-                    self.assertTrue(app.cancelar_grabacion())
-                    self.assertTrue(app.iniciar_grabacion())
-                    self.assertNotEqual(
-                        generacion_vieja, app.generacion_activa)
-                    self.assertTrue(plan.finalizada.wait(0.65))
-                    limite = time.monotonic() + 0.65
-                    while (app._trabajador_hilo.is_alive()
-                           and time.monotonic() < limite):
-                        time.sleep(0.01)
-                    self.assertEqual(sesion.textos, [])
-                    self.assertEqual(app.estado, EstadoApp.RECORDING)
-                    app.salir()
+        with mock.patch.object(
+                procesador_mod.subprocess, "Popen", side_effect=fabrica), \
+                mock.patch.object(procesador_mod, "time", reloj), \
+                self.assertRaises(TimeoutError):
+            procesador_mod._ejecutar_ollama_aislado(
+                "http://ollama.test", b"{}", 110.0)
+
+        self.assertEqual(proceso.kill_llamadas, 1)
+        self.assertEqual(proceso.comunicaciones, [(None, None)])
+        self.assertTrue(proceso.recolectado)
+        self.assertEqual(proceso.poll(), -9)
+
+    def test_timeout_expired_mata_y_recolecta(self):
+        proceso = ProcesoFalso(expira=True)
+        fabrica = FabricaPopenFalsa([proceso])
+        reloj = RelojFalso(100.0, 104.0)
+
+        with mock.patch.object(
+                procesador_mod.subprocess, "Popen", side_effect=fabrica), \
+                mock.patch.object(procesador_mod, "time", reloj), \
+                self.assertRaises(TimeoutError):
+            procesador_mod._ejecutar_ollama_aislado(
+                "http://ollama.test", b"{}", 110.0)
+
+        self.assertEqual(proceso.kill_llamadas, 1)
+        self.assertEqual(len(proceso.comunicaciones), 2)
+        self.assertEqual(proceso.comunicaciones[0][1], 6.0)
+        self.assertEqual(proceso.comunicaciones[1], (None, None))
+        self.assertTrue(proceso.recolectado)
+        self.assertEqual(proceso.poll(), -9)
+
+    def test_cancel_y_start_descartan_rewrite_viejo_sin_output(self):
+        proc = ProcesadorControlado()
+        app, mic, _, _, _, _, sesion, _ = crear_app(
+            mic=MicFalso(), proc=proc)
+        self._registrar_app(app, proc.liberar)
+        self.assertTrue(app.iniciar_grabacion())
+        generacion_vieja = app.generacion_activa
+        emitido_viejo = threading.Event()
+        emitir_original = app._emitir
+
+        def emitir_observado(valor, generacion):
+            try:
+                return emitir_original(valor, generacion)
+            finally:
+                if generacion == generacion_vieja:
+                    emitido_viejo.set()
+
+        app._emitir = emitir_observado
+        self.assertTrue(mic.enviar(1))
+        mic.enviar(0)
+        self.assertTrue(proc.entrado.wait(2))
+        self.assertTrue(app.cancelar_grabacion())
+        self.assertTrue(app.iniciar_grabacion())
+        self.assertNotEqual(generacion_vieja, app.generacion_activa)
+        proc.liberar.set()
+        self.assertTrue(emitido_viejo.wait(2))
+        self.assertTrue(proc.terminado.is_set())
+        self.assertEqual(sesion.textos, [])
+        self.assertEqual(app.estado, EstadoApp.RECORDING)
+        app.salir()
+        self.assertFalse(app._trabajador_hilo.is_alive())
 
     def test_timeouts_repetidos_recolectan_procesos_y_permiten_reintento(self):
-        procesos = []
-        popen_real = procesador_mod.subprocess.Popen
-
-        def capturar_proceso(*args, **kwargs):
-            proceso_hijo = popen_real(*args, **kwargs)
-            procesos.append(proceso_hijo)
-            return proceso_hijo
-
-        hilos_ollama_antes = {
-            hilo.ident for hilo in threading.enumerate()
-            if "ollama" in hilo.name.lower()
-        }
+        procesos = [ProcesoFalso(expira=True) for _ in range(3)]
+        procesos.append(ProcesoFalso(salida=b"reintento sano"))
+        fabrica = FabricaPopenFalsa(procesos)
+        reloj = RelojFalso(*([100.0] * 13))
         with mock.patch.object(
                 procesador_mod.subprocess, "Popen",
-                side_effect=capturar_proceso), \
-                mock.patch.object(
-                    procesador_mod, "_OLLAMA_DEADLINE_S", 0.20), \
+                side_effect=fabrica), \
+                mock.patch.object(procesador_mod, "time", reloj), \
                 contextlib.redirect_stderr(io.StringIO()):
-            for _ in range(3):
-                plan = PlanTrickleInterno("headers")
-                with ServidorTrickleInterno(plan) as url:
-                    self.assertIsNone(
-                        procesador(url)._reescribir_ollama("texto"))
-                    self.assertTrue(plan.finalizada.wait(0.5))
+            proc = procesador("http://ollama.test")
+            resultados = [
+                proc._reescribir_ollama("texto") for _ in range(4)]
 
-            normal = PlanRespuesta(cuerpo_json("reintento sano"))
-            with ServidorOllama(normal) as url:
-                self.assertEqual(
-                    procesador(url)._reescribir_ollama("texto"),
-                    "reintento sano",
-                )
-
-        self.assertEqual(len(procesos), 4)
-        self.assertTrue(all(proceso.poll() is not None for proceso in procesos))
-        self.assertTrue(all(
-            proceso.returncode is not None for proceso in procesos))
         self.assertEqual(
-            {
-                hilo.ident for hilo in threading.enumerate()
-                if "ollama" in hilo.name.lower()
-            },
-            hilos_ollama_antes,
-        )
+            resultados, [None, None, None, "reintento sano"])
+        self.assertEqual(fabrica.creados, procesos)
+        self.assertEqual(len({id(proceso) for proceso in procesos}), 4)
+        for proceso in procesos[:3]:
+            self.assertEqual(proceso.kill_llamadas, 1)
+            self.assertEqual(len(proceso.comunicaciones), 2)
+            self.assertTrue(proceso.recolectado)
+            self.assertEqual(proceso.poll(), -9)
+        self.assertEqual(procesos[3].kill_llamadas, 0)
+        self.assertTrue(procesos[3].recolectado)
+        self.assertEqual(procesos[3].poll(), 0)
 
     def test_json_truncado_invalido_y_corte_fallan_controlado(self):
         planes = (
@@ -423,6 +420,7 @@ class PruebasLimitesOllama(unittest.TestCase):
             proc = procesador(url)
             app, mic, _, _, _, _, sesion, _ = crear_app(
                 mic=MicFalso(), proc=proc)
+            self._registrar_app(app)
             self.assertTrue(app.iniciar_grabacion())
             generacion_vieja = app.generacion_activa
             emitido_viejo = threading.Event()
@@ -451,25 +449,43 @@ class PruebasLimitesOllama(unittest.TestCase):
             app.salir()
 
     def test_shutdown_durante_rewrite_termina_acotado(self):
-        plan = PlanRespuesta(
-            cuerpo_json("ok") + b" " * 80,
-            chunked=True,
-            intervalo=0.03,
-        )
-        with mock.patch.object(
-                procesador_mod, "_OLLAMA_DEADLINE_S", 0.12), \
-                ServidorOllama(plan) as url:
-            app, mic, *_ = crear_app(mic=MicFalso(), proc=procesador(url))
-            self.assertTrue(app.iniciar_grabacion())
-            self.assertTrue(mic.enviar(1))
-            mic.enviar(0)
-            self.assertTrue(plan.request_recibida.wait(2))
-            inicio = time.monotonic()
-            app.salir()
-            duracion = time.monotonic() - inicio
-            self.assertLess(duracion, 0.5)
-            self.assertEqual(app.estado, EstadoApp.CLOSED)
-            self.assertFalse(app._trabajador_hilo.is_alive())
+        proc = ProcesadorControlado(texto="ok")
+        app, mic, *_ = crear_app(mic=MicFalso(), proc=proc)
+        self._registrar_app(app)
+        proc.liberar = app.saliendo
+        self.assertTrue(app.iniciar_grabacion())
+        self.assertTrue(mic.enviar(1))
+        mic.enviar(0)
+        self.assertTrue(proc.entrado.wait(2))
+        app.salir()
+        self.assertTrue(proc.terminado.is_set())
+        self.assertEqual(app.estado, EstadoApp.CLOSED)
+        self.assertFalse(app._trabajador_hilo.is_alive())
+
+    def test_cleanup_de_app_corre_aunque_haya_assertion_temprana(self):
+        creado = {}
+
+        class CasoConFallo(unittest.TestCase):
+            def runTest(caso):
+                proc = ProcesadorControlado(texto="ok")
+                app, mic, *_ = crear_app(mic=MicFalso(), proc=proc)
+                creado["app"] = app
+                caso.addCleanup(app.salir)
+                caso.addCleanup(proc.liberar.set)
+                caso.assertTrue(app.iniciar_grabacion())
+                caso.assertTrue(mic.enviar(1))
+                mic.enviar(0)
+                caso.assertTrue(proc.entrado.wait(2))
+                caso.fail("falla deliberada posterior al inicio del worker")
+
+        resultado = unittest.TestResult()
+        CasoConFallo().run(resultado)
+
+        self.assertEqual(len(resultado.failures), 1)
+        self.assertEqual(resultado.errors, [])
+        app = creado["app"]
+        self.assertEqual(app.estado, EstadoApp.CLOSED)
+        self.assertFalse(app._trabajador_hilo.is_alive())
 
     def test_sentinels_de_request_y_response_no_aparecen_en_logs(self):
         request_sentinel = "requestsentinel7f89"

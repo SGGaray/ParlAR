@@ -1,0 +1,36 @@
+name: Compatibilidad
+description: ParlAR no funciona bien en una distribución, escritorio o hardware concreto.
+title: "[Compatibilidad] "
+labels: ["compatibility"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Revisá antes la compatibilidad y las limitaciones conocidas en el [README](https://github.com/SGGaray/ParlAR#readme).
+  - type: input
+    id: entorno
+    attributes:
+      label: Sistema
+      description: Distribución, X11 o Wayland, escritorio, CPU o GPU NVIDIA
+      placeholder: Fedora 43, X11, GNOME, NVIDIA RTX 3060
+    validations:
+      required: true
+  - type: textarea
+    id: problema
+    attributes:
+      label: Qué no funciona
+      description: Qué esperabas y qué pasa en este entorno.
+    validations:
+      required: true
+  - type: textarea
+    id: comparacion
+    attributes:
+      label: ¿Funciona en otro entorno? (opcional)
+      description: Por ejemplo, si funciona en X11 y no en Wayland.
+  - type: input
+    id: version
+    attributes:
+      label: Versión o commit de ParlAR
+      placeholder: "El resultado de `parlar --version`, o el commit si usás el código fuente"
+    validations:
+      required: true

@@ -128,7 +128,17 @@ class PruebasContextoConfig(unittest.TestCase):
             mock.patch("parlar.app.ServidorControl") as control,
             mock.patch("parlar.app.DaemonAtajos"),
         ):
-            App(cfg, guardia_instancia=guardia)
+            App(
+                cfg,
+                guardia_instancia=guardia,
+                listar_entradas=lambda: (
+                    mock.Mock(indice=4, predeterminado=True),
+                ),
+                resolver_entrada=lambda _seleccion, _inventario: mock.Mock(
+                    indice=4,
+                    usando_fallback=False,
+                ),
+            )
 
         motor.assert_called_once_with(
             "small",

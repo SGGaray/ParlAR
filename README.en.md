@@ -1,332 +1,372 @@
+<p align="center">
+  <img src="parlar/assets/parlar.svg" width="96" height="96" alt="ParlAR icon">
+</p>
+
 # ParlAR
 
-Local, system-wide voice dictation for Linux. ParlAR listens only while you
-activate it, transcribes with faster-whisper, and delivers text to the focused
-application. It has no telemetry and needs no cloud account or API key.
+**Local voice dictation for Linux.** You speak, and ParlAR types into the
+application you have open.
 
-Audio capture and transcription are local. Text leaves the machine only when
-you explicitly configure an external service, such as a remote `ollama_url`.
-The optional GuionAR integration uses local Unix IPC.
+No account. No telemetry. Speech recognition runs on your computer.
 
-> Versión principal en español: [README.md](README.md)
+> Español: [README.md](README.md)
 
-ParlAR 1.0.x is the stable Linux line. v1.0.0 was physically validated on
-Fedora/X11 with LightDM and NVIDIA CUDA; the CPU path has prior physical
-evidence and automated coverage. Wayland has documented backends and compositor
-bindings, but was not physically validated for this release. Any linked browser
-demo is illustrative only: it does not run the native audio, hotkey, IPC, or
-injection architecture described here.
+## What it does
 
-## Requirements
+- **Dictation into any application.** Hold the shortcut, speak and release:
+  the text appears at the cursor (editor, browser, chat, terminal).
+- **Two ways to dictate.** Hold the shortcut while you speak, or double-tap
+  it for continuous dictation until you double-tap again.
+- **Cancel without typing.** `Esc` discards anything not typed yet.
+- **Phrase by phrase or incremental.** Phrase mode types when you pause;
+  Incremental types while you speak.
+- **Voice commands** to delete the last sentence, stop dictation or insert
+  line breaks (see [Voice commands](#voice-commands)).
+- **Words and names.** Tell ParlAR which terms, acronyms or names it should
+  recognize better.
+- **Settings** in a window of its own, with a system tray icon and a small
+  visual indicator while you dictate.
+- **Works with [GuionAR](https://github.com/SGGaray/GuionAR)**, the
+  teleprompter: when it is open, it follows your voice with no setup.
 
-- Desktop Linux; the provisioning scripts support Debian/Ubuntu and Fedora.
-- Python 3.12 or newer with `venv`.
-- PortAudio and an input device exposed through PipeWire or PulseAudio.
-- X11: `xdotool` plus `xclip` for Unicode delivery.
-- Wayland: `wtype` or `ydotool`; compatible clipboard tools provide a
-  copy-only fallback.
-- Optional: Tk for the indicator, `notify-send` for notifications, and an
-  NVIDIA GPU for faster transcription.
+## Compatibility
 
-Typical packages:
+| | Status |
+|---|---|
+| Linux on X11 | Supported. Validated on Fedora with X11. |
+| Linux on Wayland | Works with limitations: your desktop has to provide the global shortcut (see [Wayland](#wayland)). Not validated by hand. |
+| Processor (CPU) | Supported on any machine. The default when no compatible GPU is present. |
+| NVIDIA GPU | Optional. When available, ParlAR uses it to transcribe faster. |
+| Debian/Ubuntu and Fedora | Distributions with installation instructions. |
+| Windows, macOS | Not supported. |
+
+**Requirements:** Linux x86_64 with glibc 2.28 or newer, Python 3.12, 3.13
+or 3.14 with the `venv` module (most current distributions ship it) and a
+microphone that works on your desktop. No compiler needed. Disk space: about
+450 MB per installed version (an update keeps the previous one until the
+next update), plus the speech model (about 500 MB for the `small` model)
+and, with an NVIDIA GPU, about 2.5 GB for its libraries.
+
+## Install
+
+ParlAR is installed from the published release: one archive with everything
+needed for your user account. The installer sets ParlAR up in its own
+environment and adds it to the applications menu. `sudo` is only needed for
+the system packages.
+
+**1. System packages**
 
 ```bash
 # Debian / Ubuntu
-sudo apt install python3 python3-venv python3-dev portaudio19-dev \
-  python3-tk libnotify-bin xdotool xclip wtype wl-clipboard
+sudo apt install python3 python3-venv libportaudio2 python3-tk python3-gi \
+  gir1.2-gtk-3.0 libnotify-bin xdotool xclip wtype wl-clipboard
 
 # Fedora
-sudo dnf install python3 python3-devel portaudio-devel python3-tkinter \
+sudo dnf install python3 portaudio python3-tkinter python3-gobject gtk3 \
   libnotify xdotool xclip wtype wl-clipboard
 ```
 
-`ydotool` is a uinput-based Wayland alternative and requires its daemon and
-the permissions documented by your distribution.
+**2. Download** `parlar-<version>-linux-x86_64.tar.gz` and `SHA256SUMS` from
+the [releases](https://github.com/SGGaray/ParlAR/releases/latest) page into
+the same folder.
 
-## User installation
+**3. Verify** that the download is complete and unmodified:
 
 ```bash
-git clone https://github.com/SGGaray/ParlAR.git
-cd ParlAR
+sha256sum -c --ignore-missing SHA256SUMS
+```
+
+It must print `OK` for the downloaded archive.
+
+**4. Extract and install**
+
+```bash
+tar -xzf parlar-*-linux-x86_64.tar.gz
+cd parlar-*/
 ./install.sh --preload-model
 ```
 
-The installer creates an isolated environment under
-`$XDG_DATA_HOME/parlar/venv` (normally `~/.local/share/parlar/venv`), links
-`parlar` and `parlarctl` into `~/.local/bin`, and generates a desktop
-launcher. It never enables a service implicitly. Add `~/.local/bin` to your
-`PATH` if your shell does not already include it.
+`--preload-model` downloads the speech model during installation (several
+hundred MB). Without it, the model is downloaded the first time you open
+ParlAR. If the installer finds a compatible NVIDIA GPU, it also installs what
+is needed to use it; `--cpu-only` skips that.
 
-`--preload-model` downloads Whisper `small` during installation. Without it,
-the first run downloads the model. Provisioning requires network access; normal
-runtime does not.
-
-To install the optional service integration:
+To let ParlAR **start automatically when you log in**, install with:
 
 ```bash
-./install.sh --install-service
+./install.sh --preload-model --install-service
 ```
 
-The unit is deliberately **static**: systemd owns start/stop/restart/status,
-but the unit is not enabled in `default.target`. Instead,
-`~/.config/autostart/parlar-systemd.desktop` starts it after graphical login,
-when the session has published `DISPLAY` and `XAUTHORITY`. This avoids early
-startup on desktops where `graphical-session.target` remains inactive. The
-normal application launcher remains a separate artifact.
+Then turn it on or off in Settings → Application.
 
-To start ParlAR immediately from the current graphical terminal:
+**5. Open** ParlAR from the applications menu.
 
-```bash
-systemctl --user start parlar.service
-systemctl --user status parlar.service
-```
+You no longer need the extracted folder after installing: you can delete
+it. ParlAR lives in `~/.local/share/parlar` and the `parlar`, `parlarctl` and
+`parlar-uninstall` commands in `~/.local/bin`.
 
-Do not run `systemctl --user enable`: reinstalling with `--install-service`
-removes legacy `default.target` links to prevent duplicate autostart. The
-service points to the self-contained installation, not the source checkout.
+## Open ParlAR
 
-`setup.sh` remains available for development from a checkout; it is not the
-primary end-user distribution path.
+Look for **ParlAR** in your applications menu. Opening it:
 
-## First run and controls
+- opens the **Settings** window;
+- leaves ParlAR running in the background, ready to dictate, even after you
+  close that window.
 
-```bash
-parlar
-```
+If ParlAR is already running, opening it from the menu only brings up
+Settings. A click on the tray icon opens Settings too.
 
-On X11, the default control is **right Ctrl + right Shift**:
+The tray icon menu shows the current status and lets you **Pause**, open
+**Settings…**, **Restart** and **Quit**.
 
-- Hold both keys to START immediately, without waiting for VAD.
-- Speak while holding them.
-- Release the combination to STOP immediately and finalize the unit.
-- Two short taps within 300 ms enter continuous mode in the same session.
-  Double-tap again to leave continuous mode and stop.
-- **Esc** CANCELS the active session. It discards pending audio/results, does
-  not undo, and does not remove already confirmed output.
+## Dictate
 
-When available, the indicator displays state and accepts a left-click toggle.
-`--sin-indicador` / `--no-overlay` runs without that UI while keyboard and
-IPC controls remain available.
+The default shortcut is **right Ctrl + right Super/Windows key**. You can
+change it in Settings → Dictation. If you are coming from an earlier
+version, ParlAR keeps the shortcut you already had; Settings shows the
+current one.
 
-## `parlarctl`
+| Action | What happens |
+|---|---|
+| Hold the shortcut | Starts listening immediately. |
+| Release the shortcut | Stops and types what you said. |
+| Quick double tap | Continuous dictation: listens until the next double tap. |
+| `Esc` | Cancels anything pending. Text already typed is not removed. |
 
-```bash
-parlarctl iniciar
-parlarctl detener
-parlarctl cancelar
-parlarctl alternar
-parlarctl estado
-parlarctl modo streaming
-parlarctl reescritura formal
-parlarctl salir
-```
+While you dictate, a small indicator appears without taking focus from the
+application you are typing into.
 
-English aliases are also accepted: `start`, `stop`, `cancel`, `toggle`,
-`status`, `mode`, `rewrite`, and `quit`. CANCEL and STOP are deliberately
-different: STOP finalizes accepted input; CANCEL invalidates the generation and
-discards pending work.
+### Voice commands
 
-The daemon uses a `0600` socket at `$XDG_RUNTIME_DIR/parlar.sock`. Ordered
-shutdown removes its own socket. `SIGTERM`, including systemd stop, follows
-the normal cleanup path.
+Commands are recognized only when the whole phrase is the command. ParlAR
+listens for Spanish commands first; the English ones are:
+
+| Say | Does |
+|---|---|
+| "delete last sentence" | Deletes the last sentence ParlAR typed, when it is safe to do so. |
+| "stop dictation", "stop listening" | Ends dictation. |
+| "new line" | Line break. * |
+| "new paragraph" | New paragraph. * |
+| "send", "send message" | Presses Enter. * |
+
+\* Commands that press Enter are **off by default**: in a terminal or a
+chat, a misrecognized phrase could run or send something. To enable them,
+add `"comando_enviar": true` to `~/.config/parlar/config.json` and restart
+ParlAR. Read [SECURITY.md](SECURITY.md) first.
 
 ### Wayland
 
-ParlAR does not pretend it can globally capture keys on Wayland. Bind an
-absolute command in your compositor:
+Wayland does not let applications capture a global shortcut. Create a
+custom shortcut in your desktop's keyboard settings (GNOME, KDE and others
+support this) that runs:
 
 ```text
-/home/YOUR_USER/.local/bin/parlarctl alternar
+~/.local/bin/parlarctl alternar
 ```
 
-GNOME and KDE expose custom shortcuts in their settings. A generic Hyprland
-binding is:
+Each press starts or ends dictation. If your desktop needs a full path, use
+`/home/YOUR_USER/.local/bin/parlarctl alternar`.
 
-```text
-bind = CTRL SHIFT, D, exec, ~/.local/bin/parlarctl alternar
-```
+## Settings
 
-Separate `iniciar`, `detener`, and `cancelar` bindings are also supported.
+Changes are saved from the window. Some apply right away and others need a
+ParlAR restart; the window tells you and offers a **Restart ParlAR** button.
+The interface is in Spanish; the section names below are translated.
 
-## Modes
+**Dictation** (Dictado)
+- **Dictation shortcut**: change the combination or restore the default.
+- **Strategy**: Phrase by phrase or Incremental.
+- **Rewriting**: None, Formal, Concise or Email.
+- **Language**: a code such as `es` or `en`. Empty detects the language.
+- **Words and names**: terms ParlAR should recognize better, one per line.
 
-`utterance` is the default; a 600 ms pause closes a phrase. `streaming`
-confirms prefixes while you speak and never retracts delivered text.
+**Microphone** (Micrófono)
+- Choose the microphone or use the system default.
+- **Test microphone** to check the level before dictating. That audio is
+  not saved.
+
+**GuionAR**
+- Connection status with GuionAR.
+- **Integrate with GuionAR** and **Use GuionAR as exclusive output** (see
+  [Using it with GuionAR](#using-it-with-guionar)).
+
+**Application** (Aplicación)
+- **Indicator**: show or hide it, and choose where it appears.
+- **Start ParlAR when you log in**: available if you installed with
+  `--install-service`.
+- **Keep transcripts**: saves a local copy of every dictation. Off by
+  default.
+
+**Advanced** (Avanzado)
+- **Model**: speech model size. Larger is usually more accurate and slower.
+- **Accelerator**: Automatic, CPU or NVIDIA CUDA. Automatic uses the GPU
+  when available and the processor otherwise.
+- **Compute precision**: numeric format of the model. Automatic works well
+  in most cases.
+- **Typing method**: how text is delivered (automatic, X11, Wayland,
+  virtual keyboard or clipboard only).
+
+Settings are stored in `~/.config/parlar/config.json`.
+
+## Using it with GuionAR
+
+[GuionAR](https://github.com/SGGaray/GuionAR) is a teleprompter that can
+follow your voice while you read a script, or show your dictation live.
+
+- **Nothing to set up.** When GuionAR is open, ParlAR connects on its own.
+  It does not matter which one you open first.
+- **Follows your voice live**: GuionAR receives what you say while you are
+  speaking, not only when each phrase ends.
+- **If GuionAR is not open**, ParlAR works as usual. If you close and reopen
+  it, ParlAR reconnects without restarting.
+- **Exclusive output** (on by default): while GuionAR is connected, ParlAR
+  sends dictation only to GuionAR and does not type into the application you
+  have open. Without GuionAR, it types as usual. Changing it applies from the
+  next phrase.
+- **To turn the integration off**, disable **Integrate with GuionAR** in
+  Settings → GuionAR.
+
+Anything dictated while GuionAR is closed is not sent to it later.
+
+## Privacy
+
+- **Speech recognition is local.** Audio is processed on your computer and
+  is not sent to any service.
+- **Audio is not saved.**
+- **No telemetry, no account.**
+- **Optional transcripts.** Only if you enable **Keep transcripts**: they are
+  saved as unencrypted text in `~/.local/share/parlar/sesiones/`, readable
+  only by your user. ParlAR never deletes them; you do.
+- **Logs.** Diagnostic messages contain states and timings, not audio or
+  dictated text.
+- **Settings** in `~/.config/parlar/config.json`.
+- **Network.** Installation and the first model download use the internet.
+  After that, dictation does not need it.
+- **Rewriting with Ollama (optional, off).** If you configure an Ollama model
+  to rewrite text, ParlAR sends that text to it. By default it points to
+  Ollama on your own computer; **if you configure a remote address, the text
+  leaves your machine** for that service.
+- **The clipboard and the target application** are separate programs:
+  ParlAR does not control what they do with the text they receive.
+
+Security details are in [SECURITY.md](SECURITY.md).
+
+## Update
+
+Download and verify the new release as when installing, extract it and run
+its installer with the same options you used before (for example
+`--install-service`):
 
 ```bash
-parlar --mode streaming
-parlarctl mode utterance
+tar -xzf parlar-*-linux-x86_64.tar.gz
+cd parlar-*/
+./install.sh
 ```
 
-Runtime mode changes take effect at a safe unit boundary.
+The new version is installed next to the current one and only becomes active
+once it is complete and validated. If anything fails, the version you had
+keeps working unchanged. Your settings, shortcut and transcripts are kept.
 
-## Configuration
+Then **Quit** from the tray menu and open ParlAR again from the applications
+menu. If you run it as a service: `systemctl --user restart parlar.service`.
 
-Configuration lives at `$XDG_CONFIG_HOME/parlar/config.json`, normally
-`~/.config/parlar/config.json`. The strict format has a `schema_version`,
-is validated before resources open, and preserves unknown keys under `extras`.
-An unversioned legacy file is migrated without guessing whether its hotkey was
-a default or an explicit user choice.
+**If you had ParlAR 1.0.x** installed from a copy of the repository, the new
+installer recognizes it and replaces it without touching your settings or
+transcripts. You no longer need the repository copy.
 
-```bash
-parlar --config-path
-parlar --show-config
-parlar --show-hotkey
-parlar --help
-```
-
-Flags can be atomically persisted with `--save-config`. Add an inspection
-action to avoid starting the daemon during the change:
-
-```bash
-parlar --mode streaming --injector auto --save-config --show-config
-parlar --hotkey '<ctrl_r>+<shift_r>' --save-config --show-hotkey
-```
-
-Add proper names, acronyms, or specialist vocabulary with repeatable context
-terms:
-
-```bash
-parlar \
-  --context-term ParlAR \
-  --context-term GuionAR \
-  --save-config --show-config
-```
-
-Providing context terms replaces the configured list; `--no-context` clears
-it. Terms are used locally by STT and do not enable telemetry.
-
-Audio capture currently uses PortAudio's default input device. ParlAR does not
-yet have its own microphone selector; choose the default input in desktop sound
-settings and restart ParlAR.
-
-## Injection, clipboard, and undo
-
-X11 preserves Unicode through:
-
-```text
-xclip → synthetic Ctrl+V
-```
-
-The clipboard is a transient transport on this path. ParlAR does not guarantee
-preservation of its previous contents or availability of the transported text
-after paste, and does not attempt restoration. The explicit
-`--injector clipboard` backend is different: it is copy-only and leaves text
-available for manual paste.
-
-A successful `xdotool` exit does not prove that the focused application
-inserted anything. X11 paste is therefore never added to destructive undo
-history and clears the previous undo boundary. “Delete last sentence” cannot
-send Backspace against unrelated content after an unverifiable paste. Existing
-`wtype` and `ydotool` behavior remains unchanged; no backend can provide a
-transaction with an external editor.
-
-## Voice commands and Return safety
-
-Commands are recognized only as exact, whole utterances. Stable aliases include
-“mandar mensaje”, “enviar mensaje”, “salto de línea”, and “salto de párrafo”,
-alongside existing short and English commands. There is no fuzzy or phonetic
-matching.
-
-Every Enter/Return action is blocked by default through
-`"comando_enviar": false`. This includes send, new line, new paragraph,
-multiline output, and rewritten output. Enabling it may execute text in a
-terminal or submit a form; read [SECURITY.md](SECURITY.md) first.
-
-## CUDA and CPU
-
-With `device=auto`, ParlAR uses CUDA when CTranslate2 detects it and falls
-back to CPU int8 otherwise. NVIDIA runtime bootstrapping is bounded and cannot
-restart recursively.
-
-```bash
-parlar --device cpu
-parlar --device cuda
-```
-
-Real CUDA availability depends on the host driver, libraries, and GPU and must
-be checked after installation. CPU is a supported fallback, not a failure mode.
-
-## Optional GuionAR integration
-
-[GuionAR](https://github.com/SGGaray/GuionAR) can receive VAD, partials, and
-final text over local Unix IPC:
-
-```bash
-parlar --guionar --mode streaming
-```
-
-It is best-effort and not on the critical path. ParlAR continues when GuionAR
-is absent. Reconnection publishes current state, not historical final text.
-The IPC transport has automated coverage; the real GuionAR application was not
-validated end-to-end for v1.0.0.
-
-## Privacy and transcripts
-
-Normal logs contain states, timings, and error types, not dictated audio or
-text. `--save-session` is opt-in and writes `0600` plaintext under
-`$XDG_DATA_HOME/parlar/sesiones/`. ParlAR neither encrypts nor deletes those
-files. See [SECURITY.md](SECURITY.md) for the complete threat model.
-Use the private channel documented there to report a vulnerability. Do not put
-sensitive details in a public issue.
-
-## Troubleshooting
-
-- **`parlar` is not found:** make sure `~/.local/bin` is in `PATH`.
-- **Microphone busy or missing:** choose a default input in desktop sound
-  settings and restart ParlAR.
-- **Wayland does not type:** try `wtype`; where unsupported, configure
-  `ydotool` or use `--injector clipboard` for manual paste.
-- **No global Wayland hotkey:** expected; bind `parlarctl` in the compositor.
-- **The service cannot access display/audio:** inspect
-  `systemctl --user status parlar` and `journalctl --user -u parlar`, or
-  launch from a graphical terminal. Do not enable the unit in `default.target`;
-  reinstall with `--install-service` to restore XDG Autostart.
-- **Esc appears as `^[` in the focused app:** pynput can observe Esc but
-  cannot selectively suppress it without an aggressive global grab. CANCEL
-  still runs; passthrough is a known limitation.
+`parlar --version` shows the installed version.
 
 ## Uninstall
 
-From a checkout of the same version:
+Quit ParlAR (**Quit** in the tray menu) and run:
 
 ```bash
-./uninstall.sh
+parlar-uninstall
 ```
 
-The script disables and removes only the marked ParlAR unit and launcher,
-removes its links, and deletes only the managed
-`$XDG_DATA_HOME/parlar/venv` environment. It does not recursively delete the
-data root: configuration, transcripts, and other unmanaged sibling files are
-preserved. Remove data separately only if you deliberately want to erase it.
-Account for custom `XDG_CONFIG_HOME` or `XDG_DATA_HOME` values.
+It does not need the release folder. If `~/.local/bin` is not in your
+`PATH`: `~/.local/share/parlar/uninstall.sh`.
 
-## Development and validation
+**Removes:** the installed application and its versions, the `parlar`,
+`parlarctl` and `parlar-uninstall` commands, the menu entry, the icon and, if
+present, automatic start at login.
+
+**Keeps:** your settings (`~/.config/parlar/`) and saved transcripts
+(`~/.local/share/parlar/sesiones/`).
+
+To delete your settings and transcripts as well:
 
 ```bash
-./setup.sh
-source .venv/bin/activate
-./scripts/check.sh
+parlar-uninstall --purge-data
 ```
 
-The gate checks shell and bytecode, entrypoints, configuration, lifecycle,
-cancellation, Unix IPC, simulated injection, systemd rendering, desktop entry,
-and legacy/unit suites. It needs no microphone, display, model, clipboard,
-GuionAR, or live systemd user session.
+**Speech model:** it stays in the Hugging Face cache
+(`~/.cache/huggingface/`), which other applications may share, so no option
+deletes it. To remove only the models ParlAR uses:
 
-Physical and perceptual checks are kept separate in
-[docs/release-readiness-1.0.md](docs/release-readiness-1.0.md).
+```bash
+rm -rf ~/.cache/huggingface/hub/models--Systran--faster-whisper-*
+```
+
+## Troubleshooting
+
+- **It is not in the menu, or the `parlar` command does not exist.** Log out
+  and back in. If you use the terminal, add `~/.local/bin` to your `PATH`.
+- **It does not listen, or listens to the wrong microphone.** In Settings →
+  Microphone, choose the device and use **Test microphone**.
+- **It listens but types nothing.** Check that exclusive output is not on
+  with GuionAR open. Otherwise, try another **Typing method** in Settings →
+  Advanced; **Clipboard** leaves the text ready to paste by hand.
+- **On Wayland the shortcut does nothing.** Expected: assign the shortcut in
+  your desktop (see [Wayland](#wayland)).
+- **`Esc` shows up as `^[` in a terminal.** ParlAR still cancels, but cannot
+  stop the key from also reaching the application. Known limitation.
+- **No tray icon.** Some desktops (GNOME, for example) need an indicator
+  extension. ParlAR works anyway; open Settings from the applications menu.
+- **It does not start at login.** Enable **Start ParlAR when you log in** in
+  Settings → Application. If it is unavailable, reinstall with
+  `--install-service`.
+- **It is slow.** In Settings → Advanced try a smaller model, or check that
+  the Accelerator uses the GPU if you have an NVIDIA card.
+- **The installer says your Python is not compatible.** Each release ships
+  what is needed for the Python versions named in the message. Install one
+  of them (for example `python3.13` from your distribution) and run
+  `./install.sh` again; the installer finds it on its own.
+- **PortAudio warning while installing.** Install `libportaudio2`
+  (Debian/Ubuntu) or `portaudio` (Fedora); without it ParlAR cannot use the
+  microphone.
 
 ## Known limitations
 
-- Esc may also reach the focused X11 application.
-- Microphone selection relies on the system default input.
-- Wayland global hotkeys require compositor bindings.
-- Delivery to an external application is not transactional; X11 paste is
-  intentionally ineligible for destructive undo.
-- Wayland and the real GuionAR application integration were not physically
-  validated for v1.0.0; see the readiness document for the exact scope.
+- Linux only. Validated by hand on Fedora with X11; Wayland has not been
+  validated by hand.
+- On Wayland there is no built-in global shortcut: a desktop shortcut is
+  used instead.
+- `Esc` cancels dictation but may also reach the focused application.
+- ParlAR cannot confirm that the target application inserted the text. For
+  safety, "delete last sentence" does nothing when it cannot be sure what
+  was typed.
+- Like any speech recognition, it can make mistakes or, with background
+  noise, type things nobody said. ParlAR filters some known cases, not all.
+- Other voices in the room are transcribed too.
+- Saved transcripts are not encrypted.
 
-## License
+## Project status
 
-MIT. See [LICENSE](LICENSE).
+ParlAR is an application maintained as a product. This repository contains
+its source code and is organized mainly for installing it, using it and
+inspecting the code, not as a community development project. That is why
+there is no contribution guide or public roadmap.
+
+## Source code and license
+
+The source code lives in this repository and is released under the
+[MIT](LICENSE) license. To use ParlAR, install the release.
+
+## Report a problem
+
+- **Bugs, installation or compatibility problems:** open an
+  [issue](https://github.com/SGGaray/ParlAR/issues/new/choose) and pick the
+  matching type.
+- **Security vulnerabilities:** do not post them in an issue. Follow
+  [SECURITY.md](SECURITY.md).

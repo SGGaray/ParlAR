@@ -7,7 +7,7 @@ import threading
 import unittest
 from pathlib import Path
 
-from parlar.cliente_guionar import ClienteGuionAR
+from parlar.cliente_guionar import HELLO, ClienteGuionAR
 
 
 class Receptor:
@@ -15,14 +15,18 @@ class Receptor:
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.sock.bind(str(ruta))
         self.sock.listen(4)
-        self.sock.settimeout(1)
+        self.sock.settimeout(3)
 
-    def recibir(self, cantidad):
-        conn, _ = self.sock.accept()
-        conn.settimeout(0.15)
+    def recibir(self, cantidad, conn=None):
+        if conn is None:
+            conn, _ = self.sock.accept()
+        conn.settimeout(1)
         datos = bytearray()
         while datos.count(b"\n") < cantidad:
-            datos.extend(conn.recv(8192))
+            trozo = conn.recv(8192)
+            if not trozo:
+                break
+            datos.extend(trozo)
         return conn, [json.loads(linea) for linea in datos.splitlines()]
 
     def cerrar(self):
@@ -37,19 +41,19 @@ class PruebasGuionAR(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def test_estado_fallido_se_reintenta_y_snapshot_no_duplica(self):
+    def test_eventos_sin_conexion_no_se_reproducen_y_vad_deduplica(self):
         cliente = ClienteGuionAR(str(self.ruta))
+        cliente.iniciar()
         self.assertFalse(cliente.evento_vad(True))
         self.assertFalse(cliente.enviar_parcial("hipótesis"))
 
         receptor = Receptor(self.ruta)
+        conn, mensajes = receptor.recibir(1)
+        self.assertEqual(mensajes, [HELLO])
         self.assertTrue(cliente.evento_vad(True))
-        conn, mensajes = receptor.recibir(2)
-        self.assertEqual(mensajes, [
-            {"type": "vad", "data": True},
-            {"type": "partial", "data": "hipótesis"},
-        ])
         self.assertTrue(cliente.evento_vad(True))
+        _, mensajes = receptor.recibir(1, conn)
+        self.assertEqual(mensajes, [{"type": "vad", "data": True}])
         conn.settimeout(0.05)
         with self.assertRaises(socket.timeout):
             conn.recv(1)
@@ -57,30 +61,34 @@ class PruebasGuionAR(unittest.TestCase):
         cliente.cerrar()
         receptor.cerrar()
 
-    def test_reconexion_snapshot_y_close_terminal(self):
+    def test_reconexion_sin_snapshot_y_close_terminal(self):
         receptor = Receptor(self.ruta)
         cliente = ClienteGuionAR(str(self.ruta))
-        self.assertTrue(cliente.evento_vad(True))
+        cliente.iniciar()
         conn1, _ = receptor.recibir(1)
+        self.assertTrue(cliente.evento_vad(True))
         conn1.close()
         with cliente._lock:
             cliente._desconectar()
+        conn2, mensajes = receptor.recibir(1)
+        self.assertEqual(mensajes, [HELLO])
         self.assertTrue(cliente.enviar_parcial("actual"))
-        conn2, mensajes = receptor.recibir(2)
-        self.assertEqual(mensajes, [
-            {"type": "vad", "data": True},
-            {"type": "partial", "data": "actual"},
-        ])
+        _, mensajes = receptor.recibir(1, conn2)
+        self.assertEqual(mensajes, [{"type": "partial", "data": "actual"}])
         cliente.cerrar()
         self.assertFalse(cliente.evento_vad(False))
         self.assertFalse(cliente.enviar_parcial("posterior"))
         self.assertFalse(cliente.escribir_texto("posterior"))
+        self.assertFalse(cliente.iniciar())
         conn2.close()
         receptor.cerrar()
 
     def test_send_vs_close_serializado_unicode_y_limite(self):
         receptor = Receptor(self.ruta)
         cliente = ClienteGuionAR(str(self.ruta))
+        cliente.iniciar()
+        conn, mensajes = receptor.recibir(1)
+        self.assertEqual(mensajes, [HELLO])
         entrada = "á🙂" + "x" * 2100
         inicio = threading.Barrier(2)
         original = cliente._enviar_conectado
@@ -97,7 +105,7 @@ class PruebasGuionAR(unittest.TestCase):
         inicio.wait()
         cliente.cerrar()
         hilo.join(1)
-        conn, mensajes = receptor.recibir(1)
+        _, mensajes = receptor.recibir(1, conn)
         self.assertEqual(len(mensajes[0]["data"]), 2000)
         self.assertTrue(mensajes[0]["data"].startswith("á🙂"))
         self.assertEqual(resultado, [True])

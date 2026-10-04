@@ -15,6 +15,10 @@ generación anterior. Shutdown es terminal: invalida primero, espera al worker
 y recién entonces cierra sinks.
 """
 
+import contextlib
+import json
+import os
+import re
 import sys
 import threading
 import time
@@ -22,14 +26,64 @@ from enum import Enum
 from typing import Optional
 
 from .capturador_audio import CapturadorMic, Segmentador, crear_vad
-from .coordinador_salida import crear_coordinador_salida
+from .cliente_guionar import CONECTADO
+from . import config as config_mod
 from .config import Config
 from .control import ServidorControl, normalizar_comando
 from .control_gesto_dictado import ControlGestoDictado
+from .coordinador_salida import crear_coordinador_salida
 from .daemon_atajos import DaemonAtajos
+from .entrega import EstadoEntrega
+from .estado_operativo import (
+    ErrorInicializacionSTT,
+    EstadoComponente,
+    EstadoOperativoStore,
+    EstadoRuntime,
+    ProblemaOperativo,
+    Severidad,
+    puede_dictar,
+    serializar_estado,
+)
+from .estado_ui import EstadoInterfaz
 from .indicador import crear_ui
+from .inyector_salida import backend_inyector_disponible, detectar_sesion
 from .motor_transcripcion import MotorWhisper, TranscriptorFrase, TranscriptorStreaming
+from .parcial_stt import ProgramadorParciales, TurnoModelo
 from .procesador_texto import ProcesadorTexto
+from .settings_backend import (
+    ErrorDispositivosAudio,
+    ErrorInicializacionAudio,
+    listar_dispositivos_entrada,
+    resolver_dispositivo_entrada,
+)
+from .tray import crear_tray, resumir_estado_tray, serializar_estado_tray
+
+
+def resolver_entrada_productiva(
+        preferencia: str, *, listar_entradas=None, resolver_entrada=None):
+    """Resuelve una preferencia persistida al índice PortAudio de este inicio."""
+    listar = listar_entradas or listar_dispositivos_entrada
+    resolver = resolver_entrada or resolver_dispositivo_entrada
+    try:
+        inventario = listar()
+    except ErrorDispositivosAudio as exc:
+        raise ErrorInicializacionAudio(
+            f"no se pudo obtener el inventario de entradas: {exc}"
+        ) from exc
+
+    resolucion = resolver(preferencia, inventario)
+    if resolucion.indice is None:
+        motivo = resolucion.motivo or "sin_motivo"
+        if "inventario_vacio" in motivo:
+            detalle = "no hay dispositivos de entrada disponibles"
+        elif "default_ambiguo" in motivo:
+            detalle = "el dispositivo de entrada predeterminado es ambiguo"
+        elif "default_no_disponible" in motivo:
+            detalle = "no hay un dispositivo de entrada predeterminado"
+        else:
+            detalle = "la entrada configurada no pudo resolverse"
+        raise ErrorInicializacionAudio(f"{detalle} (motivo: {motivo})")
+    return resolucion
 
 
 class EstadoApp(str, Enum):
@@ -42,12 +96,40 @@ class EstadoApp(str, Enum):
     CLOSED = "closed"
 
 
+def foco_settings_seguro(estado: EstadoApp) -> bool:
+    """Evita convertir Settings en destino mientras hay dictado en curso."""
+    return estado not in {
+        EstadoApp.STARTING,
+        EstadoApp.RECORDING,
+        EstadoApp.STOPPING,
+    }
+
+
 class App:
+    # Defaults para instancias parciales (tests con App.__new__).
+    parciales = None
+    _turno_modelo = None
+    _parcial_generacion = None
+    _parcial_en_unidad = False
+    _config_en_vivo = False
+    _firma_config = None
+
     def __init__(self, cfg: Config, *, motor=None, frases=None, streaming=None,
                  proc=None, inyector=None, guionar=None, sesion=None, mic=None,
                  ui=None, control=None, atajos=None, guardia_instancia=None,
-                 vad_factory=crear_vad, segmentador_factory=Segmentador):
-        cfg.validate()
+                 vad_factory=crear_vad, segmentador_factory=Segmentador,
+                 listar_entradas=None, resolver_entrada=None,
+                 estado_operativo=None, tray=None, parciales=None,
+                 config_en_vivo: bool = False):
+        self.estado_operativo = estado_operativo or EstadoOperativoStore(
+            gesto_requerido=detectar_sesion() != "wayland")
+        try:
+            cfg.validate()
+        except Exception as exc:
+            self._fallo_operativo(
+                "configuracion_invalida", "runtime",
+                "La configuración de ParlAR no es válida.", exc)
+            raise
         self.cfg = cfg
         self.grabando = threading.Event()
         self.saliendo = threading.Event()
@@ -56,6 +138,11 @@ class App:
         self._estado_cv = threading.Condition()
         self._salida_lock = threading.RLock()
         self._estado = EstadoApp.IDLE
+        self._pausado = False
+        self._pausa_pendiente = False
+        self._reinicio_pendiente = False
+        self._reinicio_token: str | None = None
+        self._reinicio_expira_en = 0.0
         self._ultimo_error = ""
         self._fallo_fatal_worker = False
         self._generacion = 0
@@ -80,15 +167,91 @@ class App:
         print("ParlAR: dictado local, sin telemetría.")
         print("=" * 60)
 
-        if motor is None and (frases is None or streaming is None):
-            motor = MotorWhisper(
-                cfg.model_size,
-                cfg.device,
-                cfg.compute_type,
-                cfg.language,
-                cfg.beam_size,
-                initial_prompt=cfg.construir_contexto_stt(),
+        estado_interfaz = EstadoInterfaz()
+        self.resolucion_entrada = None
+        mic_productivo = mic
+        if mic_productivo is None:
+            try:
+                self.resolucion_entrada = resolver_entrada_productiva(
+                    cfg.audio_input_device,
+                    listar_entradas=listar_entradas,
+                    resolver_entrada=resolver_entrada,
+                )
+            except Exception as exc:
+                self.estado_operativo.fijar_componente(
+                    "audio", EstadoComponente.ERROR,
+                    problema=ProblemaOperativo(
+                        "audio_no_disponible", "audio", Severidad.BLOCKING,
+                        "No hay un micrófono disponible para dictar.",
+                        self._detalle_error(exc)),
+                )
+                raise
+            if self.resolucion_entrada.usando_fallback:
+                dispositivo = self.resolucion_entrada.dispositivo
+                nombre = (
+                    dispositivo.nombre
+                    if dispositivo is not None
+                    else "desconocido"
+                )
+                print(
+                    "[audio] la entrada configurada no está disponible; "
+                    f"se usará la predeterminada {nombre!r} "
+                    f"(motivo: {self.resolucion_entrada.motivo})",
+                    file=sys.stderr,
+                )
+                self.estado_operativo.fijar_componente(
+                    "audio", EstadoComponente.FALLBACK,
+                    dispositivo_audio=nombre,
+                    problema=ProblemaOperativo(
+                        "audio_fallback", "audio", Severidad.WARNING,
+                        "El micrófono guardado no está disponible; se usa el predeterminado.",
+                        self.resolucion_entrada.motivo),
+                )
+            else:
+                dispositivo = self.resolucion_entrada.dispositivo
+                self.estado_operativo.fijar_componente(
+                    "audio", EstadoComponente.READY,
+                    dispositivo_audio=(
+                        dispositivo.nombre if dispositivo is not None else None),
+                )
+            mic_productivo = CapturadorMic(
+                cfg.sample_rate,
+                cfg.frame_samples,
+                input_device=self.resolucion_entrada.indice,
+                publicar_nivel_visual=estado_interfaz.fijar_nivel_visual,
+                publicar_descriptor_visual=(
+                    estado_interfaz.fijar_descriptor_visual),
             )
+        else:
+            self.estado_operativo.fijar_componente(
+                "audio", EstadoComponente.READY)
+
+        if motor is None and (frases is None or streaming is None):
+            self.estado_operativo.fijar_componente(
+                "stt", EstadoComponente.LOADING)
+            try:
+                motor = MotorWhisper(
+                    cfg.model_size,
+                    cfg.device,
+                    cfg.compute_type,
+                    cfg.language,
+                    cfg.beam_size,
+                    initial_prompt=cfg.construir_contexto_stt(),
+                )
+            except Exception as exc:
+                mensaje = (
+                    "No se pudo iniciar la aceleración CUDA solicitada."
+                    if cfg.device == "cuda"
+                    else "No se pudo cargar el modelo de reconocimiento.")
+                self.estado_operativo.fijar_componente(
+                    "stt", EstadoComponente.ERROR,
+                    problema=ProblemaOperativo(
+                        "stt_carga_fallida", "stt", Severidad.BLOCKING,
+                        mensaje, self._detalle_error(exc)),
+                )
+                raise ErrorInicializacionSTT(mensaje) from exc
+        self.estado_operativo.fijar_componente(
+            "stt", EstadoComponente.READY)
         self.motor = motor
         self.frases = frases or TranscriptorFrase(self.motor)
         self.streaming = streaming or TranscriptorStreaming(
@@ -102,15 +265,64 @@ class App:
             guionar=guionar,
             sesion=sesion,
         )
+        # Parciales en vivo para GuionAR: sólo con la integración activa y un
+        # transcriptor que los soporte. El hilo nace con el primer parcial
+        # agendado, que exige GuionAR conectado.
+        self._turno_modelo = TurnoModelo()
+        self._parcial_generacion: Optional[int] = None
+        self._parcial_en_unidad = False
+        transcribir_parcial = getattr(self.frases, "transcribir_parcial", None)
+        if parciales is None and cfg.guionar and transcribir_parcial:
+            parciales = ProgramadorParciales(
+                transcribir_parcial, self._emitir_parcial,
+                self._parciales_habilitados, self._turno_modelo)
+        self.parciales = parciales
+        # Sólo el entry point real relee preferencias en caliente; tests e
+        # integraciones in-process nunca leen el config del usuario.
+        self._config_en_vivo = config_en_vivo
+        backend_salida = getattr(self.salida.inyector, "backend", None)
+        if backend_salida and not backend_inyector_disponible(backend_salida):
+            self.estado_operativo.fijar_componente(
+                "output", EstadoComponente.ERROR,
+                backend_salida=backend_salida,
+                problema=ProblemaOperativo(
+                    "inyector_no_disponible", "output", Severidad.BLOCKING,
+                    "No hay una salida disponible para entregar el dictado.",
+                    f"backend={backend_salida}"),
+            )
+        elif backend_salida == "clipboard":
+            self.estado_operativo.fijar_componente(
+                "output", EstadoComponente.DEGRADED,
+                backend_salida=backend_salida,
+                problema=ProblemaOperativo(
+                    "inyector_clipboard", "output", Severidad.WARNING,
+                    "La escritura directa no está disponible; se usará el portapapeles.",
+                ),
+            )
+        else:
+            self.estado_operativo.fijar_componente(
+                "output", EstadoComponente.READY,
+                backend_salida=backend_salida or "personalizado")
         if cfg.guionar:
-            print(f"[guionar] integración activa (socket: {self.guionar.ruta})")
-        self.mic = mic or CapturadorMic(cfg.sample_rate, cfg.frame_samples)
-        self.ui = ui or crear_ui(cfg.overlay, al_click=self.alternar)
+            print("[guionar] integración automática "
+                  f"(socket: {getattr(self.guionar, 'ruta', '-')})")
+        self.mic = mic_productivo
+        self.ui = ui or crear_ui(
+            cfg.overlay,
+            estado_ui=estado_interfaz,
+            overlay_position=cfg.overlay_position,
+        )
         self.control = control or ServidorControl(
             self._atender_comando, guardia_instancia=guardia_instancia)
         self.gesto_dictado = ControlGestoDictado(
             self.iniciar_grabacion,
             self.detener_grabacion,
+            al_presionado=getattr(
+                self.ui, "fijar_presionado", None
+            ),
+            al_continuo=getattr(
+                self.ui, "fijar_continuo", None
+            ),
         )
         self.atajos = atajos or DaemonAtajos(
             cfg.hotkey_toggle,
@@ -120,6 +332,23 @@ class App:
             al_salir=self.salir,
             al_cancelar=self.cancelar_grabacion,
         )
+        self.tray = tray or crear_tray(al_fallo=self._reportar_fallo_tray)
+
+    @staticmethod
+    def _detalle_error(exc) -> str:
+        return f"{type(exc).__name__}: {exc}"
+
+    def _fallo_operativo(self, codigo, componente, mensaje, exc):
+        self.estado_operativo.reportar_problema(ProblemaOperativo(
+            codigo, componente, Severidad.BLOCKING, mensaje,
+            self._detalle_error(exc)))
+
+    def _reportar_fallo_tray(self, detalle: str) -> None:
+        print(f"[tray] no disponible ({detalle})", file=sys.stderr)
+        self.estado_operativo.reportar_problema(ProblemaOperativo(
+            "tray_no_disponible", "tray", Severidad.WARNING,
+            "El acceso desde el área de estado no está disponible; "
+            "ParlAR sigue operativo.", detalle))
 
     # ------------------------------------------------------------ ciclo de vida
 
@@ -177,17 +406,84 @@ class App:
     def ejecutar(self):
         try:
             self._iniciar_trabajador()
-            self.control.iniciar()
-            self.atajos.iniciar()
-            print(
-                f"[app] listo. Modo: {self.cfg.mode}. "
-                f"{self._pista_controles()}"
+            try:
+                self.control.iniciar()
+            except Exception as exc:
+                self.estado_operativo.fijar_componente(
+                    "control", EstadoComponente.ERROR,
+                    problema=ProblemaOperativo(
+                        "control_no_disponible", "control", Severidad.BLOCKING,
+                        "No se pudo iniciar el control local de ParlAR.",
+                        self._detalle_error(exc)),
+                )
+                self.estado_operativo.actualizar_runtime(EstadoRuntime.ERROR)
+                raise
+            self.estado_operativo.fijar_componente(
+                "control", EstadoComponente.READY)
+            try:
+                hotkey_listo = bool(self.atajos.iniciar())
+            except Exception as exc:
+                self.estado_operativo.fijar_componente(
+                    "hotkey", EstadoComponente.ERROR,
+                    problema=ProblemaOperativo(
+                        "hotkey_inicio_fallido", "hotkey", Severidad.BLOCKING,
+                        "No se pudo iniciar el atajo global.",
+                        self._detalle_error(exc)),
+                )
+                self.estado_operativo.actualizar_runtime(EstadoRuntime.ERROR)
+                raise
+            if hotkey_listo:
+                self.estado_operativo.fijar_componente(
+                    "hotkey", EstadoComponente.READY)
+            else:
+                gesto_requerido = self.estado_operativo.snapshot().gesto_requerido
+                self.estado_operativo.fijar_componente(
+                    "hotkey", EstadoComponente.ERROR if gesto_requerido
+                    else EstadoComponente.UNAVAILABLE,
+                    problema=ProblemaOperativo(
+                        "hotkey_no_disponible", "hotkey",
+                        Severidad.BLOCKING if gesto_requerido
+                        else Severidad.WARNING,
+                        "El atajo global no está disponible; usá parlarctl.",
+                    ),
+                )
+            self._iniciar_guionar()
+            self.estado_operativo.actualizar_runtime(EstadoRuntime.READY)
+            try:
+                self.tray.iniciar()
+            except Exception as exc:
+                self._reportar_fallo_tray(self._detalle_error(exc))
+            prefijo = (
+                "[app] listo."
+                if puede_dictar(self.estado_operativo.snapshot())
+                else "[app] iniciado, pero requiere atención."
             )
+            print(f"{prefijo} Modo: {self.cfg.mode}. {self._pista_controles()}")
             self.ui.ejecutar()
         except KeyboardInterrupt:
             pass
         finally:
             self.salir()
+
+    def _iniciar_guionar(self):
+        """GuionAR es opcional: su ausencia nunca es un problema operativo."""
+        if not self.cfg.guionar:
+            return
+        iniciar = getattr(self.guionar, "iniciar", None)
+        if iniciar is None:
+            return
+        estado_operativo = self.estado_operativo
+        estado_operativo.actualizar_guionar(
+            getattr(self.guionar, "estado", None))
+        observar = getattr(self.guionar, "agregar_observador", None)
+        if observar is not None:
+            # El worker sólo publica un snapshot; nunca toca la UI.
+            observar(estado_operativo.actualizar_guionar)
+        try:
+            iniciar()
+        except Exception as exc:
+            print(f"[guionar] no se pudo iniciar: {type(exc).__name__}",
+                  file=sys.stderr)
 
     def _pista_controles(self) -> str:
         if self.atajos._listener:
@@ -199,9 +495,56 @@ class App:
             controles = (
                 "Usá `parlarctl iniciar`, `detener`, `cancelar` o `alternar`"
             )
-        if self.cfg.overlay:
-            controles += "; también podés hacer click en el indicador"
         return controles + "."
+
+    def _ui_preparar_generacion(self, generacion: int):
+        publicar = getattr(self.ui, "preparar_generacion", None)
+        return publicar(generacion) if publicar else True
+
+    def _ui_iniciar_captura(self, generacion: int):
+        publicar = getattr(self.ui, "iniciar_captura", None)
+        if publicar:
+            return publicar(generacion)
+        self.ui.fijar_estado("recording")
+        return True
+
+    def _ui_cerrar_captura(self, generacion: int):
+        publicar = getattr(self.ui, "cerrar_captura", None)
+        if publicar:
+            return publicar(generacion, trabajo_pendiente=True)
+        self.ui.fijar_estado("transcribing")
+        return True
+
+    def _ui_iniciar_trabajo(self, generacion: int):
+        publicar = getattr(self.ui, "iniciar_trabajo", None)
+        if publicar:
+            return publicar(generacion)
+        if self.estado != EstadoApp.RECORDING:
+            self.ui.fijar_estado("transcribing")
+        return True
+
+    def _ui_finalizar_trabajo(self, generacion: int):
+        publicar = getattr(self.ui, "finalizar_trabajo", None)
+        if publicar:
+            return publicar(generacion)
+        if self.estado == EstadoApp.RECORDING:
+            self.ui.fijar_estado("recording")
+        return True
+
+    def _ui_invalidar_generacion(self, generacion: int):
+        publicar = getattr(self.ui, "invalidar_generacion", None)
+        if publicar:
+            return publicar(generacion)
+        self.ui.fijar_estado("idle")
+        return True
+
+    def _ui_completar_generacion(
+            self, generacion: int, *, con_error: bool = False):
+        publicar = getattr(self.ui, "completar_generacion", None)
+        if publicar:
+            return publicar(generacion, con_error=con_error)
+        self.ui.fijar_estado("error" if con_error else "idle")
+        return True
 
     def alternar(self):
         estado = self.estado
@@ -209,12 +552,68 @@ class App:
             return self.detener_grabacion()
         return self.iniciar_grabacion()
 
+    @property
+    def pausado(self) -> bool:
+        with self._estado_cv:
+            return self._pausado
+
+    def pausar(self) -> bool:
+        """Impide START nuevos y resuelve con suavidad la sesión vigente."""
+        with self._estado_cv:
+            if self._estado in (EstadoApp.SHUTTING_DOWN, EstadoApp.CLOSED):
+                self._ultimo_error = "la aplicación se está cerrando"
+                return False
+            if self._pausado:
+                return True
+            self._pausado = True
+            estado = self._estado
+            self._pausa_pendiente = estado in {
+                EstadoApp.STARTING, EstadoApp.RECORDING, EstadoApp.STOPPING}
+            self._estado_cv.notify_all()
+        self.estado_operativo.actualizar_pausa(True)
+
+        # Quita continuo, doble toque y releases pendientes antes de cerrar la
+        # captura. No toca el listener global ni la configuración del atajo.
+        self.gesto_dictado.reiniciar()
+        resultado = True
+        if estado == EstadoApp.STARTING:
+            resultado = self.cancelar_grabacion()
+        elif estado == EstadoApp.RECORDING:
+            resultado = self.detener_grabacion()
+
+        with self._estado_cv:
+            if self._estado in {EstadoApp.IDLE, EstadoApp.ERROR}:
+                self._pausa_pendiente = False
+                self._estado_cv.notify_all()
+        return resultado
+
+    def reanudar(self) -> bool:
+        """Vuelve a admitir dictados sin iniciar uno automáticamente."""
+        with self._estado_cv:
+            if self._estado in (EstadoApp.SHUTTING_DOWN, EstadoApp.CLOSED):
+                self._ultimo_error = "la aplicación se está cerrando"
+                return False
+            self._pausado = False
+            self._pausa_pendiente = False
+            self._ultimo_error = ""
+            self._estado_cv.notify_all()
+        self.estado_operativo.actualizar_pausa(False)
+        self.gesto_dictado.reiniciar()
+        return True
+
     def iniciar_grabacion(self) -> bool:
         self._iniciar_trabajador()
         with self._transicion_lock:
             with self._estado_cv:
+                self._expirar_reinicio_locked()
                 if self._estado in (EstadoApp.SHUTTING_DOWN, EstadoApp.CLOSED):
                     self._ultimo_error = "la aplicación se está cerrando"
+                    return False
+                if self._pausado:
+                    self._ultimo_error = "ParlAR está pausado"
+                    return False
+                if self._reinicio_pendiente:
+                    self._ultimo_error = "reinicio pendiente"
                     return False
                 if self._fallo_fatal_worker:
                     self._ultimo_error = "el worker no está operativo"
@@ -239,6 +638,7 @@ class App:
                     self._sesion_activa = generacion
                     self._modo_por_sesion = {generacion: self._modo_solicitado}
                     self._estado_cv.notify_all()
+                self._ui_preparar_generacion(generacion)
                 if anterior is not None:
                     self.mic.descartar_pendientes(anterior)
                 self.salida.iniciar_generacion(
@@ -279,6 +679,13 @@ class App:
                     return False
                 self._estado_visual_terminal_si_vigente(
                     "error", EstadoApp.ERROR, generacion)
+                self.estado_operativo.fijar_componente(
+                    "audio", EstadoComponente.ERROR,
+                    problema=ProblemaOperativo(
+                        "audio_apertura_fallida", "audio", Severidad.BLOCKING,
+                        "No se pudo abrir el micrófono seleccionado.",
+                        self._detalle_error(exc)),
+                )
                 print(f"[app] no se pudo abrir el micrófono: {exc}", file=sys.stderr)
                 return False
 
@@ -312,7 +719,19 @@ class App:
                 return False
 
             self.grabando.set()
-            self._estado_visual_si_vigente("recording", generacion)
+            if (self.resolucion_entrada is not None
+                    and self.resolucion_entrada.usando_fallback):
+                self.estado_operativo.fijar_componente(
+                    "audio", EstadoComponente.FALLBACK,
+                    problema=ProblemaOperativo(
+                        "audio_fallback", "audio", Severidad.WARNING,
+                        "El micrófono guardado no está disponible; se usa el predeterminado.",
+                        self.resolucion_entrada.motivo),
+                )
+            else:
+                self.estado_operativo.fijar_componente(
+                    "audio", EstadoComponente.READY)
+            self._ui_iniciar_captura(generacion)
             print(f"[app] ● grabando (sesión {generacion})")
             return True
 
@@ -342,6 +761,12 @@ class App:
                 error = exc
                 print(f"[app] falló el cierre del micrófono: {exc}", file=sys.stderr)
 
+            if generacion is not None:
+                # La barrera visual se instala antes de habilitar al worker a
+                # completar STOP: así listening->processing nunca pasa por
+                # hidden y una finalización rápida no puede resucitar estado.
+                self._ui_cerrar_captura(generacion)
+
             with self._estado_cv:
                 cancelada = (
                     self._estado != EstadoApp.STOPPING
@@ -355,7 +780,14 @@ class App:
                 self._estado_cv.notify_all()
             if cancelada:
                 return error is None
-            self._estado_visual_si_vigente("transcribing", generacion)
+            if error is not None:
+                self.estado_operativo.fijar_componente(
+                    "audio", EstadoComponente.ERROR,
+                    problema=ProblemaOperativo(
+                        "audio_cierre_fallido", "audio", Severidad.BLOCKING,
+                        "No se pudo cerrar correctamente el micrófono.",
+                        self._detalle_error(error)),
+                )
             print(f"[app] ◌ deteniendo (sesión {generacion})")
             return error is None
 
@@ -381,6 +813,7 @@ class App:
                     EstadoApp.ERROR,
                 ):
                     ya_detenido = True
+                    self._pausa_pendiente = False
                 else:
                     ya_detenido = False
                     generacion = self._sesion_activa
@@ -399,10 +832,16 @@ class App:
                         )
 
                     self._estado = EstadoApp.IDLE
+                    self._pausa_pendiente = False
                     self._ultimo_error = ""
                     self.grabando.clear()
                     self._estado_cv.notify_all()
 
+                    if generacion is not None:
+                        self._ui_invalidar_generacion(generacion)
+
+            if getattr(self, "parciales", None) is not None:
+                self.parciales.invalidar()
             if not ya_detenido:
                 self.salida.cancelar_generacion()
 
@@ -473,6 +912,13 @@ class App:
             if error_vigente:
                 self._estado_visual_terminal_si_vigente(
                     "error", EstadoApp.ERROR, revision)
+                self.estado_operativo.fijar_componente(
+                    "audio", EstadoComponente.ERROR,
+                    problema=ProblemaOperativo(
+                        "audio_cierre_fallido", "audio", Severidad.BLOCKING,
+                        "No se pudo cerrar correctamente el micrófono.",
+                        self._detalle_error(error)),
+                )
             return False
 
         self._estado_visual_terminal_si_vigente(
@@ -522,13 +968,20 @@ class App:
                     propietario = True
 
             if propietario:
+                self.estado_operativo.actualizar_runtime(
+                    EstadoRuntime.STOPPING)
+
+            if propietario:
                 with self._salida_lock:
                     with self._estado_cv:
+                        generacion = self._sesion_activa
                         self._sesion_activa = None
                         self._modo_por_sesion.clear()
                         self._stops_listos.clear()
                         self._errores_stop.clear()
                         self._estado_cv.notify_all()
+                    if generacion is not None:
+                        self._ui_invalidar_generacion(generacion)
                 try:
                     self.mic.detener(vaciar=True)
                 except BaseException as exc:
@@ -559,6 +1012,7 @@ class App:
                     self._registrar_error_shutdown("worker", exc)
 
             recursos = (
+                ("tray", self.tray.detener),
                 ("control", self.control.detener),
                 ("hotkeys", self.atajos.detener),
             )
@@ -567,6 +1021,11 @@ class App:
                     cerrar()
                 except BaseException as exc:
                     self._registrar_error_shutdown(nombre, exc)
+            if getattr(self, "parciales", None) is not None:
+                try:
+                    self.parciales.cerrar()
+                except BaseException as exc:
+                    self._registrar_error_shutdown("parciales", exc)
             for nombre, exc in self.salida.cerrar():
                 self._registrar_error_shutdown(nombre, exc)
             try:
@@ -580,6 +1039,7 @@ class App:
                         self._shutdown_errores)
                 self._estado = EstadoApp.CLOSED
                 self._estado_cv.notify_all()
+            self.estado_operativo.actualizar_runtime(EstadoRuntime.STOPPED)
             self._shutdown_completo.set()
 
     def _registrar_error_shutdown(self, etapa: str, exc: BaseException):
@@ -627,6 +1087,77 @@ class App:
     def _reiniciar_streaming(self):
         self.streaming.reiniciar()
         self._cancelar_contexto_texto()
+        if self.parciales is not None:
+            self.parciales.cerrar_unidad()
+
+    # ------------------------------------------------------------ parciales
+
+    def _turno_final(self):
+        turno = self._turno_modelo
+        return turno.final() if turno is not None else contextlib.nullcontext()
+
+    def _ruta_guionar_exclusiva(self) -> bool:
+        """Snapshot de ruta al EMPEZAR la unidad: queda fijo hasta su cierre.
+
+        Una desconexión posterior no habilita la inyección (sin fuga a la app
+        con foco) y una conexión posterior no la quita a esta unidad.
+        """
+        return bool(
+            self.cfg.guionar
+            and self._preferencia_exclusiva()
+            and getattr(self.guionar, "estado", None) == CONECTADO)
+
+    def _preferencia_exclusiva(self) -> bool:
+        """Settings guarda en otro proceso: si el config cambió, relee sólo
+        esta clave (un stat por unidad, sin hilos ni IPC nuevos)."""
+        if self._config_en_vivo:
+            try:
+                info = os.stat(config_mod.CONFIG_FILE)
+                firma = (info.st_mtime_ns, info.st_size)
+                if firma != self._firma_config:
+                    self._firma_config = firma
+                    datos = json.loads(
+                        config_mod.CONFIG_FILE.read_text(encoding="utf-8"))
+                    valor = datos.get("guionar_exclusive_output") \
+                        if isinstance(datos, dict) else None
+                    if type(valor) is bool:
+                        self.cfg.guionar_exclusive_output = valor
+            except (OSError, ValueError, UnicodeError):
+                pass   # se conserva el último valor válido
+        return bool(getattr(self.cfg, "guionar_exclusive_output", False))
+
+    def _parciales_habilitados(self) -> bool:
+        """GuionAR conectado y app viva: si no, cero inferencias extra."""
+        return (self.cfg.guionar and not self.saliendo.is_set()
+                and getattr(self.guionar, "estado", None) == CONECTADO)
+
+    def _emitir_parcial(self, token, texto: str) -> bool:
+        """Único destino de un parcial: GuionAR, vía la frontera de salida."""
+        with self._salida_lock:
+            generacion = self._parcial_generacion
+            if (generacion is None or not self.parciales.vigente(token)
+                    or not self._puede_emit(generacion)
+                    or not self._parciales_habilitados()):
+                return False
+            self.salida.enviar_parcial(texto)
+            self._parcial_en_unidad = True
+            return True
+
+    def _abrir_unidad_parcial(self, generacion: int, modo_unidad):
+        if self.parciales is None or modo_unidad == "streaming":
+            return
+        with self._salida_lock:
+            self._parcial_generacion = generacion
+            self._parcial_en_unidad = False
+        self.parciales.abrir_unidad()
+
+    def _limpiar_parcial_de_unidad(self, generacion: int):
+        """Si la unidad mostró parciales y el final no los reemplazó (texto
+        vacío o descartado), GuionAR no debe quedar con una hipótesis vieja."""
+        with self._salida_lock:
+            if self._parcial_en_unidad and self._puede_emit(generacion):
+                self.salida.enviar_parcial("")
+            self._parcial_en_unidad = False
 
     def _bucle_trabajador(self):
         generacion = None
@@ -676,11 +1207,18 @@ class App:
                     if evento.tipo == "inicio_voz":
                         modo_unidad = modo_entre_unidades
                         self._iniciar_contexto_texto()
-                        self.salida.iniciar_unidad(generacion)
+                        self.salida.iniciar_unidad(
+                            generacion,
+                            exclusiva=self._ruta_guionar_exclusiva())
                         self._evento_vad(True, generacion)
+                        self._abrir_unidad_parcial(generacion, modo_unidad)
                     elif evento.tipo == "frame_voz" and modo_unidad == "streaming":
                         self.streaming.aceptar_audio(evento.audio)
                         self._paso_streaming(generacion)
+                    elif evento.tipo == "frame_voz" and self.parciales is not None:
+                        self.parciales.agregar_audio(
+                            evento.audio,
+                            voz=not getattr(segmentador, "racha_silencio", 0))
                     elif evento.tipo == "frase":
                         self._evento_vad(False, generacion)
                         self._cerrar_unidad(evento.audio, modo_unidad, generacion)
@@ -725,22 +1263,32 @@ class App:
         return None, self._modo_de(generacion)
 
     def _cerrar_unidad(self, audio, modo: Optional[str], generacion: int):
+        # El final manda: ningún parcial de esta unidad puede salir después.
+        if self.parciales is not None:
+            self.parciales.cerrar_unidad()
+        self._ui_iniciar_trabajo(generacion)
         try:
             if modo == "streaming":
                 self._vaciar_streaming(generacion)
             else:
                 self._atender_frase(audio, generacion)
+                if self.parciales is not None:
+                    self._limpiar_parcial_de_unidad(generacion)
         finally:
             try:
                 self._finalizar_contexto_texto()
             finally:
-                self.salida.finalizar_unidad()
+                try:
+                    self.salida.finalizar_unidad()
+                finally:
+                    self._ui_finalizar_trabajo(generacion)
 
     def _atender_frase(self, audio, generacion: int):
-        self._estado_visual_si_vigente("transcribing", generacion)
         t0 = time.time()
         try:
-            crudo = self.frases.transcribir(audio)
+            # Espera como máximo al parcial que ya estaba inferenciando.
+            with self._turno_final():
+                crudo = self.frases.transcribir(audio)
         except Exception as exc:
             self._registrar_fallo_etapa("stt", exc, generacion)
             crudo = ""
@@ -751,12 +1299,12 @@ class App:
             print(f"[app] transcripción lista en {dt:.2f}s")
             procesado = self.proc.procesar_frase(crudo)
             self._emitir(procesado, generacion)
-        self._estado_visual_si_vigente("recording", generacion)
 
     def _paso_streaming(self, generacion: int):
         antes = self._snapshot_streaming()
         try:
-            trozo = self.streaming.procesar()
+            with self._turno_final():
+                trozo = self.streaming.procesar()
         except Exception as exc:
             if not self._actualizar_salud_streaming(
                     antes, generacion, permitir_recuperacion=False):
@@ -775,7 +1323,8 @@ class App:
     def _vaciar_streaming(self, generacion: int):
         antes = self._snapshot_streaming()
         try:
-            cola = self.streaming.finalizar()
+            with self._turno_final():
+                cola = self.streaming.finalizar()
         except Exception as exc:
             if not self._actualizar_salud_streaming(
                     antes, generacion, permitir_recuperacion=False):
@@ -802,7 +1351,37 @@ class App:
             return True
 
     def _escribir_en_todas_bajo_lock(self, texto: str):
-        return self.salida.entregar_fragmento(texto)
+        resultado = self.salida.entregar_fragmento(texto)
+        self._registrar_resultado_salida(resultado)
+        return resultado
+
+    def _registrar_resultado_salida(self, resultado):
+        estado_operativo = getattr(self, "estado_operativo", None)
+        if estado_operativo is None:
+            return
+        estado_inyector = getattr(resultado, "inyector", None)
+        if estado_inyector == EstadoEntrega.FAILED:
+            estado_operativo.fijar_componente(
+                "output", EstadoComponente.ERROR,
+                problema=ProblemaOperativo(
+                    "inyector_fallido", "output", Severidad.BLOCKING,
+                    "No se pudo entregar el texto dictado.",
+                ),
+            )
+        elif estado_inyector == EstadoEntrega.COPIED:
+            estado_operativo.fijar_componente(
+                "output", EstadoComponente.DEGRADED,
+                problema=ProblemaOperativo(
+                    "inyector_clipboard", "output", Severidad.WARNING,
+                    "El texto quedó en el portapapeles para pegarlo manualmente.",
+                ),
+            )
+        elif estado_inyector == EstadoEntrega.INSERTED:
+            estado_operativo.fijar_componente(
+                "output", EstadoComponente.READY)
+
+        # GuionAR es un espejo opcional: que no esté abierto o se cierre a
+        # mitad de un envío no afecta la entrega principal ni es un aviso.
 
     # ------------------------------------------------------------ emisión
 
@@ -830,7 +1409,9 @@ class App:
                 self.salida.presionar_enter()
                 return
             if p.texto:
-                return self.salida.entregar_texto(p.texto)
+                resultado = self.salida.entregar_texto(p.texto)
+                self._registrar_resultado_salida(resultado)
+                return resultado
 
     # ------------------------------------------------------------ estado interno
 
@@ -883,6 +1464,13 @@ class App:
             print(f"[app] etapa={etapa} degradada "
                   f"tipo={tipo_error} contador={contador} "
                   f"generacion={generacion}", file=sys.stderr)
+            self.estado_operativo.reportar_problema(ProblemaOperativo(
+                f"{etapa}_degradado", etapa, Severidad.WARNING,
+                "El reconocimiento tuvo un fallo recuperable."
+                if etapa == "stt"
+                else "La detección de voz tuvo un fallo recuperable.",
+                str(tipo_error),
+            ))
 
     def _registrar_recuperacion_etapa(self, etapa: str):
         if not hasattr(self, "_estado_cv"):
@@ -890,8 +1478,10 @@ class App:
         with self._estado_cv:
             if etapa == "stt" and self._stt_failures:
                 self._stt_health = "recovered"
+                self.estado_operativo.resolver_problema("stt_degradado")
             elif etapa == "vad" and self._vad_failures:
                 self._vad_health = "recovered"
+                self.estado_operativo.resolver_problema("vad_degradado")
 
     def _actualizar_salud_vad(self, segmentador, vistos: int,
                               generacion: int) -> int:
@@ -961,6 +1551,7 @@ class App:
             self._sesion_activa = None
             self._modo_por_sesion.pop(generacion, None)
             self._estado = EstadoApp.ERROR if con_error else EstadoApp.IDLE
+            self._pausa_pendiente = False
             self._estado_cv.notify_all()
         self._estado_visual_terminal_si_vigente(
             "error" if con_error else "idle",
@@ -974,12 +1565,6 @@ class App:
             if not self._puede_emit(generacion):
                 return
             self.salida.evento_vad(hablando)
-            self.ui.fijar_estado("recording")
-
-    def _estado_visual_si_vigente(self, estado: str, generacion: int):
-        with self._salida_lock:
-            if self._puede_emit(generacion):
-                self.ui.fijar_estado(estado)
 
     def _estado_visual_terminal_si_vigente(
             self, estado: str, estado_app: EstadoApp, generacion: int) -> bool:
@@ -992,19 +1577,21 @@ class App:
                     and self._estado == estado_app
                 )
             if vigente:
-                # Indicador.fijar_estado solo actualiza una variable protegida;
-                # no ejecuta callbacks Tk ni lifecycle bajo esta barrera.
-                self.ui.fijar_estado(estado)
+                self._ui_completar_generacion(
+                    generacion, con_error=estado == "error")
             return vigente
 
     def _registrar_fallo_worker(self, exc: Exception):
         print(f"[app] fallo inesperado del worker: {type(exc).__name__}",
               file=sys.stderr)
+        generacion = None
         with self._transicion_lock:
             with self._salida_lock:
                 with self._estado_cv:
+                    generacion = self._sesion_activa or self._generacion
                     if self._estado not in (EstadoApp.SHUTTING_DOWN, EstadoApp.CLOSED):
                         self._estado = EstadoApp.ERROR
+                        self._pausa_pendiente = False
                         self._ultimo_error = f"worker: {type(exc).__name__}"
                         self._fallo_fatal_worker = True
                     self._sesion_activa = None
@@ -1015,7 +1602,12 @@ class App:
                 self.mic.detener(vaciar=True)
             except Exception:
                 pass
-        self.ui.fijar_estado("error")
+        self._estado_visual_terminal_si_vigente(
+            "error", EstadoApp.ERROR, generacion)
+        self._fallo_operativo(
+            "worker_fallido", "runtime",
+            "El proceso de dictado dejó de funcionar.", exc)
+        self.estado_operativo.actualizar_runtime(EstadoRuntime.ERROR)
 
     # ------------------------------------------------------------ control
 
@@ -1063,11 +1655,79 @@ class App:
                 f"cola={captura.queue_depth}/{self.mic.capacidad} "
                 f"backlog_ms={captura.backlog_ms:.1f}")
 
+    _TOKEN_SUSPENSION_RE = re.compile(r"[A-Za-z0-9_-]{16,128}")
+
+    def _parametros_suspension_atajo(self, partes):
+        if len(partes) != 4 or partes[1] != "v1":
+            return None
+        token = partes[2]
+        if self._TOKEN_SUSPENSION_RE.fullmatch(token) is None:
+            return None
+        try:
+            duracion_ms = int(partes[3])
+        except ValueError:
+            return None
+        if not 1000 <= duracion_ms <= 10000:
+            return None
+        return token, duracion_ms / 1000.0
+
+    def _sincronizar_suspension_atajo(self) -> None:
+        snapshot = self.estado_operativo.snapshot()
+        if snapshot.hotkey != EstadoComponente.SUSPENDED:
+            return
+        consultar = getattr(self.atajos, "esta_suspendido", None)
+        if not callable(consultar) or not consultar():
+            self.estado_operativo.fijar_componente(
+                "hotkey", EstadoComponente.READY)
+
+    def _comando_suspension_atajo(self, op: str, partes: list[str]) -> str:
+        parametros = self._parametros_suspension_atajo(partes)
+        if parametros is None:
+            return "ERR protocolo hotkey v1 inválido"
+        token, duracion_s = parametros
+        with self._estado_cv:
+            if self._estado != EstadoApp.IDLE:
+                return "ERR hotkey ocupado"
+        estado_hotkey = self.estado_operativo.snapshot().hotkey
+        if estado_hotkey not in {
+                EstadoComponente.READY, EstadoComponente.SUSPENDED}:
+            return "ERR hotkey no disponible"
+        metodo = (
+            getattr(self.atajos, "suspender", None)
+            if op == "hotkey-suspender"
+            else getattr(self.atajos, "renovar_suspension", None)
+        )
+        if not callable(metodo) or not metodo(token, duracion_s):
+            return "ERR lease hotkey rechazado"
+        self.estado_operativo.fijar_componente(
+            "hotkey", EstadoComponente.SUSPENDED)
+        return "OK hotkey suspendido v1"
+
+    def _comando_restaurar_atajo(self, partes: list[str]) -> str:
+        if (
+            len(partes) != 3
+            or partes[1] != "v1"
+            or self._TOKEN_SUSPENSION_RE.fullmatch(partes[2]) is None
+        ):
+            return "ERR protocolo hotkey v1 inválido"
+        restaurar = getattr(self.atajos, "restaurar", None)
+        if not callable(restaurar) or not restaurar(partes[2]):
+            self._sincronizar_suspension_atajo()
+            return "ERR lease hotkey desconocido"
+        self.estado_operativo.fijar_componente(
+            "hotkey", EstadoComponente.READY)
+        return "OK hotkey restaurado v1"
+
     def _atender_comando(self, cmd: str) -> str:
         partes = normalizar_comando(cmd)
         if not partes:
             return "ERR vacío"
         op = partes[0]
+        self._sincronizar_suspension_atajo()
+        if op in {"hotkey-suspender", "hotkey-renovar"}:
+            return self._comando_suspension_atajo(op, partes)
+        if op == "hotkey-restaurar":
+            return self._comando_restaurar_atajo(partes)
         if op == "alternar":
             return self._respuesta_control_lifecycle(self.alternar())
         if op == "iniciar":
@@ -1076,8 +1736,41 @@ class App:
             return self._respuesta_control_lifecycle(self.detener_grabacion())
         if op == "cancelar":
             return self._respuesta_control_lifecycle(self.cancelar_grabacion())
+        if op == "pausar":
+            return "OK pausado" if self.pausar() else "ERR aplicación cerrada"
+        if op == "reanudar":
+            return "OK reanudado" if self.reanudar() else "ERR aplicación cerrada"
         if op == "estado":
             return self._respuesta_estado()
+        if op == "estado-operativo":
+            return serializar_estado(self.estado_operativo.snapshot())
+        if op == "estado-tray":
+            with self._estado_cv:
+                self._expirar_reinicio_locked()
+                estado = self._estado.value
+                pausa_pendiente = self._pausa_pendiente
+                reinicio_pendiente = self._reinicio_pendiente
+            return serializar_estado_tray(resumir_estado_tray(
+                estado, self.estado_operativo.snapshot(),
+                pausa_pendiente=pausa_pendiente,
+                reinicio_pendiente=reinicio_pendiente))
+        if op == "contexto-reinicio":
+            return json.dumps({
+                "schema_version": 1,
+                "pid": os.getpid(),
+                "systemd_invocation": bool(os.environ.get("INVOCATION_ID")),
+            }, separators=(",", ":"))
+        if op == "reiniciar":
+            return self._comando_reinicio(partes)
+        if op == "abrir-configuracion":
+            with self._estado_cv:
+                estado = self._estado
+            foco = "allow" if foco_settings_seguro(estado) else "defer"
+            return json.dumps({
+                "schema_version": 1,
+                "runtime": estado.value,
+                "focus": foco,
+            }, separators=(",", ":"))
         if op == "modo" and len(partes) > 1 and partes[1] in Config.MODOS:
             return (f"OK modo={partes[1]}" if self.cambiar_modo(partes[1])
                     else "ERR aplicación cerrada")
@@ -1093,6 +1786,97 @@ class App:
             self.salir(esperar=False)
             return "OK chau"
         return "ERR comando desconocido"
+
+    def _comando_reinicio(self, partes: list[str]) -> str:
+        """Prepara una frontera segura; nunca inicia el proceso reemplazo."""
+        if (
+            len(partes) != 4
+            or partes[1] != "v1"
+            or self._TOKEN_SUSPENSION_RE.fullmatch(partes[2]) is None
+            or partes[3] not in {"solicitar", "terminar", "estado", "cancelar"}
+        ):
+            return self._respuesta_reinicio("unavailable")
+        token, accion = partes[2], partes[3]
+        detener = False
+        with self._estado_cv:
+            self._expirar_reinicio_locked()
+            estado = self._estado
+            if accion == "cancelar":
+                if self._reinicio_token == token:
+                    self._reinicio_pendiente = False
+                    self._reinicio_token = None
+                    self._reinicio_expira_en = 0.0
+                    self._ultimo_error = ""
+                    self._estado_cv.notify_all()
+                    return self._respuesta_reinicio_locked("accepted")
+                return self._respuesta_reinicio_locked("unavailable")
+
+            if accion == "estado":
+                if self._reinicio_token == token:
+                    self._reinicio_expira_en = time.monotonic() + 15.0
+                    return self._respuesta_reinicio_locked("deferred")
+                if self._reinicio_pendiente:
+                    return self._respuesta_reinicio_locked(
+                        "already_restarting")
+                return self._respuesta_reinicio_locked("unavailable")
+
+            if estado in {EstadoApp.SHUTTING_DOWN, EstadoApp.CLOSED}:
+                return self._respuesta_reinicio_locked("unavailable")
+            if self._reinicio_pendiente:
+                return self._respuesta_reinicio_locked(
+                    "already_restarting")
+            if accion == "solicitar" and estado in {
+                    EstadoApp.STARTING, EstadoApp.RECORDING}:
+                return self._respuesta_reinicio_locked(
+                    "confirmation_required")
+
+            self._reinicio_pendiente = True
+            self._reinicio_token = token
+            self._reinicio_expira_en = time.monotonic() + 15.0
+            self._ultimo_error = ""
+            detener = (
+                accion == "terminar" and estado == EstadoApp.RECORDING)
+            seguro = estado in {EstadoApp.IDLE, EstadoApp.ERROR}
+            self._estado_cv.notify_all()
+
+        if detener:
+            self.detener_grabacion()
+        return self._respuesta_reinicio(
+            "accepted" if seguro else "deferred")
+
+    def _expirar_reinicio_locked(self) -> None:
+        if (
+            self._reinicio_pendiente
+            and time.monotonic() >= self._reinicio_expira_en
+        ):
+            self._reinicio_pendiente = False
+            self._reinicio_token = None
+            self._reinicio_expira_en = 0.0
+            if self._ultimo_error == "reinicio pendiente":
+                self._ultimo_error = ""
+            self._estado_cv.notify_all()
+
+    def _respuesta_reinicio(self, status: str) -> str:
+        with self._estado_cv:
+            return self._respuesta_reinicio_locked(status)
+
+    def _respuesta_reinicio_locked(self, status: str) -> str:
+        estado = self._estado
+        seguro = (
+            self._reinicio_pendiente
+            and estado in {EstadoApp.IDLE, EstadoApp.ERROR}
+            and self._sesion_activa is None
+        )
+        return json.dumps({
+            "schema_version": 1,
+            "status": status,
+            "runtime": estado.value,
+            "safe_to_stop": seguro,
+            "needs_stop": (
+                self._reinicio_pendiente
+                and estado == EstadoApp.RECORDING
+            ),
+        }, separators=(",", ":"))
 
     def _respuesta_control_lifecycle(self, ok: bool) -> str:
         with self._estado_cv:

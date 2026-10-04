@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Reportar una vulnerabilidad de seguridad
+    url: https://github.com/SGGaray/ParlAR/blob/main/SECURITY.md
+    about: No publiques vulnerabilidades en un issue. Seguí el canal privado indicado en SECURITY.md.

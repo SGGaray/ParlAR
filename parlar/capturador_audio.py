@@ -10,7 +10,7 @@ import queue
 import sys
 import threading
 from dataclasses import dataclass, replace
-from typing import Iterator, Optional
+from typing import Callable, Iterator, Optional
 
 import numpy as np
 
@@ -190,12 +190,60 @@ class Segmentador:
 
 # ---------------------------------------------------------------- CapturadorMic
 
+
+def calcular_nivel_visual_pcm(frame: bytes) -> float:
+    """RMS normalizado barato para presentación; no conserva ni muta audio."""
+    if not frame:
+        return 0.0
+    pcm = np.frombuffer(frame, dtype=np.int16)
+    if pcm.size == 0:
+        return 0.0
+    muestras = pcm.astype(np.float32)
+    rms = float(np.sqrt(np.mean(muestras * muestras))) / 32768.0
+    if not np.isfinite(rms):
+        return 0.0
+    return min(1.0, max(0.0, rms))
+
+
+def extraer_envolvente_visual(
+        audio: bytes, barras: int = 17) -> tuple[float, ...]:
+    """Resume PCM int16 mono en energía temporal; no conserva ni muta audio."""
+    if barras <= 0:
+        return ()
+    reposo = (0.0,) * barras
+    if not audio or len(audio) % 2:
+        return reposo
+    pcm = np.frombuffer(audio, dtype=np.int16)
+    if pcm.size < barras:
+        return reposo
+    muestras = pcm.astype(np.float32)
+    cantidad = muestras.size
+    envolvente = []
+    for indice in range(barras):
+        inicio = indice * cantidad // barras
+        fin = (indice + 1) * cantidad // barras
+        region = muestras[inicio:fin]
+        rms = float(np.sqrt(np.mean(region * region))) / 32768.0
+        if not np.isfinite(rms):
+            rms = 0.0
+        envolvente.append(min(1.0, max(0.0, rms)))
+    return tuple(envolvente)
+
+
 class CapturadorMic:
     """Captura continua del micrófono en una cola acotada de frames tamaño VAD."""
 
-    def __init__(self, sample_rate: int, frame_samples: int, max_cola: int = 500):
+    def __init__(self, sample_rate: int, frame_samples: int, max_cola: int = 500,
+                 *, input_device: int | None = None,
+                 publicar_nivel_visual: Callable[[float], None] | None = None,
+                 publicar_descriptor_visual: (
+                     Callable[[float, tuple[float, ...]], None] | None
+                 ) = None):
         self.sample_rate = sample_rate
         self.frame_samples = frame_samples
+        self.input_device = input_device
+        self._publicar_nivel_visual = publicar_nivel_visual
+        self._publicar_descriptor_visual = publicar_descriptor_visual
         self.capacidad = max_cola
         self.q: "queue.Queue[FrameAudio]" = queue.Queue(maxsize=max_cola)
         self._stream = None
@@ -264,6 +312,14 @@ class CapturadorMic:
                     secuencia=self._secuencia,
                     discontinuidad_antes=self._marcar_discontinuidad,
                 )
+                if self._publicar_descriptor_visual is not None:
+                    self._publicar_descriptor_visual(
+                        calcular_nivel_visual_pcm(trozo.audio),
+                        extraer_envolvente_visual(trozo.audio),
+                    )
+                elif self._publicar_nivel_visual is not None:
+                    self._publicar_nivel_visual(
+                        calcular_nivel_visual_pcm(trozo.audio))
                 self._marcar_discontinuidad = False
                 try:
                     self.q.put_nowait(trozo)
@@ -297,7 +353,7 @@ class CapturadorMic:
             import sounddevice as sd  # import diferido para testear sin hardware
             with self._callback_lock:
                 self._preparar_generacion(generacion)
-            stream = sd.RawInputStream(
+            argumentos_stream = dict(
                 samplerate=self.sample_rate,
                 channels=1,
                 dtype="int16",
@@ -305,6 +361,9 @@ class CapturadorMic:
                 callback=lambda indata, frames, time_info, status: self._callback(
                     generacion, indata, frames, time_info, status),
             )
+            if self.input_device is not None:
+                argumentos_stream["device"] = self.input_device
+            stream = sd.RawInputStream(**argumentos_stream)
             stream.start()
         except BaseException:
             with self._callback_lock:

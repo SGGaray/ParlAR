@@ -10,7 +10,7 @@ import time
 import unittest
 from pathlib import Path
 
-from parlar.cliente_guionar import ClienteGuionAR
+from parlar.cliente_guionar import HELLO, ClienteGuionAR
 from parlar.control import ServidorControl
 
 
@@ -20,11 +20,14 @@ class ListenerGuionAR:
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.sock.bind(str(self.ruta))
         self.sock.listen(4)
-        self.sock.settimeout(1)
+        self.sock.settimeout(3)
 
     def aceptar(self):
         conn, _ = self.sock.accept()
         conn.settimeout(1)
+        # Cada conexión nueva abre con un único hello.
+        if self.recibir(conn, 1) != [HELLO]:
+            raise AssertionError("conexión GuionAR sin hello inicial")
         return conn
 
     @staticmethod
@@ -75,6 +78,7 @@ class PruebasRestartGuionAR(unittest.TestCase):
     def cliente(self):
         cliente = ClienteGuionAR(str(self.ruta))
         self.clientes.append(cliente)
+        cliente.iniciar()
         return cliente
 
     def listener(self):
@@ -89,83 +93,70 @@ class PruebasRestartGuionAR(unittest.TestCase):
         self.listeners.remove(anterior)
         return self.listener()
 
+    @staticmethod
+    def sin_mas_datos(conn):
+        conn.settimeout(0.05)
+        try:
+            return conn.recv(1) == b""
+        except socket.timeout:
+            return True
+
     def test_vad_igual_detecta_restart_real(self):
         a = self.listener()
         cliente = self.cliente()
-        self.assertTrue(cliente.evento_vad(True))
         a[1] = a[0].aceptar()
+        self.assertTrue(cliente.evento_vad(True))
         self.assertEqual(a[0].recibir(a[1], 1), [
             {"type": "vad", "data": True}])
 
         b = self.reiniciar_peer(a)
-        self.assertTrue(cliente.evento_vad(True))
         b[1] = b[0].aceptar()
+        self.assertTrue(cliente.evento_vad(True))
         self.assertEqual(b[0].recibir(b[1], 1), [
             {"type": "vad", "data": True}])
 
     def test_partial_unicode_igual_detecta_restart_real(self):
         a = self.listener()
         cliente = self.cliente()
-        self.assertTrue(cliente.enviar_parcial("hipótesis á🙂"))
         a[1] = a[0].aceptar()
+        self.assertTrue(cliente.enviar_parcial("hipótesis á🙂"))
         a[0].recibir(a[1], 1)
 
         b = self.reiniciar_peer(a)
-        self.assertTrue(cliente.enviar_parcial("hipótesis á🙂"))
         b[1] = b[0].aceptar()
+        self.assertTrue(cliente.enviar_parcial("hipótesis á🙂"))
         self.assertEqual(b[0].recibir(b[1], 1), [
             {"type": "partial", "data": "hipótesis á🙂"}])
 
-    def test_vad_y_partial_iguales_reponen_snapshot_sin_final(self):
+    def test_restart_no_repone_snapshot_de_voz_vieja(self):
         a = self.listener()
         cliente = self.cliente()
+        a[1] = a[0].aceptar()
         self.assertTrue(cliente.evento_vad(True))
         self.assertTrue(cliente.enviar_parcial("actual"))
-        a[1] = a[0].aceptar()
         a[0].recibir(a[1], 2)
 
         b = self.reiniciar_peer(a)
-        self.assertTrue(cliente.evento_vad(True))
         b[1] = b[0].aceptar()
-        mensajes = b[0].recibir(b[1], 2)
-        self.assertEqual(mensajes, [
-            {"type": "vad", "data": True},
-            {"type": "partial", "data": "actual"},
-        ])
-        self.assertTrue(cliente.enviar_parcial("actual"))
-        b[1].settimeout(0.05)
-        with self.assertRaises(socket.timeout):
-            b[1].recv(1)
-        self.assertFalse(any(m["type"] == "text" for m in mensajes))
-
-    def test_estado_distinto_tras_restart_actualiza_snapshot(self):
-        a = self.listener()
-        cliente = self.cliente()
-        cliente.evento_vad(True)
-        cliente.enviar_parcial("viejo")
-        a[1] = a[0].aceptar()
-        a[0].recibir(a[1], 2)
-
-        b = self.reiniciar_peer(a)
+        # Tras el hello no llega nada viejo: sólo eventos posteriores.
+        self.assertTrue(self.sin_mas_datos(b[1]))
+        b[1].settimeout(1)
         self.assertTrue(cliente.evento_vad(False))
-        b[1] = b[0].aceptar()
+        self.assertTrue(cliente.enviar_parcial("nuevo"))
         self.assertEqual(b[0].recibir(b[1], 2), [
             {"type": "vad", "data": False},
-            {"type": "partial", "data": "viejo"},
+            {"type": "partial", "data": "nuevo"},
         ])
-        self.assertTrue(cliente.enviar_parcial("nuevo"))
-        self.assertEqual(b[0].recibir(b[1], 1), [
-            {"type": "partial", "data": "nuevo"}])
 
     def test_peer_lento_eagain_no_duplica_ni_reconecta(self):
         listener = self.listener()
         cliente = self.cliente()
-        self.assertTrue(cliente.evento_vad(True))
         listener[1] = listener[0].aceptar()
+        self.assertTrue(cliente.evento_vad(True))
         listener[0].recibir(listener[1], 1)
 
-        # El peer no responde: el readiness con espera cero conserva dedup
-        # sin pagar el timeout, polling ni una conexión adicional.
+        # El peer no responde: la deduplicación no paga timeout, polling
+        # ni una conexión adicional.
         for _ in range(20):
             self.assertTrue(cliente.evento_vad(True))
         listener[1].settimeout(0.05)
@@ -178,18 +169,20 @@ class PruebasRestartGuionAR(unittest.TestCase):
     def test_ausencia_prolongada_y_close_terminal(self):
         a = self.listener()
         cliente = self.cliente()
-        cliente.enviar_parcial("á🙂")
         a[1] = a[0].aceptar()
+        cliente.enviar_parcial("á🙂")
         a[0].recibir(a[1], 1)
         listener, conn = a
         listener.cerrar(conn)
         self.listeners.remove(a)
 
-        self.assertFalse(cliente.enviar_parcial("á🙂"))
-        self.assertFalse(cliente.enviar_parcial("á🙂"))
+        self.assertFalse(cliente.enviar_parcial("perdido"))
+        self.assertFalse(cliente.enviar_parcial("perdido"))
         b = self.listener()
-        self.assertTrue(cliente.enviar_parcial("á🙂"))
         b[1] = b[0].aceptar()
+        self.assertTrue(self.sin_mas_datos(b[1]))
+        b[1].settimeout(1)
+        self.assertTrue(cliente.enviar_parcial("á🙂"))
         self.assertEqual(b[0].recibir(b[1], 1), [
             {"type": "partial", "data": "á🙂"}])
 
@@ -201,21 +194,15 @@ class PruebasRestartGuionAR(unittest.TestCase):
     def test_final_historico_no_se_reproduce_al_reconectar(self):
         a = self.listener()
         cliente = self.cliente()
+        a[1] = a[0].aceptar()
         cliente.evento_vad(True)
         cliente.escribir_texto("final histórico")
-        a[1] = a[0].aceptar()
         iniciales = a[0].recibir(a[1], 2)
         self.assertEqual([m["type"] for m in iniciales], ["vad", "text"])
 
         b = self.reiniciar_peer(a)
-        self.assertTrue(cliente.evento_vad(True))
         b[1] = b[0].aceptar()
-        snapshot = b[0].recibir(b[1], 2)
-        self.assertEqual(snapshot, [
-            {"type": "vad", "data": True},
-            {"type": "partial", "data": ""},
-        ])
-        self.assertFalse(any(m["type"] == "text" for m in snapshot))
+        self.assertTrue(self.sin_mas_datos(b[1]))
 
 
 class ServidorPausado(ServidorControl):

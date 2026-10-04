@@ -32,6 +32,10 @@ class ConfigTemporal(unittest.TestCase):
 
     def test_defaults_y_objeto_valido(self):
         self.assertEqual(Config.load(), Config())
+        self.assertEqual(
+            Config.load().audio_input_device,
+            Config.AUDIO_INPUT_DEFAULT,
+        )
         self.escribir({
             "model_size": "base",
             "device": "cpu",
@@ -47,6 +51,132 @@ class ConfigTemporal(unittest.TestCase):
         self.assertEqual(cfg.frame_ms, 30)
         self.assertEqual(cfg.mode, "streaming")
         self.assertEqual(cfg.extras, {"futura": 7})
+
+    def test_config_historica_sin_entrada_usa_default_sin_bump(self):
+        self.escribir({
+            "schema_version": Config.SCHEMA_VERSION,
+            "device": "cpu",
+        })
+
+        cfg = Config.load()
+
+        self.assertEqual(cfg.audio_input_device, "default")
+        self.assertEqual(cfg.overlay_position, "bottom-center")
+        self.assertEqual(cfg.device, "cpu")
+        self.assertEqual(Config.SCHEMA_VERSION, 1)
+
+    def test_config_historica_usa_bottom_center_sin_bump_de_schema(self):
+        self.escribir({
+            "schema_version": Config.SCHEMA_VERSION,
+            "overlay": True,
+        })
+
+        cfg = Config.load()
+
+        self.assertEqual(cfg.overlay_position, "bottom-center")
+        self.assertEqual(Config.SCHEMA_VERSION, 1)
+
+    def test_overlay_position_valida_persiste_y_hace_roundtrip(self):
+        for posicion in Config.OVERLAY_POSITIONS:
+            with self.subTest(posicion=posicion):
+                Config(overlay_position=posicion).save()
+                self.assertEqual(Config.load().overlay_position, posicion)
+
+    def test_overlay_position_invalida_falla_validacion(self):
+        for posicion in ("middle-center", "arriba", "", None):
+            with self.subTest(posicion=posicion):
+                with self.assertRaisesRegex(
+                        ErrorConfiguracion, "overlay_position"):
+                    Config(overlay_position=posicion).validate()
+
+    def test_recupera_overlay_position_preservada_en_extras(self):
+        self.escribir({
+            "schema_version": Config.SCHEMA_VERSION,
+            "extras": {
+                "overlay_position": "top-right",
+                "futura": True,
+            },
+        })
+
+        cfg = Config.load()
+
+        self.assertEqual(cfg.overlay_position, "top-right")
+        self.assertEqual(cfg.extras, {"futura": True})
+
+    def test_preferencia_entrada_roundtrip_sin_confundir_device(self):
+        identidad = "audio-input:ALSA:Micr%C3%B3fono%20USB"
+        Config(
+            device="cuda",
+            audio_input_device=identidad,
+        ).save()
+
+        cargada = Config.load()
+
+        self.assertEqual(cargada.device, "cuda")
+        self.assertEqual(cargada.audio_input_device, identidad)
+        documento = json.loads(self.ruta.read_text(encoding="utf-8"))
+        self.assertEqual(documento["device"], "cuda")
+        self.assertEqual(documento["audio_input_device"], identidad)
+
+    def test_valida_formato_de_preferencia_entrada(self):
+        validas = (
+            "default",
+            "audio-input:ALSA:Mic%20USB",
+            "audio-input::Mic%20sin%20host",
+        )
+        invalidas = (
+            "",
+            "0",
+            "Mic USB",
+            "audio-input:ALSA:",
+            "audio-input:ALSA: Mic ",
+            "audio-input:ALSA:Mic%GG",
+            "audio-input:ALSA:Mic\nUSB",
+        )
+        for valor in validas:
+            with self.subTest(valida=valor):
+                Config(audio_input_device=valor).validate()
+        for valor in invalidas:
+            with self.subTest(invalida=valor):
+                with self.assertRaisesRegex(
+                        ErrorConfiguracion, "audio_input_device"):
+                    Config(audio_input_device=valor).validate()
+
+    def test_recupera_preferencia_preservada_por_version_anterior(self):
+        identidad = "audio-input:PipeWire:Mic%20USB"
+        self.escribir({
+            "schema_version": Config.SCHEMA_VERSION,
+            "extras": {
+                "audio_input_device": identidad,
+                "futura": True,
+            },
+        })
+
+        cfg = Config.load()
+
+        self.assertEqual(cfg.audio_input_device, identidad)
+        self.assertEqual(cfg.extras, {"futura": True})
+
+    def test_preferencia_recuperada_de_extras_se_normaliza_al_guardar(self):
+        identidad = "audio-input:PipeWire:Mic%20USB"
+        self.escribir({
+            "schema_version": Config.SCHEMA_VERSION,
+            "extras": {
+                "audio_input_device": identidad,
+                "futura": True,
+            },
+        })
+
+        cfg = Config.load()
+        cfg.save()
+
+        documento = json.loads(self.ruta.read_text(encoding="utf-8"))
+        self.assertEqual(documento["audio_input_device"], identidad)
+        self.assertEqual(documento["extras"], {"futura": True})
+        self.assertNotIn(
+            "audio_input_device",
+            documento["extras"],
+        )
 
     def test_config_legacy_adquiere_schema_sin_cambiar_hotkey(self):
         hotkey_legacy = "<ctrl>+<alt>+d"
@@ -85,6 +215,7 @@ class ConfigTemporal(unittest.TestCase):
             ("mode", Config.MODOS),
             ("rewrite_mode", Config.REESCRITURAS),
             ("injector", Config.INYECTORES),
+            ("overlay_position", Config.OVERLAY_POSITIONS),
         ):
             for opcion in opciones:
                 with self.subTest(campo=campo, opcion=opcion):
@@ -142,6 +273,8 @@ class ConfigTemporal(unittest.TestCase):
             ({"stream_interval_s": 0.0}, "stream_interval_s"),
             ({"stream_trim_s": float("-inf")}, "stream_trim_s"),
             ({"type_delay_ms": -1}, "type_delay_ms"),
+            ({"audio_input_device": 0}, "audio_input_device"),
+            ({"audio_input_device": None}, "audio_input_device"),
             ({"mode": "frase"}, "mode"),
             ({"rewrite_mode": "creativo"}, "rewrite_mode"),
             ({"injector": "shell"}, "injector"),

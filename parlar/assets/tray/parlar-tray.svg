@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" role="img" aria-label="ParlAR">
+  <title>ParlAR</title>
+  <!-- Caret de voz simplificado: misma geometría que brand/parlar-16.svg
+       sin baldosa (barras 2/6/4 + cursor). Los tres estados comparten esta
+       silueta; sólo cambian acento, contraste y un detalle del cursor. -->
+  <g fill="#8E8B86">
+    <rect x="2" y="7" width="2" height="2" rx="1"/>
+    <rect x="5" y="5" width="2" height="6" rx="1"/>
+    <rect x="8" y="6" width="2" height="4" rx="1"/>
+  </g>
+  <rect x="11" y="3" width="2" height="10" rx="1" fill="#B4573A"/>
+</svg>

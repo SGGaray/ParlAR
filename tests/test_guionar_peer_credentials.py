@@ -11,7 +11,11 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from parlar.cliente_guionar import ClienteGuionAR, ruta_socket_por_defecto
+from parlar.cliente_guionar import (
+    HELLO,
+    ClienteGuionAR,
+    ruta_socket_por_defecto,
+)
 
 
 _UCRED = struct.Struct("=iII")
@@ -45,6 +49,9 @@ class SocketFalso:
         self.operaciones.append(("send", datos))
         self.enviados.append(datos)
 
+    def shutdown(self, modo):
+        self.operaciones.append(("shutdown", modo))
+
     def close(self):
         self.operaciones.append(("close",))
         self.cerrado = True
@@ -52,6 +59,7 @@ class SocketFalso:
 
 class PruebasCredencialesGuionAR(unittest.TestCase):
     def cliente_con_sockets(self, *sockets):
+        # Sin iniciar(): cada _conectar() es el intento único del worker.
         cliente = ClienteGuionAR("/tmp/guionar-test-peercred.sock")
         parche = mock.patch(
             "parlar.cliente_guionar.socket.socket", side_effect=sockets)
@@ -61,20 +69,21 @@ class PruebasCredencialesGuionAR(unittest.TestCase):
         sock = SocketFalso(credenciales(os.getuid()))
         cliente, parche = self.cliente_con_sockets(sock)
         with parche:
-            self.assertTrue(cliente.escribir_texto("texto legítimo"))
+            self.assertTrue(cliente._conectar())
+        self.assertTrue(cliente.escribir_texto("texto legítimo"))
 
         nombres = [operacion[0] for operacion in sock.operaciones]
         self.assertLess(nombres.index("connect"), nombres.index("peercred"))
         self.assertLess(nombres.index("peercred"), nombres.index("send"))
         self.assertIs(cliente._sock, sock)
+        self.assertEqual(json.loads(sock.enviados[0]), HELLO)
 
-    def test_uid_diferente_rechaza_y_no_envia_snapshot_ni_texto(self):
+    def test_uid_diferente_rechaza_y_no_envia_hello_ni_texto(self):
         sock = SocketFalso(credenciales(os.getuid() + 1))
         cliente, parche = self.cliente_con_sockets(sock)
-        cliente._vad_deseado = True
-        cliente._parcial_deseado = "PARLAR_SEC002_SNAPSHOT"
         with parche, contextlib.redirect_stderr(io.StringIO()):
-            self.assertFalse(cliente.escribir_texto("PARLAR_SEC002_FINAL"))
+            self.assertFalse(cliente._conectar())
+        self.assertFalse(cliente.escribir_texto("PARLAR_SEC002_FINAL"))
 
         self.assertEqual(sock.enviados, [])
         self.assertTrue(sock.cerrado)
@@ -89,7 +98,8 @@ class PruebasCredencialesGuionAR(unittest.TestCase):
             with self.subTest(error=repr(sock.error), peer=sock.peer):
                 cliente, parche = self.cliente_con_sockets(sock)
                 with parche, contextlib.redirect_stderr(io.StringIO()):
-                    self.assertFalse(cliente.evento_vad(True))
+                    self.assertFalse(cliente._conectar())
+                self.assertFalse(cliente.evento_vad(True))
                 self.assertEqual(sock.enviados, [])
                 self.assertTrue(sock.cerrado)
                 self.assertIsNone(cliente._sock)
@@ -99,26 +109,23 @@ class PruebasCredencialesGuionAR(unittest.TestCase):
         cliente, parche = self.cliente_con_sockets(sock)
         with parche, mock.patch.object(socket, "SO_PEERCRED", None), \
                 contextlib.redirect_stderr(io.StringIO()):
-            self.assertFalse(cliente.escribir_texto("no autenticado"))
+            self.assertFalse(cliente._conectar())
+        self.assertFalse(cliente.escribir_texto("no autenticado"))
         self.assertEqual(sock.enviados, [])
         self.assertFalse(any(
             operacion[0] == "peercred" for operacion in sock.operaciones))
         self.assertTrue(sock.cerrado)
         self.assertIsNone(cliente._sock)
 
-    def test_snapshot_valido_se_conserva_despues_de_validar(self):
+    def test_hello_unico_despues_de_validar(self):
         sock = SocketFalso(credenciales(os.getuid()))
         cliente, parche = self.cliente_con_sockets(sock)
-        cliente._vad_deseado = True
-        cliente._parcial_deseado = "hipótesis"
         with parche:
+            self.assertTrue(cliente._conectar())
             self.assertTrue(cliente._conectar())
 
         mensajes = [json.loads(datos) for datos in sock.enviados]
-        self.assertEqual(mensajes, [
-            {"type": "vad", "data": True},
-            {"type": "partial", "data": "hipótesis"},
-        ])
+        self.assertEqual(mensajes, [HELLO])
         nombres = [operacion[0] for operacion in sock.operaciones]
         self.assertLess(nombres.index("peercred"), nombres.index("send"))
 
@@ -127,11 +134,14 @@ class PruebasCredencialesGuionAR(unittest.TestCase):
         segundo = SocketFalso(credenciales(os.getuid() + 1))
         cliente, parche = self.cliente_con_sockets(primero, segundo)
         with parche, contextlib.redirect_stderr(io.StringIO()):
+            self.assertTrue(cliente._conectar())
             self.assertTrue(cliente.escribir_texto("primero"))
-            cliente._desconectar()
+            with cliente._lock:
+                cliente._desconectar()
+            self.assertFalse(cliente._conectar())
             self.assertFalse(cliente.escribir_texto("segundo"))
 
-        self.assertEqual(len(primero.enviados), 1)
+        self.assertEqual(len(primero.enviados), 2)  # hello + texto
         self.assertEqual(segundo.enviados, [])
         self.assertIsNone(cliente._sock)
 
@@ -140,28 +150,30 @@ class PruebasCredencialesGuionAR(unittest.TestCase):
         segundo = SocketFalso(credenciales(os.getuid()))
         cliente, parche = self.cliente_con_sockets(primero, segundo)
         with parche, contextlib.redirect_stderr(io.StringIO()):
-            self.assertFalse(cliente.escribir_texto("primero"))
+            self.assertFalse(cliente._conectar())
+            self.assertTrue(cliente._conectar())
             self.assertTrue(cliente.escribir_texto("segundo"))
 
         self.assertEqual(primero.enviados, [])
-        self.assertEqual(len(segundo.enviados), 1)
+        self.assertEqual(len(segundo.enviados), 2)  # hello + texto
         self.assertIs(cliente._sock, segundo)
 
-    def test_peer_invalido_no_filtra_sentinels_en_logs(self):
-        snapshot = "PARLAR_SEC002_PRIVATE_SNAPSHOT"
+    def test_peer_invalido_no_filtra_sentinels_ni_repite_aviso(self):
         final = "PARLAR_SEC002_PRIVATE_FINAL"
-        sock = SocketFalso(credenciales(os.getuid() + 1))
-        cliente, parche = self.cliente_con_sockets(sock)
-        cliente._vad_deseado = True
-        cliente._parcial_deseado = snapshot
+        sockets = [SocketFalso(credenciales(os.getuid() + 1))
+                   for _ in range(5)]
+        cliente, parche = self.cliente_con_sockets(*sockets)
         salida, error = io.StringIO(), io.StringIO()
         with parche, contextlib.redirect_stdout(salida), \
                 contextlib.redirect_stderr(error):
-            self.assertFalse(cliente.escribir_texto(final))
+            for _ in sockets:
+                self.assertFalse(cliente._conectar())
+                self.assertFalse(cliente.escribir_texto(final))
 
         logs = salida.getvalue() + error.getvalue()
-        self.assertNotIn(snapshot, logs)
         self.assertNotIn(final, logs)
+        # Un socket ajeno persistente no inunda el log en cada reintento.
+        self.assertEqual(logs.count("peer rechazado"), 1)
 
     def test_af_unix_real_mismo_uid_y_rutas_default_se_conservan(self):
         with tempfile.TemporaryDirectory(prefix="parlar-guionar-peer-") as tmp:
@@ -170,13 +182,16 @@ class PruebasCredencialesGuionAR(unittest.TestCase):
             listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             listener.bind(str(ruta))
             listener.listen(1)
-            listener.settimeout(1)
+            listener.settimeout(3)
             cliente = ClienteGuionAR(str(ruta))
             try:
-                self.assertTrue(cliente.escribir_texto("mismo uid"))
+                cliente.iniciar()
                 conn, _ = listener.accept()
                 with conn:
                     conn.settimeout(1)
+                    self.assertEqual(
+                        json.loads(conn.recv(8192).splitlines()[0]), HELLO)
+                    self.assertTrue(cliente.escribir_texto("mismo uid"))
                     self.assertEqual(json.loads(conn.recv(8192)), {
                         "type": "text", "data": "mismo uid",
                     })

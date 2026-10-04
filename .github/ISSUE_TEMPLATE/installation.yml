@@ -1,0 +1,44 @@
+name: Problema de instalación
+description: No se pudo instalar, actualizar o desinstalar ParlAR.
+title: "[Instalación] "
+labels: ["installation"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Revisá antes la sección de instalación del [README](https://github.com/SGGaray/ParlAR#readme).
+  - type: dropdown
+    id: etapa
+    attributes:
+      label: Etapa
+      options:
+        - Instalación
+        - Actualización
+        - Desinstalación
+        - Abrir desde el menú de aplicaciones
+    validations:
+      required: true
+  - type: textarea
+    id: comandos
+    attributes:
+      label: Qué ejecutaste
+      description: Los comandos o pasos, en orden.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: salida
+    attributes:
+      label: Qué mostró
+      description: La salida o el mensaje de error. Quitá cualquier dato privado.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: entorno
+    attributes:
+      label: Sistema
+      description: Distribución y versión, y versión de Python (`python3 --version`).
+      placeholder: Fedora 43, Python 3.14
+    validations:
+      required: true
