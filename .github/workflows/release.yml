@@ -10,15 +10,15 @@ permissions:
 
 jobs:
   gate:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: true
       matrix:
         python-version: ["3.12", "3.14"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -35,10 +35,10 @@ jobs:
   wheelhouse:
     # manylinux_2_28: los wheels nativos quedan instalables en glibc >= 2.28
     # sin compilador ni headers en la máquina del usuario.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     container: quay.io/pypa/manylinux_2_28_x86_64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build native wheels for every supported CPython
         run: |
@@ -50,7 +50,7 @@ jobs:
             --python /opt/python/cp314-cp314/bin/python
           cat wheelhouse/wheelhouse.json
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: parlar-wheelhouse
           path: wheelhouse/
@@ -58,11 +58,11 @@ jobs:
 
   build:
     needs: [gate, wheelhouse]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.14"
 
@@ -71,7 +71,7 @@ jobs:
           python -m pip install --disable-pip-version-check
           setuptools==84.0.0 wheel==0.48.0
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: parlar-wheelhouse
           path: ${{ runner.temp }}/wheelhouse
@@ -93,7 +93,7 @@ jobs:
       - name: Inspect wheel contract
         run: python scripts/check_wheel_contract.py wheel dist/release pyproject.toml
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: parlar-release
           path: dist/release/
@@ -101,9 +101,9 @@ jobs:
 
   checksum:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: parlar-release
           path: release
@@ -116,21 +116,21 @@ jobs:
 
   fresh-install-smoke:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0  # la prueba de upgrade usa el tag v1.0.1
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: parlar-release
           path: release
