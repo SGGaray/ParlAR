@@ -27,6 +27,8 @@ from dataclasses import dataclass, field
 import datetime as _dt
 import errno
 import fcntl
+import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
@@ -58,6 +60,8 @@ _SIN_ESPACIO = re.compile(
     r"Errno 28|Errno 122|No space left on device|Disk quota exceeded",
     re.IGNORECASE)
 COMANDOS = ("parlar", "parlarctl")
+# Referencia de integridad del wheel incluida en share/ por build_release.py.
+REFERENCIA_WHEEL = "parlar-wheel.sha256"
 COMANDO_UNINSTALL = "parlar-uninstall"
 MODULOS_VALIDADOS = (
     "parlar", "parlar.__main__", "parlar.config", "parlar.control",
@@ -114,11 +118,49 @@ class Origen:
     constraints: Path
     uninstall: Path
     wheels: Path | None = None
+    wheel: Path | None = None
+    wheel_sha256: str | None = None
 
     def objetivo(self, extras: str = "") -> str:
         if self.modo == "release":
-            return f"parlar{extras}=={self.version}"
+            # Referencia directa al wheel del release: pip no consulta índices
+            # para ParlAR y vuelve a verificar el hash al leer el archivo.
+            if self.wheel is None or self.wheel_sha256 is None:
+                raise ErrorInstalacion(
+                    "el release no tiene un wheel de ParlAR verificado")
+            return (f"parlar{extras} @ {self.wheel.as_uri()}"
+                    f"#sha256={self.wheel_sha256}")
         return f"{self.raiz}{extras}"
+
+
+def _sha256_archivo(ruta: Path) -> str:
+    digest = hashlib.sha256()
+    with ruta.open("rb") as archivo:
+        for bloque in iter(lambda: archivo.read(1 << 20), b""):
+            digest.update(bloque)
+    return digest.hexdigest()
+
+
+def verificar_wheel_release(share: Path, wheel: Path) -> str:
+    """Compara el wheel con la referencia del release; devuelve su SHA-256."""
+    referencia = share / REFERENCIA_WHEEL
+    try:
+        contenido = referencia.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        raise ErrorInstalacion(
+            f"el release no contiene una referencia válida de {wheel.name}; "
+            "descargalo de nuevo y verificá SHA256SUMS") from None
+    coincidencia = re.fullmatch(r"([0-9a-f]{64})  ([^\s/]+)\n?", contenido)
+    if coincidencia is None or coincidencia.group(2) != wheel.name:
+        raise ErrorInstalacion(
+            f"la referencia de {wheel.name} del release es inválida; "
+            "descargalo de nuevo y verificá SHA256SUMS")
+    esperado = coincidencia.group(1)
+    if not hmac.compare_digest(_sha256_archivo(wheel), esperado):
+        raise ErrorInstalacion(
+            f"{wheel.name} no coincide con la referencia del release; "
+            "descargalo de nuevo y verificá SHA256SUMS")
+    return esperado
 
 
 def detectar_origen(raiz: Path) -> Origen:
@@ -137,6 +179,8 @@ def detectar_origen(raiz: Path) -> Origen:
             constraints=raiz / "constraints.txt",
             uninstall=raiz / "uninstall.sh",
             wheels=raiz / "wheels",
+            wheel=wheel,
+            wheel_sha256=verificar_wheel_release(share, wheel),
         )
     pyproject = raiz / "pyproject.toml"
     if pyproject.is_file() and (raiz / "parlar" / "__init__.py").is_file():
