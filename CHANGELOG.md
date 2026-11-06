@@ -19,6 +19,14 @@
   la reescritura: ParlAR avisa y recomienda `127.0.0.1`.
 - **Credenciales en `ollama_url`.** No se envían y quedan ocultas en errores
   y en `--mostrar-config`.
+- **Canal de control local.** ParlAR y sus clientes (`parlarctl`,
+  Configuración, bandeja y reinicio) verifican que el otro extremo del socket
+  pertenezca al mismo usuario y rechazan cualquier otro.
+- **Socket de control sin `XDG_RUNTIME_DIR`.** Se usa `/run/user/<uid>` o un
+  directorio privado `/tmp/parlar-<uid>/` (0700), nunca un socket suelto en
+  `/tmp`. Si ese directorio pertenece a otro usuario, tiene permisos amplios
+  o es un enlace simbólico, ParlAR no inicia y lo indica. Una instancia de una
+  versión anterior sigue siendo alcanzable durante la actualización.
 
 ## [1.1.0] - 2026-10-04
 

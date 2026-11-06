@@ -21,6 +21,7 @@ from typing import Callable
 from .config import SOCKET_PATH
 from .control import enviar_comando, lock_instancia_ocupado
 from .instalacion import python_estable
+from .ipc_seguro import asegurar_directorio_privado
 from .settings_backend import (
     EstadoParlARSettings,
     consultar_estado_parlar,
@@ -128,6 +129,7 @@ class GuardiaVentanaSettings:
         return self._fd is not None
 
     def adquirir_o_solicitar_presentacion(self) -> bool:
+        asegurar_directorio_privado(self.ruta.parent)
         flags = os.O_CREAT | os.O_RDWR
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW

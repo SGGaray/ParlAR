@@ -23,6 +23,7 @@ from typing import Callable
 from .config import SOCKET_PATH
 from .control import enviar_comando, lock_instancia_ocupado
 from .instalacion import python_estable
+from .ipc_seguro import asegurar_directorio_privado
 
 
 UNIDAD_SYSTEMD = "parlar.service"
@@ -100,6 +101,7 @@ class GuardiaCoordinadorReinicio:
         self._fd: int | None = None
 
     def adquirir(self) -> bool:
+        asegurar_directorio_privado(self.ruta.parent)
         flags = os.O_CREAT | os.O_RDWR
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW
@@ -226,8 +228,21 @@ class CoordinadorReinicio:
 
         return iniciar_runtime()
 
+    def _adquirir_guardia(self) -> bool | None:
+        """None si el lock no es utilizable con seguridad (falla cerrado)."""
+        try:
+            return self._guardia.adquirir()
+        except (OSError, RuntimeError):
+            return None
+
     def ejecutar(self, *, terminar_dictado: bool = False) -> ResultadoReinicio:
-        if not self._guardia.adquirir():
+        adquirida = self._adquirir_guardia()
+        if adquirida is None:
+            return ResultadoReinicio(
+                EstadoResultadoReinicio.FALLIDO,
+                "No se pudo coordinar el reinicio de ParlAR.",
+            )
+        if not adquirida:
             return ResultadoReinicio(
                 EstadoResultadoReinicio.YA_EN_CURSO,
                 "ParlAR ya se está reiniciando.",
@@ -245,7 +260,14 @@ class CoordinadorReinicio:
                 EstadoResultadoReinicio.FALLIDO,
                 "No se pudo iniciar ParlAR nuevamente.",
             )
-        if not self._guardia.adquirir():
+        adquirida = self._adquirir_guardia()
+        if adquirida is None:
+            return ResultadoReinicio(
+                EstadoResultadoReinicio.FALLIDO,
+                "No se pudo coordinar el reinicio de ParlAR.",
+                gestor,
+            )
+        if not adquirida:
             return ResultadoReinicio(
                 EstadoResultadoReinicio.YA_EN_CURSO,
                 "ParlAR ya se está reiniciando.",
