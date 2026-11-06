@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Seguridad
+- **Instalación desde el release.** El instalador usa siempre el wheel de
+  ParlAR incluido en el release y verifica su SHA-256 contra la referencia
+  del propio release antes de instalarlo. Si no coinciden, la instalación se
+  detiene sin modificar la versión vigente.
+- **Entorno de desarrollo.** `setup.sh` aplica `constraints.txt` al instalar
+  las dependencias.
+
 ## [1.1.0] - 2026-10-04
 
 ### Agregado

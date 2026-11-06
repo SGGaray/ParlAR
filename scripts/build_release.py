@@ -57,6 +57,9 @@ SHARE = (
     ("parlar/assets/parlar.svg", "parlar.svg"),
 )
 EJECUTABLES = {"install.sh", "uninstall.sh"}
+# Referencia de integridad del wheel de ParlAR dentro del tarball. Queda
+# cubierta por SHA256SUMS: quien verificó el tarball puede confiar en ella.
+REFERENCIA_WHEEL = "parlar-wheel.sha256"
 # Fuentes del wheel: copia temporal, sin build/, egg-info ni caches del árbol.
 FUENTES_WHEEL = ("pyproject.toml", "README.md", "LICENSE")
 PATRONES_WHEEL = ("parlar/*.py", "parlar/assets/*.svg",
@@ -208,6 +211,7 @@ def contenido_esperado(version: str, ruedas: list[str]) -> set[str]:
     archivos |= {"VERSION", "constraints.txt"}
     archivos |= {f"share/{destino}" for _origen, destino in SHARE}
     archivos.add("share/python-versions.txt")
+    archivos.add(f"share/{REFERENCIA_WHEEL}")
     archivos |= {f"wheels/{nombre}" for nombre in ruedas}
     rutas = {f"{prefijo}/{a}" for a in archivos}
     return rutas | {prefijo, f"{prefijo}/share", f"{prefijo}/wheels"}
@@ -248,10 +252,19 @@ def verificar(salida: Path, version: str, ruedas: list[str],
             f"{prefijo}/wheels/parlar-{version}-py3-none-any.whl").read()
         exigir(hashlib.sha256(incluido).hexdigest() == sha256(wheel),
                "el wheel del tarball difiere del publicado")
+        referencia = tar.extractfile(
+            f"{prefijo}/share/{REFERENCIA_WHEEL}").read().decode()
+        exigir(referencia == linea_referencia_wheel(wheel),
+               f"{REFERENCIA_WHEEL} no coincide con el wheel incluido")
     with zipfile.ZipFile(wheel) as archivo:
         metadata = archivo.read(f"parlar-{version}.dist-info/METADATA").decode()
         exigir(f"\nVersion: {version}\n" in metadata,
                "versión del wheel inesperada")
+
+
+def linea_referencia_wheel(wheel: Path) -> str:
+    """Formato de ``sha256sum``: una sola línea para el wheel de ParlAR."""
+    return f"{sha256(wheel)}  {wheel.name}\n"
 
 
 def construir(wheelhouse: Path, salida: Path) -> dict[str, Path]:
@@ -278,6 +291,8 @@ def construir(wheelhouse: Path, salida: Path) -> dict[str, Path]:
         (staging / "share" / "python-versions.txt").write_text(
             "\n".join(versiones_python) + "\n", encoding="utf-8")
         wheel = construir_wheel(version, staging / "wheels", temporal)
+        (staging / "share" / REFERENCIA_WHEEL).write_text(
+            linea_referencia_wheel(wheel), encoding="utf-8")
         for rueda in ruedas_nativas:
             shutil.copyfile(rueda, staging / "wheels" / rueda.name)
 

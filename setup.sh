@@ -93,13 +93,13 @@ VENV_PYTHON="$REPO_DIR/.venv/bin/python"
 "$VENV_PYTHON" -m pip install --upgrade pip wheel
 
 echo "==> Instalando dependencias Python requeridas"
-"$VENV_PYTHON" -m pip install -r requirements.txt
+"$VENV_PYTHON" -m pip install -r requirements.txt -c constraints.txt
 
 echo "==> Instalando ParlAR y sus comandos"
 "$VENV_PYTHON" -m pip install --no-deps "$REPO_DIR"
 
 echo "==> Intentando instalar VAD opcional"
-if "$VENV_PYTHON" -m pip install -r requirements-optional.txt; then
+if "$VENV_PYTHON" -m pip install -r requirements-optional.txt -c constraints.txt; then
     echo "==> webrtcvad disponible"
 else
     echo "!! webrtcvad no se pudo instalar; se usará el VAD de energía probado" >&2

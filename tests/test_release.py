@@ -168,7 +168,8 @@ class ArtefactoRelease(unittest.TestCase):
                 "parlar_installer.py", "render_desktop.py",
                 "render_service.py", "parlar.desktop.in",
                 "parlar-systemd.desktop.in", "parlar.service.in",
-                "parlar.svg", "python-versions.txt")),
+                "parlar.svg", "python-versions.txt",
+                "parlar-wheel.sha256")),
             f"{prefijo}/wheels/parlar-{VERSION}-py3-none-any.whl",
             *(f"{prefijo}/wheels/evdev-1.9.3-cp{v.replace('.', '')}-"
               f"cp{v.replace('.', '')}-manylinux_2_28_x86_64.whl"
@@ -212,6 +213,14 @@ class ArtefactoRelease(unittest.TestCase):
             resultado = ejecutar("sha256sum", "-c", "SHA256SUMS", cwd=self.salida)
             self.assertEqual(resultado.returncode, 0, resultado.stdout)
 
+    def test_referencia_del_wheel_coincide_con_el_publicado(self):
+        prefijo = f"parlar-{VERSION}"
+        with tarfile.open(self.tarball, "r:gz") as tar:
+            referencia = tar.extractfile(
+                f"{prefijo}/share/parlar-wheel.sha256").read().decode()
+        wheel = self.artefactos["wheel"]
+        self.assertEqual(referencia, f"{digest(wheel)}  {wheel.name}\n")
+
     def test_constraints_son_pins_exactos(self):
         with tarfile.open(self.tarball, "r:gz") as tar:
             texto = tar.extractfile(f"parlar-{VERSION}/constraints.txt").read()
@@ -249,6 +258,7 @@ class ArtefactoRelease(unittest.TestCase):
         self.assertFalse(any(p.name == ".git" for p in raiz.rglob("*")))
         origen = pi.detectar_origen(raiz)
         self.assertEqual((origen.modo, origen.version), ("release", VERSION))
+        self.assertEqual(origen.wheel_sha256, digest(self.artefactos["wheel"]))
         self.assertEqual(pi.versiones_python(origen), list(PYTHONS))
         for archivo in ("install.sh", "uninstall.sh"):
             texto = (raiz / archivo).read_text(encoding="utf-8")
@@ -336,11 +346,14 @@ class InstaladorBase(unittest.TestCase):
         self.destino = pi.Destino.desde_entorno(self.entorno)
         self.release = self.base / "release extraído"
         (self.release / "wheels").mkdir(parents=True)
+        self.wheel = self.release / "wheels" / f"parlar-{VERSION}-py3-none-any.whl"
+        self.wheel.write_bytes(b"wheel de prueba")
         self.origen = pi.Origen(
             modo="release", raiz=self.release, version=VERSION,
             share=ROOT / "scripts", icono=ROOT / "parlar/assets/parlar.svg",
             constraints=ROOT / "constraints.txt",
-            uninstall=ROOT / "uninstall.sh", wheels=self.release / "wheels")
+            uninstall=ROOT / "uninstall.sh", wheels=self.release / "wheels",
+            wheel=self.wheel, wheel_sha256=digest(self.wheel))
         self.herramientas = HerramientasFalsas()
         self.tools = self.base / "tools"
         self.tools.mkdir()
@@ -443,8 +456,10 @@ class InstalacionNueva(InstaladorBase):
             "--no-cache-dir", "-c", str(ROOT / "constraints.txt"),
             "--only-binary=:all:",
             "--find-links", str(self.release / "wheels"),
-            f"parlar=={VERSION}"])
+            f"parlar @ {self.wheel.as_uri()}#sha256={digest(self.wheel)}"])
         self.assertTrue(all("--only-binary=:all:" in a for a in argumentos))
+        self.assertFalse(any("parlar==" in arg
+                             for a in argumentos for arg in a))
 
     def test_servicio_opcional_apunta_a_current(self):
         self.instalar(servicio=True)
@@ -672,7 +687,9 @@ class EspacioEnDisco(InstaladorBase):
         self.assertTrue(resultado.cuda)
         paquetes = [a[-1] for tipo, a in self.herramientas.llamadas
                     if tipo == "pip"]
-        self.assertIn(f"parlar[cuda]=={VERSION}", paquetes)
+        self.assertIn(
+            f"parlar[cuda] @ {self.wheel.as_uri()}#sha256={digest(self.wheel)}",
+            paquetes)
 
     def test_cpu_only_con_3_gib_continua_aunque_haya_nvidia(self):
         self.herramientas.nvidia = self.herramientas.cuda = True
@@ -737,7 +754,7 @@ class EspacioEnDisco(InstaladorBase):
 
     def test_enospc_durante_pip_base_conserva_current(self):
         mensaje = self._disco_lleno_durante(
-            "parlar==", OSError(errno.ENOSPC, "No space left on device"))
+            "parlar @ ", OSError(errno.ENOSPC, "No space left on device"))
         self.assertIn("No space left on device", mensaje)
 
     def test_pip_real_detecta_disco_lleno_en_su_salida(self):
@@ -758,7 +775,7 @@ class EspacioEnDisco(InstaladorBase):
             self.assertFalse(pi.Herramientas().pip_install(otro, ["x"]))
 
     def test_fallo_sin_espacio_en_instalacion_nueva(self):
-        self.herramientas.error_pip = ("parlar==", pi.ErrorSinEspacio("Errno 28"))
+        self.herramientas.error_pip = ("parlar @ ", pi.ErrorSinEspacio("Errno 28"))
         with self.disco(8 * GIB), self.assertRaises(pi.ErrorSinEspacio) as error:
             self.instalar()
         self.assertIn("No quedó nada instalado a medias.", str(error.exception))
