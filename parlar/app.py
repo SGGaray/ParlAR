@@ -258,7 +258,8 @@ class App:
             self.motor, cfg.sample_rate, cfg.stream_interval_s, cfg.stream_trim_s)
         self.proc = proc or ProcesadorTexto(
             cfg.remove_fillers, cfg.voice_commands, cfg.rewrite_mode,
-            cfg.ollama_model, cfg.ollama_url, cfg.comando_enviar)
+            cfg.ollama_model, cfg.ollama_url, cfg.comando_enviar,
+            ollama_permitir_http=cfg.ollama_allow_insecure_http)
         self.salida = crear_coordinador_salida(
             cfg,
             inyector=inyector,

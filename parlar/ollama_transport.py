@@ -2,9 +2,33 @@
 
 import sys
 import time
+import urllib.parse
 import urllib.request
 
-from .procesador_texto import _leer_json_ollama
+from .procesador_texto import (
+    _leer_json_ollama,
+    host_es_loopback,
+    host_no_especificado,
+)
+
+
+class _SinRedirecciones(urllib.request.HTTPRedirectHandler):
+    """Una respuesta 3xx termina la request: nunca se acepta otro origen."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _abridor(url: str):
+    """Opener sin redirecciones; hacia loopback, además, sin proxies."""
+    partes = urllib.parse.urlsplit(url)
+    if (partes.scheme not in ("http", "https") or "@" in partes.netloc
+            or host_no_especificado(partes.hostname)):
+        return None
+    # None: proxies del entorno (y su no_proxy) para destinos remotos.
+    proxies = {} if host_es_loopback(partes.hostname) else None
+    return urllib.request.build_opener(
+        urllib.request.ProxyHandler(proxies), _SinRedirecciones)
 
 
 def main() -> int:
@@ -22,6 +46,9 @@ def main() -> int:
             return 2
 
         url = url_bytes.decode("utf-8")
+        abridor = _abridor(url)
+        if abridor is None:
+            return 2
 
         request = urllib.request.Request(
             url,
@@ -30,7 +57,7 @@ def main() -> int:
         )
 
         deadline = time.monotonic() + timeout
-        with urllib.request.urlopen(request, timeout=timeout) as respuesta:
+        with abridor.open(request, timeout=timeout) as respuesta:
             data = _leer_json_ollama(respuesta, deadline)
 
         texto = data.get("response", "")

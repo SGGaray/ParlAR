@@ -9,6 +9,16 @@
   detiene sin modificar la versión vigente.
 - **Entorno de desarrollo.** `setup.sh` aplica `constraints.txt` al instalar
   las dependencias.
+- **Reescritura con Ollama.** Las conexiones a un Ollama local ya no pasan
+  por los proxies del entorno, y ninguna redirección HTTP se sigue.
+- **Ollama remoto por HTTP.** Un destino no local sin `https`, incluida una
+  red privada, ya no recibe texto salvo que se active
+  `ollama_allow_insecure_http`; mientras tanto se usa la reescritura local y
+  ParlAR lo avisa una vez.
+- **Direcciones de escucha.** `0.0.0.0` y `::` no son destinos válidos para
+  la reescritura: ParlAR avisa y recomienda `127.0.0.1`.
+- **Credenciales en `ollama_url`.** No se envían y quedan ocultas en errores
+  y en `--mostrar-config`.
 
 ## [1.1.0] - 2026-10-04
 

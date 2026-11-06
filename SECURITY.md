@@ -62,6 +62,36 @@ defecto, pero es configurable. Si elegís una URL remota, el texto que se
 reescribe sale de la máquina hacia ese servicio. ParlAR no promete privacidad
 ni tratamiento local para un endpoint configurado por el usuario.
 
+Política de destino de Ollama:
+
+- **Loopback** (`127.0.0.0/8`, incluidas formas abreviadas como `127.1`,
+  `::1` y `localhost`): HTTP o HTTPS, siempre en conexión directa. Las
+  variables de proxy del entorno (`http_proxy`, `https_proxy`, `all_proxy`)
+  no se aplican, aunque falte `no_proxy`.
+- **Direcciones de escucha** (`0.0.0.0`, `::` y equivalentes como `0`): son
+  para que un servidor escuche, no para conectarse. ParlAR no envía texto a
+  ellas, con o sin la opción de abajo; para un Ollama local usá `127.0.0.1`.
+- **Destino no local por HTTPS**: permitido. Respeta los proxies del entorno.
+- **Destino no local por HTTP sin cifrar**: deshabilitado por defecto,
+  también para redes privadas (`10.0.0.0/8`, `172.16.0.0/12`,
+  `192.168.0.0/16`). Se habilita sólo con
+  `"ollama_allow_insecure_http": true` en `config.json`. Sin esa opción,
+  ParlAR no envía el texto, avisa una vez y usa la reescritura local.
+
+  Antes de activarla: el texto dictado viaja sin cifrar y sin autenticar el
+  servidor. Cualquier equipo o proceso con acceso a esa red (Wi-Fi
+  compartida, otro dispositivo de la LAN, un router comprometido) puede leer
+  lo que dictás o devolver texto alterado que ParlAR escribe en la ventana
+  activa. Usala sólo con un Ollama propio en una red que controlás; si
+  podés, preferí `https` o un túnel (por ejemplo SSH) hacia `127.0.0.1`. La
+  opción afecta únicamente a la reescritura con Ollama: no cambia ninguna
+  otra conexión de ParlAR.
+- **Redirecciones HTTP**: nunca se siguen. Una respuesta 3xx se trata como
+  fallo y se usa la reescritura local, sin aceptar contenido de otro origen.
+- **Credenciales en la URL** (`usuario:clave@host`): no se envían ni se usan
+  para autenticar. La reescritura usa el modo local y los mensajes de error y
+  `--mostrar-config` muestran la URL con las credenciales ocultas.
+
 La instalación y el provisioning pueden descargar dependencias y modelos.
 GuionAR se comunica por IPC Unix local y valida que el peer use el mismo UID.
 Para este modelo, los procesos del mismo UID forman parte del mismo dominio de

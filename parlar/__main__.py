@@ -262,7 +262,9 @@ def main():
         print("[config] guardada")
 
     if args.mostrar_config:
-        print(json.dumps(asdict(cfg), indent=2, ensure_ascii=False))
+        datos = asdict(cfg)
+        datos["ollama_url"] = Config.url_redactada(cfg.ollama_url)
+        print(json.dumps(datos, indent=2, ensure_ascii=False))
         return
     if args.ruta_config:
         print(CONFIG_FILE)
