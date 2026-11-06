@@ -22,13 +22,16 @@ from .hotkey import (
     ErrorAtajo,
     validar_atajo_principal,
 )
+from .ipc_seguro import resolver_ruta_socket, ruta_socket_legada
 
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "parlar"
 CONFIG_FILE = CONFIG_DIR / "config.json"
-_runtime = os.environ.get("XDG_RUNTIME_DIR")
-RUNTIME_DIR = Path(_runtime) if _runtime and Path(_runtime).is_dir() else Path("/tmp")
-SOCKET_PATH = (RUNTIME_DIR / "parlar.sock" if _runtime and Path(_runtime).is_dir()
-               else RUNTIME_DIR / f"parlar-{os.getuid()}.sock")
+# Directorio privado del usuario (ver ipc_seguro): nunca un socket suelto en
+# /tmp. La ruta legada sólo se consulta para alcanzar instancias previas.
+SOCKET_PATH = resolver_ruta_socket()
+RUNTIME_DIR = SOCKET_PATH.parent
+_socket_legado = ruta_socket_legada()
+SOCKET_PATH_LEGADO = None if _socket_legado == SOCKET_PATH else _socket_legado
 
 
 class ErrorConfiguracion(ValueError):

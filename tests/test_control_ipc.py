@@ -20,6 +20,7 @@ from parlar.control import (
     ServidorControl,
     normalizar_comando,
 )
+from parlar.ipc_seguro import asegurar_directorio_privado, resolver_ruta_socket
 
 
 def peticion(ruta, partes, *, cerrar_escritura=False):
@@ -155,9 +156,24 @@ class PruebasControl(unittest.TestCase):
         self.ruta.unlink()
         propio.unlink()
 
-    def test_fallback_global_incluye_uid(self):
-        if str(SOCKET_PATH).startswith("/tmp/"):
-            self.assertIn(str(os.getuid()), SOCKET_PATH.name)
+    def test_fallback_global_es_privado_y_por_uid(self):
+        # La propiedad no depende de dónde viva XDG_RUNTIME_DIR: sin runtime
+        # válido, el socket queda en un subdirectorio por UID (nunca suelto
+        # en el directorio compartido) que se crea/valida como 0700 propio.
+        with tempfile.TemporaryDirectory(prefix="parlar-fallback-") as tmp:
+            compartido = Path(tmp) / "tmp"
+            compartido.mkdir()
+            os.chmod(compartido, 0o1777)
+            ruta = resolver_ruta_socket(
+                entorno={}, raiz_run_user=Path(tmp) / "sin-run-user",
+                raiz_tmp=compartido)
+            self.assertEqual(ruta.parent.parent, compartido)
+            self.assertEqual(ruta.parent.name, f"parlar-{os.getuid()}")
+            asegurar_directorio_privado(ruta.parent)
+            info = os.lstat(ruta.parent)
+            self.assertEqual(info.st_uid, os.getuid())
+            self.assertEqual(stat.S_IMODE(info.st_mode) & 0o077, 0)
+        self.assertNotEqual(SOCKET_PATH.parent, Path("/tmp"))
 
     def test_matriz_aliases_y_valores_normalizados(self):
         casos = {

@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import signal
 import socket
+import struct
 import subprocess
 import sys
 from pathlib import Path
@@ -22,6 +24,7 @@ ETIQUETA_CONFIGURACION = "Configuración…"
 ETIQUETA_REINICIAR = "Reiniciar"
 ETIQUETA_SALIR = "Salir"
 CODIGO_REQUIERE_CONFIRMACION = 3
+_UCRED = struct.Struct("=iII")  # Linux: pid_t, uid_t, gid_t
 
 
 def comando_abrir_configuracion(python: str) -> list[str]:
@@ -36,11 +39,26 @@ def comando_reiniciar(
     return comando
 
 
+def verificar_peer(cliente) -> None:
+    """Copia aislada de ipc_seguro.verificar_peer (este helper no importa
+    ParlAR): sólo se habla con un daemon del mismo UID."""
+    opcion = getattr(socket, "SO_PEERCRED", None)
+    if opcion is None:
+        raise PermissionError("SO_PEERCRED no disponible")
+    datos = cliente.getsockopt(socket.SOL_SOCKET, opcion, _UCRED.size)
+    if len(datos) != _UCRED.size:
+        raise PermissionError("credenciales de peer malformadas")
+    _, uid, _ = _UCRED.unpack(datos)
+    if uid != os.getuid():
+        raise PermissionError("peer de control con UID inesperado")
+
+
 def enviar_comando(ruta: Path, comando: str, *, timeout=0.6) -> str:
     cliente = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     cliente.settimeout(timeout)
     try:
         cliente.connect(str(ruta))
+        verificar_peer(cliente)
         cliente.sendall((comando + "\n").encode("utf-8"))
         return cliente.recv(MAX_RESPUESTA).decode("utf-8", "replace").strip()
     finally:

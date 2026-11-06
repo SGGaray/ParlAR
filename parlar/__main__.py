@@ -16,6 +16,7 @@ import threading
 from .config import CONFIG_FILE, Config, ErrorConfiguracion
 from .control import GuardiaInstancia, InstanciaActivaError
 from .estado_operativo import ErrorInicializacionSTT
+from .ipc_seguro import ErrorDirectorioInseguro
 from .runtime_nvidia import preparar_runtime_nvidia
 from .settings_backend import ErrorInicializacionAudio
 
@@ -291,6 +292,9 @@ def main():
     except InstanciaActivaError:
         print("ParlAR ya está ejecutándose.", file=sys.stderr)
         raise SystemExit(_CODIGO_INSTANCIA_ACTIVA)
+    except ErrorDirectorioInseguro as e:
+        print(f"[control] {e}", file=sys.stderr)
+        raise SystemExit(1)
     except ErrorInicializacionAudio as e:
         print(f"[audio] no se pudo iniciar: {e}", file=sys.stderr)
         raise SystemExit(1)

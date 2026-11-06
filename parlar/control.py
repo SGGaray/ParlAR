@@ -1,7 +1,9 @@
 """Canal de control por socket Unix.
 
-El daemon escucha en $XDG_RUNTIME_DIR/parlar.sock. `parlarctl <cmd>` envía
-comandos de una línea. Este es el camino canónico para atajos en Wayland:
+El daemon escucha en $XDG_RUNTIME_DIR/parlar.sock (o en un directorio privado
+de respaldo, ver ipc_seguro). `parlarctl <cmd>` envía comandos de una línea.
+Ambos extremos verifican con SO_PEERCRED que el otro proceso sea del mismo
+usuario. Este es el camino canónico para atajos en Wayland:
 asigná `parlarctl alternar` a un atajo de teclado del compositor/DE.
 
 Comandos (español primero, alias en inglés entre paréntesis):
@@ -24,7 +26,14 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from .config import SOCKET_PATH
+from . import config as _config
+from .config import SOCKET_PATH, SOCKET_PATH_LEGADO
+from .ipc_seguro import (
+    PeerNoAutorizadoError,
+    asegurar_directorio_privado,
+    longitud_socket_valida,
+    verificar_peer,
+)
 
 _MAX_COMANDO = 4096
 _TIMEOUT_CLIENTE = 0.35
@@ -54,6 +63,21 @@ ALIAS_VALORES = {
 
 class InstanciaActivaError(RuntimeError):
     """El inicio fue rechazado porque otra instancia conserva el control."""
+
+
+def _ruta_legada_para(ruta) -> Path | None:
+    """Endpoint de versiones previas, sólo para la ruta por defecto.
+
+    Permite alcanzar (y no duplicar) una instancia vieja que siga escuchando
+    en la ruta histórica durante una actualización. Nunca se usa para crear
+    sockets ni locks nuevos.
+    """
+    if SOCKET_PATH_LEGADO is None:
+        return None
+    if Path(ruta) != Path(_config.SOCKET_PATH):
+        return None
+    legado = Path(SOCKET_PATH_LEGADO)
+    return None if legado == Path(ruta) else legado
 
 
 class GuardiaInstancia:
@@ -96,6 +120,7 @@ class GuardiaInstancia:
     def adquirir(self):
         if self._fd is not None:
             raise RuntimeError("la instancia de control ya posee su lock")
+        asegurar_directorio_privado(self.ruta.parent)
         flags = os.O_CREAT | os.O_RDWR
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW
@@ -106,6 +131,11 @@ class GuardiaInstancia:
                 f"no se pudo abrir el lock de control: {self.ruta_lock}") from exc
         try:
             info = self._validar_fd(fd)
+            legado = _ruta_legada_para(self.ruta)
+            if legado is not None and lock_instancia_ocupado(legado):
+                fcntl.flock(fd, fcntl.LOCK_UN)
+                raise InstanciaActivaError(
+                    "ya existe una instancia activa de ParlAR (ruta previa)")
         except BaseException:
             os.close(fd)
             raise
@@ -168,7 +198,15 @@ class GuardiaInstancia:
 
 def lock_instancia_ocupado(ruta=None) -> bool:
     """Consulta el flock en Linux sin adquirirlo ni interferir con startup."""
-    ruta_control = Path(ruta or SOCKET_PATH)
+    if ruta is None:
+        legado = _ruta_legada_para(SOCKET_PATH)
+        return _lock_ocupado(SOCKET_PATH) or (
+            legado is not None and _lock_ocupado(legado))
+    return _lock_ocupado(ruta)
+
+
+def _lock_ocupado(ruta) -> bool:
+    ruta_control = Path(ruta)
     ruta_lock = Path(f"{ruta_control}.lock")
     try:
         info = os.lstat(ruta_lock)
@@ -225,6 +263,7 @@ class ServidorControl:
         self._conexiones_activas = set()
         self._hilos_lock = threading.Lock()
         self._detener_lock = threading.Lock()
+        self._peer_rechazado_avisado = False
 
     def iniciar(self):
         with self._detener_lock:
@@ -311,6 +350,10 @@ class ServidorControl:
             raise primer_error
 
     def _preparar_ruta(self):
+        if not longitud_socket_valida(self.ruta):
+            raise RuntimeError(
+                f"la ruta de control excede el límite de AF_UNIX: {self.ruta}")
+        asegurar_directorio_privado(Path(self.ruta).parent)
         try:
             info = os.lstat(self.ruta)
         except FileNotFoundError:
@@ -342,6 +385,9 @@ class ServidorControl:
                 continue
             except OSError:
                 break
+            if not self._peer_autorizado(conn):
+                conn.close()
+                continue
             aceptado_en = time.monotonic()
             if not self._clientes.acquire(blocking=False):
                 conn.close()
@@ -364,6 +410,18 @@ class ServidorControl:
                     conn.close()
                     self._clientes.release()
                     raise
+
+    def _peer_autorizado(self, conn) -> bool:
+        """Sólo procesos del mismo UID; antes de consumir un cupo de cliente."""
+        try:
+            verificar_peer(conn)
+        except PeerNoAutorizadoError:
+            if not self._peer_rechazado_avisado:
+                self._peer_rechazado_avisado = True
+                print("[control] conexión rechazada: peer no autorizado",
+                      file=sys.stderr)
+            return False
+        return True
 
     def _leer_comando(self, conn, aceptado_en=None):
         aceptado_en = aceptado_en or time.monotonic()
@@ -471,16 +529,53 @@ class ServidorControl:
             pass
 
 
-def enviar_comando(cmd: str, *, timeout: float = 3.0) -> str:
-    """Lado cliente, usado por el punto de entrada parlarctl."""
+def _conectar_verificado(ruta, timeout: float) -> socket.socket:
+    """Conecta y valida el peer antes de enviar cualquier byte."""
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.settimeout(timeout)
     try:
-        s.connect(str(SOCKET_PATH))
+        s.settimeout(timeout)
+        s.connect(str(ruta))
+        verificar_peer(s)
+    except BaseException:
+        s.close()
+        raise
+    return s
+
+
+def _conectar_control(timeout: float) -> socket.socket:
+    ruta = Path(SOCKET_PATH)
+    try:
+        return _conectar_verificado(ruta, timeout)
+    except (ConnectionRefusedError, FileNotFoundError) as ausente:
+        legado = _ruta_legada_para(ruta)
+        if legado is None:
+            raise
+        try:
+            return _conectar_verificado(legado, timeout)
+        except OSError:
+            # La ruta previa puede estar en un directorio compartido: un
+            # endpoint ajeno o inutilizable equivale a ausencia, nunca a un
+            # runtime activo ni a un error que bloquee el arranque.
+            raise ausente from None
+
+
+def enviar_comando(cmd: str, *, timeout: float = 3.0) -> str:
+    """Lado cliente, usado por parlarctl, Settings, launcher y restart."""
+    s = _conectar_control(timeout)
+    try:
         s.sendall((cmd + "\n").encode("utf-8"))
         return s.recv(4096).decode(errors="replace").strip()
     finally:
         s.close()
+
+
+def _parlarctl_enviar(cmd: str) -> None:
+    try:
+        print(enviar_comando(cmd))
+    except PeerNoAutorizadoError:
+        print("el socket de control de ParlAR no pertenece a este usuario",
+              file=sys.stderr)
+        sys.exit(1)
 
 
 def parlarctl_main():
@@ -507,11 +602,11 @@ def parlarctl_main():
         sys.exit(2)
     cmd = " ".join(args.comando)
     try:
-        print(enviar_comando(cmd))
+        _parlarctl_enviar(cmd)
     except (ConnectionRefusedError, FileNotFoundError):
         if lock_instancia_ocupado():
             try:
-                print(enviar_comando(cmd))
+                _parlarctl_enviar(cmd)
                 return
             except (ConnectionRefusedError, FileNotFoundError):
                 pass
