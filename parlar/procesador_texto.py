@@ -10,12 +10,15 @@ y trae reglas de reescritura para español además de inglés. Los comandos de
 voz son español-primero, con equivalentes en inglés como respaldo.
 """
 
+import ipaddress
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import time
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import Optional
@@ -137,6 +140,77 @@ def _leer_json_ollama(respuesta, deadline: float):
     if not isinstance(data, dict):
         raise ValueError("respuesta Ollama no es un objeto JSON")
     return data
+
+
+_HOST_IPV4_NUMERICO = re.compile(r"[0-9a-fx.]+")
+
+
+def _ip_de_host(hostname: Optional[str]):
+    """IP que el resolver usaría para un host literal, o None si es un nombre.
+
+    Incluye las formas IPv4 abreviadas que acepta inet_aton (``127.1``,
+    ``0``, ``0x7f000001``) y desenvuelve las IPv4 mapeadas en IPv6.
+    """
+    if not hostname:
+        return None
+    host = hostname.rstrip(".").lower()
+    try:
+        ip = ipaddress.ip_address(host.split("%", 1)[0])
+    except ValueError:
+        if not _HOST_IPV4_NUMERICO.fullmatch(host):
+            return None
+        try:
+            ip = ipaddress.IPv4Address(socket.inet_aton(host))
+        except OSError:
+            return None
+    return getattr(ip, "ipv4_mapped", None) or ip
+
+
+def host_es_loopback(hostname: Optional[str]) -> bool:
+    """``localhost`` o una IP de loopback (127.0.0.0/8, ::1)."""
+    if hostname and hostname.rstrip(".").lower() == "localhost":
+        return True
+    ip = _ip_de_host(hostname)
+    return ip is not None and ip.is_loopback
+
+
+def host_no_especificado(hostname: Optional[str]) -> bool:
+    """``0.0.0.0`` o ``::``: direcciones para escuchar, no para conectar."""
+    ip = _ip_de_host(hostname)
+    return ip is not None and ip.is_unspecified
+
+
+def motivo_bloqueo_ollama(url: str, permitir_http: bool) -> Optional[str]:
+    """Política de destino: devuelve por qué no se envía texto, o None.
+
+    Las credenciales en la URL nunca se envían (urllib tampoco las soporta).
+    HTTP sin cifrar sólo se usa hacia loopback, salvo opt-in explícito.
+    """
+    try:
+        partes = urllib.parse.urlsplit(url)
+        hostname = partes.hostname
+    except ValueError:
+        return None  # el transporte falla de forma controlada
+    if "@" in partes.netloc:
+        return "credenciales"
+    if host_no_especificado(hostname):
+        return "no_especificada"
+    if (partes.scheme == "http" and not permitir_http
+            and not host_es_loopback(hostname)):
+        return "http_remoto"
+    return None
+
+
+_AVISOS_POLITICA_OLLAMA = {
+    "credenciales": (
+        "'ollama_url' contiene credenciales, que ParlAR no envía"),
+    "no_especificada": (
+        "'ollama_url' usa una dirección de escucha (0.0.0.0 o ::), no de "
+        "conexión; para un Ollama local usá 127.0.0.1"),
+    "http_remoto": (
+        "Ollama remoto por HTTP sin cifrar está deshabilitado; usá https "
+        "o activá 'ollama_allow_insecure_http'"),
+}
 
 
 def _ejecutar_ollama_aislado(
@@ -419,13 +493,16 @@ class ProcesadorTexto:
     def __init__(self, remove_fillers: bool = True, voice_commands: bool = True,
                  rewrite_mode: str = "none", ollama_model: str = "",
                  ollama_url: str = "http://127.0.0.1:11434",
-                 comando_enviar: bool = False):
+                 comando_enviar: bool = False,
+                 ollama_permitir_http: bool = False):
         self.remove_fillers = remove_fillers
         self.voice_commands = voice_commands
         self.comando_enviar = comando_enviar
         self.rewrite_mode = rewrite_mode
         self.ollama_model = ollama_model
         self.ollama_url = ollama_url.rstrip("/")
+        self.ollama_permitir_http = ollama_permitir_http
+        self._avisos_politica_emitidos: set[str] = set()
         self._estado_literal = _EstadoLiteral()
         self._fragmento_al_inicio = True
 
@@ -581,6 +658,14 @@ class ProcesadorTexto:
         }
         prompt = prompts.get(self.rewrite_mode)
         if not prompt:
+            return None
+        motivo = motivo_bloqueo_ollama(
+            self.ollama_url, self.ollama_permitir_http)
+        if motivo is not None:
+            if motivo not in self._avisos_politica_emitidos:
+                self._avisos_politica_emitidos.add(motivo)
+                print(f"[procesador] {_AVISOS_POLITICA_OLLAMA[motivo]}; "
+                      "se usa fallback local", file=sys.stderr)
             return None
         try:
             deadline = time.monotonic() + _OLLAMA_DEADLINE_S

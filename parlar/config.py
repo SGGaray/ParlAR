@@ -102,6 +102,10 @@ class Config:
                                        # apagado por defecto: ver SECURITY.md
     ollama_model: str = ""             # ej. "llama3.2:3b"; vacío = solo reglas
     ollama_url: str = "http://127.0.0.1:11434"
+    # Sólo para la reescritura con Ollama: permite HTTP sin cifrar hacia un
+    # destino no local (también RFC 1918). Apagado: loopback o https.
+    # Riesgos en SECURITY.md.
+    ollama_allow_insecure_http: bool = False
 
     # --- Inyección ---
     injector: str = "auto"             # auto | xdotool | wtype | ydotool | clipboard
@@ -423,7 +427,8 @@ class Config:
 
         if not self._url_ollama_valida(self.ollama_url):
             errores.append(
-                f"'ollama_url'={self.ollama_url!r}: debe ser una URL HTTP(S) "
+                f"'ollama_url'={self.url_redactada(self.ollama_url)!r}: "
+                "debe ser una URL HTTP(S) "
                 "con hostname válido"
             )
 
@@ -487,6 +492,22 @@ class Config:
             + urllib.parse.quote(nombre, safe="")
         )
         return valor == canonica
+
+    @staticmethod
+    def url_redactada(valor: str) -> str:
+        """URL apta para mensajes: sin credenciales, query ni fragmento."""
+        try:
+            partes = urllib.parse.urlsplit(valor)
+        except (TypeError, ValueError):
+            return "<URL inválida>"
+        netloc = partes.netloc
+        if "@" in netloc:
+            netloc = "***@" + netloc.rsplit("@", 1)[1]
+        return urllib.parse.urlunsplit((
+            partes.scheme, netloc, partes.path,
+            "***" if partes.query else "",
+            "***" if partes.fragment else "",
+        ))
 
     @staticmethod
     def _url_ollama_valida(valor: str) -> bool:

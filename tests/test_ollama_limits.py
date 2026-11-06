@@ -383,7 +383,7 @@ class PruebasLimitesOllama(unittest.TestCase):
                 side_effect=fabrica), \
                 mock.patch.object(procesador_mod, "time", reloj), \
                 contextlib.redirect_stderr(io.StringIO()):
-            proc = procesador("http://ollama.test")
+            proc = procesador("https://ollama.test")
             resultados = [
                 proc._reescribir_ollama("texto") for _ in range(4)]
 

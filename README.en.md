@@ -247,7 +247,8 @@ Anything dictated while GuionAR is closed is not sent to it later.
 - **Rewriting with Ollama (optional, off).** If you configure an Ollama model
   to rewrite text, ParlAR sends that text to it. By default it points to
   Ollama on your own computer; **if you configure a remote address, the text
-  leaves your machine** for that service.
+  leaves your machine** for that service. Remote addresses must use `https`;
+  for a trusted `http` Ollama on your network, see [SECURITY.md](SECURITY.md).
 - **The clipboard and the target application** are separate programs:
   ParlAR does not control what they do with the text they receive.
 

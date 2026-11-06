@@ -251,7 +251,9 @@ Lo que se dicta mientras GuionAR está cerrado no se le envía después.
 - **Reescritura con Ollama (opcional, apagada).** Si configurás un modelo de
   Ollama para reescribir el texto, ParlAR le envía ese texto. Por defecto
   apunta a un Ollama en tu propia computadora; **si configurás una dirección
-  remota, el texto sale de tu equipo** hacia ese servicio.
+  remota, el texto sale de tu equipo** hacia ese servicio. Las direcciones
+  remotas tienen que usar `https`; para un Ollama de confianza por `http` en
+  tu red, ver [SECURITY.md](SECURITY.md).
 - **El portapapeles y la aplicación de destino** son programas aparte:
   ParlAR no controla qué hacen con el texto que reciben.
 
