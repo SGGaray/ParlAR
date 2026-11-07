@@ -9,7 +9,7 @@ certifi==2026.10.23
 cffi==2.1.0
 click==8.4.2
 ctranslate2==4.8.1
-evdev==1.9.3
+evdev==2.0.0
 faster-whisper==1.2.1
 filelock==4.2.6
 flatbuffers==25.12.19
