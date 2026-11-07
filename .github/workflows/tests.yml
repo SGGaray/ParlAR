@@ -34,7 +34,7 @@ jobs:
       - name: Install tested dependencies
         # constraints.txt fija la misma resolución que instala el release.
         # setuptools llega fijado por constraints (lo requiere ctranslate2) y
-        # construye el wheel de las pruebas; el wheel publicado usa el
+        # construye el wheel de las pruebas; es la misma versión que el
         # toolchain del job wheel-contract y de release.yml.
         run: >-
           python -m pip install --disable-pip-version-check
@@ -64,7 +64,7 @@ jobs:
       - name: Install pinned wheel build toolchain
         run: >-
           python -m pip install --disable-pip-version-check
-          setuptools==84.0.0 wheel==0.48.0
+          setuptools==84.1.0 wheel==0.48.0
 
       - name: Build and inspect wheel
         run: |

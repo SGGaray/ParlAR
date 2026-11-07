@@ -286,7 +286,7 @@ class DependenciasProbadas(unittest.TestCase):
                                          self.constraints[nombre.lower()])
 
     def test_toolchain_de_build_fijado_y_auditado(self):
-        toolchain = "setuptools==84.0.0 wheel==0.48.0"
+        toolchain = "setuptools==84.1.0 wheel==0.48.0"
         self.assertIn(toolchain, paso_con(
             WORKFLOWS["release.yml"]["jobs"]["build"], "pip install")["run"])
         self.assertIn(toolchain, paso_con(
@@ -297,6 +297,10 @@ class DependenciasProbadas(unittest.TestCase):
         for pin in toolchain.split():
             with self.subTest(pin=pin):
                 self.assertIn(f"--build {pin}", auditoria)
+        # Runtime y build usan el mismo setuptools: un aviso corregido en uno
+        # no puede quedar abierto en el otro.
+        self.assertEqual(toolchain.split()[0],
+                         f"setuptools=={self.constraints['setuptools']}")
 
     def test_smoke_del_wheel_usa_constraints(self):
         instalacion = paso_con(WORKFLOWS["tests.yml"]["jobs"]["wheel-contract"],

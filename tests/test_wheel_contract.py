@@ -100,7 +100,7 @@ class ContratoWorkflow(unittest.TestCase):
 
         self.assertIn("contents: read", workflow)
         self.assertIn('python-version: ["3.12", "3.13", "3.14"]', workflow)
-        self.assertIn("setuptools==84.0.0 wheel==0.48.0", workflow)
+        self.assertIn("setuptools==84.1.0 wheel==0.48.0", workflow)
         self.assertIn("python -m pip wheel", workflow)
         self.assertIn("git show -s --format=%ct HEAD", workflow)
         self.assertIn('wheel "$WHEEL_DIR" pyproject.toml', workflow)

@@ -27,6 +27,11 @@
   `/tmp`. Si ese directorio pertenece a otro usuario, tiene permisos amplios
   o es un enlace simbólico, ParlAR no inicia y lo indica. Una instancia de una
   versión anterior sigue siendo alcanzable durante la actualización.
+- **Dependencias con avisos de seguridad.** Las versiones probadas pasan a
+  `certifi` 2026.10.23 (quita del bundle TLS con el que se descarga el
+  modelo la raíz emSign bajo la que hay intermedias comprometidas),
+  `filelock` 4.2.6, `anyio` 4.14.2 y `setuptools` 84.1.0. El release se
+  construye con el mismo `setuptools`.
 
 ## [1.1.0] - 2026-10-04
 

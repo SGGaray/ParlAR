@@ -110,7 +110,7 @@ jobs:
           python scripts/check_dependencies.py auditar \
             --pip-audit "$RUNNER_TEMP/pip-audit/bin/pip-audit" \
             --runtime-python "$RUNNER_TEMP/runtime/bin/python" \
-            --build setuptools==84.0.0 \
+            --build setuptools==84.1.0 \
             --build wheel==0.48.0 \
             --salida "$RUNNER_TEMP/pip-audit-report"
 

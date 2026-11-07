@@ -3,15 +3,15 @@
 # dependencias, sólo fijan la versión de las que se resuelven. Actualizar
 # junto con la validación completa (scripts/check.sh y
 # scripts/test_release_install.sh) en las versiones de Python soportadas.
-anyio==4.14.1
+anyio==4.14.2
 av==18.0.0
-certifi==2026.6.17
+certifi==2026.10.23
 cffi==2.1.0
 click==8.4.2
 ctranslate2==4.8.1
 evdev==1.9.3
 faster-whisper==1.2.1
-filelock==3.29.6
+filelock==4.2.6
 flatbuffers==25.12.19
 fsspec==2026.6.0
 h11==0.16.0
@@ -31,7 +31,7 @@ pycparser==3.0
 pynput==1.8.2
 python-xlib==0.33
 pyyaml==6.0.3
-setuptools==80.10.2
+setuptools==84.1.0
 six==1.17.0
 sounddevice==0.5.5
 tokenizers==0.23.1
