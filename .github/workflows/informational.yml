@@ -1,0 +1,179 @@
+name: informational
+
+# Controles informativos: no forman parte del gate obligatorio (tests.yml) y
+# no deben configurarse como checks requeridos mientras sigan en este modo.
+# Cada uno publica su resultado real en el resumen del job y como anotaciones.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Lunes 09:17 UTC: detecta avisos nuevos aunque el código no cambie.
+    - cron: "17 9 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: informational-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  latest-dependencies:
+    # Runner propio, sin caché ni artifacts compartidos con el gate: lo que
+    # instala acá no puede alterar el entorno del gate obligatorio.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.14"]
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install newest dependencies without constraints.txt
+        id: install
+        continue-on-error: true
+        run: >-
+          python -m pip install --disable-pip-version-check --upgrade
+          -r requirements.txt setuptools wheel
+
+      - name: Quality gate with newest dependencies
+        id: gate
+        if: steps.install.outcome == 'success'
+        continue-on-error: true
+        env:
+          PARLAR_PYTHON: python
+        run: ./scripts/check.sh
+
+      - name: Report real result
+        if: always()
+        env:
+          INSTALL_OUTCOME: ${{ steps.install.outcome }}
+          GATE_OUTCOME: ${{ steps.gate.outcome }}
+        run: |
+          {
+            echo "## Gate con las dependencias más recientes (informativo)"
+            echo
+            echo "- Instalación sin constraints.txt: \`$INSTALL_OUTCOME\`"
+            echo "- Gate (scripts/check.sh): \`${GATE_OUTCOME:-skipped}\`"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          python scripts/check_dependencies.py entorno --informativo
+          if [[ "$INSTALL_OUTCOME" != "success" || "$GATE_OUTCOME" != "success" ]]; then
+            echo "::warning title=latest-dependencies::Fallo con las versiones más recientes (instalación: $INSTALL_OUTCOME, gate: ${GATE_OUTCOME:-skipped}). No bloquea; revisar antes de actualizar constraints.txt."
+          fi
+
+  pip-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+
+      - name: Install pip-audit from the hashed lock in its own venv
+        run: |
+          python -m venv "$RUNNER_TEMP/pip-audit"
+          "$RUNNER_TEMP/pip-audit/bin/python" -m pip install \
+            --disable-pip-version-check --require-hashes --no-deps \
+            -r .github/requirements/pip-audit.txt
+          "$RUNNER_TEMP/pip-audit/bin/pip-audit" --version
+
+      - name: Install the CPU runtime the way the installer resolves it
+        # Dependencias de ParlAR + VAD opcional con constraints.txt. Los
+        # extras CUDA se auditan por versión, sin descargarlos.
+        run: |
+          python -m venv "$RUNNER_TEMP/runtime"
+          "$RUNNER_TEMP/runtime/bin/python" -m pip install \
+            --disable-pip-version-check -c constraints.txt \
+            -r requirements.txt -r requirements-optional.txt
+
+      - name: Audit dependency inventories
+        # Informativo: los avisos quedan en el resumen y como anotaciones,
+        # el job sólo falla si la auditoría no pudo ejecutarse.
+        run: |
+          python scripts/check_dependencies.py auditar \
+            --pip-audit "$RUNNER_TEMP/pip-audit/bin/pip-audit" \
+            --runtime-python "$RUNNER_TEMP/runtime/bin/python" \
+            --build setuptools==84.0.0 \
+            --build wheel==0.48.0 \
+            --salida "$RUNNER_TEMP/pip-audit-report"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: pip-audit-report
+          path: ${{ runner.temp }}/pip-audit-report/
+          if-no-files-found: warn
+          retention-days: 30
+
+  actionlint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install actionlint with a verified checksum
+        env:
+          ACTIONLINT_VERSION: "1.7.12"
+          ACTIONLINT_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+        run: |
+          archivo="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          destino="$RUNNER_TEMP/actionlint"
+          mkdir -p "$destino"
+          curl -fsSL --proto '=https' --tlsv1.2 --retry 3 \
+            -o "$destino/$archivo" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${archivo}"
+          printf '%s  %s\n' "$ACTIONLINT_SHA256" "$destino/$archivo" | sha256sum -c -
+          tar -xzf "$destino/$archivo" -C "$destino" actionlint
+          "$destino/actionlint" -version
+
+      - name: Run actionlint (informational)
+        run: |
+          ACTIONLINT="$RUNNER_TEMP/actionlint/actionlint"
+          REPORTE="$RUNNER_TEMP/actionlint.txt"
+          set +e
+          "$ACTIONLINT" -no-color -oneline >"$REPORTE" 2>&1
+          estado=$?
+          set -e
+          cat "$REPORTE"
+          {
+            echo "## actionlint (informativo)"
+            echo
+            if [[ $estado -eq 0 ]]; then
+              echo "Sin hallazgos."
+            else
+              echo "Código de salida: $estado"
+              echo
+              echo '```'
+              cat "$REPORTE"
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [[ $estado -eq 1 ]]; then
+            "$ACTIONLINT" -no-color \
+              -format '{{range $err := .}}::warning file={{$err.Filepath}},line={{$err.Line}},col={{$err.Column}},title=actionlint::{{$err.Message}}\n{{end}}' \
+              || true
+          fi
+          # 1 = hallazgos (informativo); otro código = actionlint no corrió.
+          if [[ $estado -gt 1 ]]; then
+            exit "$estado"
+          fi

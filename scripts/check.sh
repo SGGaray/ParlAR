@@ -61,7 +61,7 @@ bash -n setup.sh install.sh uninstall.sh scripts/check.sh \
 "$PYTHON" -m py_compile \
     parlar/*.py scripts/render_service.py scripts/render_desktop.py \
     scripts/parlar_installer.py scripts/build_release.py \
-    scripts/build_wheelhouse.py tests/*.py
+    scripts/build_wheelhouse.py scripts/check_dependencies.py tests/*.py
 
 echo "==> Smokes CLI"
 "$PYTHON" -m parlar --help >"$TEMP_DIR/parlar-help.txt"

@@ -9,26 +9,39 @@ on:
 permissions:
   contents: read
 
+# Acciones fijadas por SHA completo del commit de la release indicada en el
+# comentario (formato que Dependabot actualiza). Ver
+# docs/security/supply-chain.md.
+
 jobs:
   gate:
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.12", "3.14"]
+        python-version: ["3.12", "3.13", "3.14"]
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install dependencies
-        # setuptools/wheel: las pruebas de release construyen el wheel real.
+      - name: Install tested dependencies
+        # constraints.txt fija la misma resolución que instala el release.
+        # setuptools llega fijado por constraints (lo requiere ctranslate2) y
+        # construye el wheel de las pruebas; el wheel publicado usa el
+        # toolchain del job wheel-contract y de release.yml.
         run: >-
           python -m pip install --disable-pip-version-check
-          -r requirements.txt setuptools==84.0.0 wheel==0.48.0
+          -c constraints.txt -r requirements.txt wheel==0.48.0
+
+      - name: Verify tested versions match constraints.txt
+        run: python scripts/check_dependencies.py entorno
 
       - name: Run the same quality gate as local development
         env:
@@ -37,11 +50,14 @@ jobs:
 
   wheel-contract:
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.14"
 
@@ -72,6 +88,7 @@ jobs:
           python -m venv "$SMOKE_VENV"
           "$SMOKE_VENV/bin/python" -m pip install \
             --disable-pip-version-check \
+            -c constraints.txt \
             "$WHEEL_DIR"/parlar-*.whl
 
       - name: Smoke installed artifact outside the checkout
