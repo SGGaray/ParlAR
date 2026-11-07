@@ -11,7 +11,7 @@ click==8.4.2
 ctranslate2==4.8.1
 evdev==1.9.3
 faster-whisper==1.2.1
-filelock==3.29.6
+filelock==4.2.5
 flatbuffers==25.12.19
 fsspec==2026.6.0
 h11==0.16.0
