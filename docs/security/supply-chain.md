@@ -135,8 +135,9 @@ ofrezca ese mecanismo de forma estable.
   fijado por `constraints.txt` porque ctranslate2 lo requiere en runtime;
   con él se construye el wheel de las pruebas.
 - **Wheel publicado:** lo construye el toolchain fijado
-  `setuptools==84.0.0 wheel==0.48.0` (`wheel-contract` y `release.yml`). El
-  smoke del wheel instalado también aplica `constraints.txt`.
+  `setuptools==84.1.0 wheel==0.48.0` (`wheel-contract` y `release.yml`), con
+  el mismo setuptools que fija `constraints.txt`; una prueba exige que
+  coincidan. El smoke del wheel instalado también aplica `constraints.txt`.
 - **Dependencias más recientes** (`informational.yml`,
   `latest-dependencies`): instala la última versión de cada dependencia sin
   `constraints.txt` y corre el gate en 3.12 y 3.14. Corre en su propio
@@ -174,11 +175,42 @@ cuando el modo informativo deje de ser necesario.
 Que una versión aparezca en un inventario no implica que el aviso sea
 explotable en ParlAR. El análisis de cada aviso está abajo.
 
-## Avisos conocidos (2026-11-07)
+## Avisos conocidos y remediación
 
-Resultado de pip-audit 2.10.1 sobre `constraints.txt` y el toolchain de
-build en `ef1d982`. Ninguna dependencia de producción se actualiza en este
-cambio. La corrección queda para un PR de remediación separado.
+pip-audit 2.10.1 reportó 16 avisos en `main` (`8d59bc7`, run 42367116551
+del workflow `informational`). Todos estaban en los inventarios
+`constraints` y `runtime`, salvo setuptools 84.0.0, que estaba en `build`.
+La remediación del 2026-11-07 actualizó sólo los paquetes afectados:
+
+| Paquete | Antes | Después | Avisos cerrados |
+| --- | --- | --- | --- |
+| certifi | 2026.6.17 | 2026.10.23 | 1 |
+| filelock | 3.29.6 | 4.2.6 | 9 |
+| anyio | 4.14.1 | 4.14.2 | 3 |
+| setuptools (runtime) | 80.10.2 | 84.1.0 | 2 |
+| setuptools (build) | 84.0.0 | 84.1.0 | 1 |
+
+Criterio para elegir cada versión:
+
+- **certifi 2026.10.23:** la más reciente. Es un paquete sólo de datos y
+  conviene el bundle de raíces más actual. Es también la versión que ya
+  resuelve pip y la del lock de pip-audit.
+- **filelock 4.2.6:** incluye todas las correcciones de seguridad (4.2.1)
+  y las de carreras en `SoftFileLock` de 4.2.5 y 4.2.6, que es el fallback
+  de huggingface_hub. Las 4.2.7 a 4.2.9 sólo tocan `SoftFileLease`,
+  `ReadWriteLock` y documentación, que ParlAR no usa, y tenían menos de 7
+  días publicadas, el mismo margen que aplica Dependabot.
+- **anyio 4.14.2:** el parche mínimo que corrige los tres avisos.
+- **setuptools 84.1.0:** la primera versión que corrige GHSA-xmj3. Las
+  84.2.x agregan funciones (abi3t) que ParlAR no necesita. Runtime y build
+  usan la misma versión.
+
+Después del cambio, pip-audit no reporta avisos en los inventarios
+`constraints`, `extras` y `build`. El inventario `runtime` también incluye
+el pip del venv, que no fija `constraints.txt` (ver
+[pip del venv de instalación](#pip-del-venv-de-instalación-abierto)).
+
+El análisis de cada aviso, abajo, se conserva como registro.
 
 ### certifi 2026.6.17
 
@@ -201,9 +233,10 @@ cambio. La corrección queda para un PR de remediación separado.
     26.2.2).
 - **Prioridad:** alta entre estos avisos. Afecta la integridad de la
   descarga del modelo y la corrección es sólo de datos.
-- **Propuesta:** fijar `certifi` en una versión 2026.10.19 o posterior
-  (2026.10.23 es la que ya resuelve pip hoy) y validar la descarga del
-  modelo.
+- **Estado:** corregido con 2026.10.23. Ese bundle ya no incluye
+  `emSign ECC Root CA - G3`, `emSign Root CA - C1` ni
+  `emSign ECC Root CA - C3`, y conserva `emSign Root CA - G1`. Se verificó
+  la descarga del modelo por HTTPS con huggingface_hub y httpx.
 
 ### filelock 3.29.6
 
@@ -232,10 +265,16 @@ cambio. La corrección queda para un PR de remediación separado.
     los procesos del mismo UID como un único dominio de confianza.
 - **Prioridad:** media-baja. Sólo es relevante en equipos multiusuario con
   `HF_HOME` en un directorio compartido.
-- **Propuesta:** subir a 4.2.1 o posterior. Es un cambio de versión mayor:
-  hay que verificar la compatibilidad con huggingface_hub (pide
-  `filelock>=3.10.0`) y probar la descarga y reutilización de la caché del
-  modelo.
+- **Estado:** corregido con 4.2.6.
+  - El cambio de versión mayor (4.0.0) sólo modifica el protocolo en disco
+    de `SoftReadWriteLock`, que huggingface_hub no usa.
+  - `WeakFileLock` de huggingface_hub 1.22.0 sigue creando el lock con
+    `UnixFileLock` y modo `0o664`, y excluye a otro poseedor.
+  - El fallback a soft lock en sistemas de archivos sin `flock` lo hace
+    filelock en ambas versiones, con la misma lógica.
+  - Se verificó la descarga del modelo, la reutilización de la caché sin
+    red (`HF_HUB_OFFLINE=1`) y una transcripción idéntica a la de
+    3.29.6.
 
 ### anyio 4.14.1
 
@@ -257,8 +296,7 @@ cambio. La corrección queda para un PR de remediación separado.
     (httpcore sync) no pasa por anyio.
   - No hay process pools ni `extra_groups`, y los hosts son ASCII.
 - **Prioridad:** baja.
-- **Propuesta:** subir a 4.14.2, un cambio de parche, en el mismo PR de
-  remediación.
+- **Estado:** corregido con 4.14.2, un cambio de parche.
 
 ### setuptools 80.10.2 (runtime) y 84.0.0 (build)
 
@@ -280,18 +318,47 @@ cambio. La corrección queda para un PR de remediación separado.
   - Ninguna de las dos condiciones (macOS sdist, Windows egg) se da en
     ParlAR.
 - **Prioridad:** baja.
-- **Propuesta:** subir el toolchain de build a 84.1.0 o posterior, junto con
-  la prueba de bytes reproducibles del release, y el pin de runtime a la
-  misma versión. Antes hay que verificar que ctranslate2 no dependa de
-  `pkg_resources`; en 4.8.1 no lo importa.
+- **Estado:** corregido con 84.1.0 en runtime y en build.
+  - En runtime, ctranslate2 4.8.1 no importa `setuptools` ni
+    `pkg_resources`. webrtcvad-wheels sólo lo usa como fallback en Python
+    anterior a 3.8.
+  - El release construido dos veces con 84.1.0 da bytes idénticos. Frente a
+    84.0.0, el wheel sólo cambia en la línea `Generator` de `WHEEL` y su
+    hash en `RECORD`.
 
 ### Observación sobre la instalación activa
 
 Una instalación local revisada en modo lectura (`1.1.0`) tenía
-`certifi 2026.10.23`, distinta del pin de `constraints.txt`. Esto muestra
-que el runtime de una instalación existente puede no coincidir con
-`constraints.txt`. El inventario `runtime` de CI describe la resolución
-actual del instalador, no cada instalación de usuario.
+`certifi 2026.10.23`, distinta del pin de `constraints.txt` de ese
+momento (2026.6.17). Esto muestra que el runtime de una instalación
+existente puede no coincidir con `constraints.txt`. El inventario `runtime`
+de CI describe la resolución actual del instalador, no cada instalación de
+usuario.
+
+### pip del venv de instalación (abierto)
+
+- **Origen:** el instalador crea el venv con `python -m venv` usando el
+  Python del sistema y no actualiza pip. El venv queda con el pip que trae
+  ese Python (`ensurepip` o el paquete de la distribución), y
+  `constraints.txt` no lo fija.
+- **Versiones observadas:**
+  - En CI (`actions/setup-python`), pip 26.2.2, sin avisos conocidos.
+  - Con el Python 3.14 de Fedora 43, pip 25.1.1, que tiene seis avisos:
+    PYSEC-2026-1795, PYSEC-2026-1796, PYSEC-2026-196, PYSEC-2026-2875,
+    PYSEC-2026-2876 y PYSEC-2026-3721. Todos están corregidos en 26.2.
+- **Condiciones de explotación:**
+  - Todos requieren un wheel o archivo malicioso, o un índice de paquetes
+    malicioso.
+  - El instalador usa PyPI por HTTPS con `--only-binary=:all:` y
+    `constraints.txt`, y verifica el SHA-256 del wheel de ParlAR.
+  - PYSEC-2026-2876 depende del chequeo de actualización de pip, que el
+    instalador desactiva con `--disable-pip-version-check`.
+  - ParlAR no ejecuta pip después de instalarse.
+- **Prioridad:** media-baja. El riesgo es el de una dependencia de PyPI
+  comprometida, que estas correcciones acotan pero no eliminan.
+- **Estado:** abierto. Corregirlo cambia el comportamiento del instalador
+  (actualizar pip a una versión fijada antes de instalar dependencias), así
+  que queda para un cambio separado.
 
 ## Dependabot
 
