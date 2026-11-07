@@ -146,6 +146,16 @@ desconocidas se aíslan en `extras` y no pueden sobrescribir métodos. Al guarda
 el reemplazo es atómico, el archivo queda `0600` y un directorio creado por
 ParlAR queda `0700`.
 
+### Cadena de suministro
+
+Los workflows de GitHub Actions usan permisos de sólo lectura, acciones
+fijadas por SHA completo y la imagen de construcción fijada por digest. El
+gate prueba las mismas versiones de dependencias que instala el release
+(`constraints.txt`). pip-audit, actionlint y Dependabot informan sobre
+avisos y actualizaciones. El detalle, los procedimientos de actualización y
+el análisis de los avisos conocidos están en
+[docs/security/supply-chain.md](docs/security/supply-chain.md).
+
 ## Qué no está mitigado (limitaciones conocidas)
 
 - En X11, pynput puede observar Esc pero no suprimir únicamente esa tecla. El

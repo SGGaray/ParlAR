@@ -1,0 +1,52 @@
+# Actualizaciones de versión semanales. Cada PR de Dependabot pasa por el gate
+# obligatorio (tests.yml) y por la revisión manual; nada se fusiona solo.
+#
+# - cooldown: espera unos días antes de proponer una versión recién publicada,
+#   para no adoptar una release comprometida o retirada en las primeras horas.
+# - groups: minor y patch van juntos en un único PR por ecosistema; las
+#   versiones major quedan en PRs individuales para revisarlas por separado.
+# - open-pull-requests-limit: tope de PRs abiertos a la vez.
+#
+# Las alertas y las security updates de Dependabot se habilitan en la
+# configuración del repositorio, no en este archivo.
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: America/Argentina/Buenos_Aires
+    open-pull-requests-limit: 3
+    cooldown:
+      default-days: 7
+    groups:
+      github-actions:
+        patterns: ["*"]
+        update-types: [minor, patch]
+    commit-message:
+      prefix: ci
+
+  - package-ecosystem: pip
+    # /: requirements.txt, requirements-optional.txt, constraints.txt y
+    # pyproject.toml (runtime y extras).
+    # /.github/requirements: lock con hashes de la herramienta pip-audit.
+    directories:
+      - /
+      - /.github/requirements
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: America/Argentina/Buenos_Aires
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+    groups:
+      python-minor-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
+    commit-message:
+      prefix: deps

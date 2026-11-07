@@ -8,24 +8,34 @@ on:
 permissions:
   contents: read
 
+# Acciones fijadas por SHA completo y contenedor fijado por digest. Ver
+# docs/security/supply-chain.md antes de actualizar cualquiera de los dos.
+
 jobs:
   gate:
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     strategy:
       fail-fast: true
       matrix:
-        python-version: ["3.12", "3.14"]
+        python-version: ["3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install dependencies
+      - name: Install tested dependencies
+        # Misma resolución que instala el release (ver tests.yml).
         run: >-
           python -m pip install --disable-pip-version-check
-          -r requirements.txt setuptools==84.0.0 wheel==0.48.0
+          -c constraints.txt -r requirements.txt wheel==0.48.0
+
+      - name: Verify tested versions match constraints.txt
+        run: python scripts/check_dependencies.py entorno
 
       - name: Quality gate
         env:
@@ -35,10 +45,14 @@ jobs:
   wheelhouse:
     # manylinux_2_28: los wheels nativos quedan instalables en glibc >= 2.28
     # sin compilador ni headers en la máquina del usuario.
+    # Imagen fijada por digest: la misma que usó el último release validado.
     runs-on: ubuntu-24.04
-    container: quay.io/pypa/manylinux_2_28_x86_64
+    timeout-minutes: 20
+    container: quay.io/pypa/manylinux_2_28_x86_64@sha256:7e41b1c7fd64dfc69703a1124b43c404382973ee06ec5d764b85c34d2221fded # 2026.11.01-2
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Build native wheels for every supported CPython
         run: |
@@ -50,7 +64,7 @@ jobs:
             --python /opt/python/cp314-cp314/bin/python
           cat wheelhouse/wheelhouse.json
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: parlar-wheelhouse
           path: wheelhouse/
@@ -59,10 +73,13 @@ jobs:
   build:
     needs: [gate, wheelhouse]
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.14"
 
@@ -71,7 +88,7 @@ jobs:
           python -m pip install --disable-pip-version-check
           setuptools==84.0.0 wheel==0.48.0
 
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: parlar-wheelhouse
           path: ${{ runner.temp }}/wheelhouse
@@ -93,7 +110,7 @@ jobs:
       - name: Inspect wheel contract
         run: python scripts/check_wheel_contract.py wheel dist/release pyproject.toml
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: parlar-release
           path: dist/release/
@@ -102,8 +119,9 @@ jobs:
   checksum:
     needs: build
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: parlar-release
           path: release
@@ -117,28 +135,32 @@ jobs:
   fresh-install-smoke:
     needs: build
     runs-on: ubuntu-24.04
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0  # la prueba de upgrade usa el tag v1.0.1
+          persist-credentials: false
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ matrix.python-version }}
 
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: parlar-release
           path: release
 
       - name: Isolated install, update, rollback, uninstall and 1.0.1 upgrade
+        env:
+          PYTHON_VERSION: ${{ matrix.python-version }}
         run: |
           LEGACY=()
-          if [[ "${{ matrix.python-version }}" != "3.14" ]]; then
+          if [[ "$PYTHON_VERSION" != "3.14" ]]; then
             LEGACY=(--skip-legacy)
           fi
           ./scripts/test_release_install.sh release \
